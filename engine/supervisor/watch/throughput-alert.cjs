@@ -43,6 +43,7 @@ const readyEvents = new Set([
   'ready-to-merge',
   'review-approve',
   'supervisor-approve',
+  'ci-repair-rerun',
   'land-refused',
   'land-retry',
   'stuck-killed',

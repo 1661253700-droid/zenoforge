@@ -53,6 +53,16 @@ printf '[2026-11-02T11:55:00Z] merged PR#99 merge=abc\n' >> "$log"
 alert="$(run_alert)"
 assert_empty "$alert" 'recent merge suppression'
 
+# A CI repair rerun returning from rereview starts a new ready-stage age window.
+cat > "$units" <<'JSON'
+{"units":[
+ {"id":"pr-43","pr":43,"stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-11-02T08:00:00Z"},{"stage":"ci-repair-rerun","at":"2026-11-02T11:50:00Z"}]}
+]}
+JSON
+printf '[2026-11-02T10:55:00Z] merged PR#42 merge=abc\n' > "$log"
+alert="$(run_alert)"
+assert_empty "$alert" 'recent ready-stage transition suppression'
+
 # PAUSE suppresses both throughput conditions, even when the file is empty.
 : > "$pause"
 : > "$log"
