@@ -6,4 +6,9 @@ const file = expand(process.env.ZF_SUPERVISOR_CONFIG || '~/.zenoforge/supervisor
 let config;
 try { config = JSON.parse(fs.readFileSync(file, 'utf8')); }
 catch (error) { process.stderr.write(`zenoforge supervisor: config unavailable: ${file} (${error.message.replace(/\s*\n\s*/g, ' ')})\n`); process.exit(1); }
+config.watch = {
+  ready_stuck_minutes: 60,
+  no_output_hours: 3,
+  ...(config.watch && typeof config.watch === 'object' && !Array.isArray(config.watch) ? config.watch : {}),
+};
 module.exports = { config, expand };

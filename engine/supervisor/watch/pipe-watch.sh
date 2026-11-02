@@ -7,7 +7,7 @@ NODE
 ) || exit 1
 eval "$values"
 A=$W_autopi
-S=$(mktemp -d); prev_unhealthy=""; last_cpu=0
+S=$(mktemp -d); prev_unhealthy=""; last_cpu=0; last_throughput=0
 rt_lines=$(wc -l < "$A/release-train.log" 2>/dev/null || echo 0)
 IB=$W_inbox; ib_lines=$(wc -l < "$IB" 2>/dev/null || echo 0)
 while true; do
@@ -31,6 +31,8 @@ while true; do
     [ -n "$prev_unhealthy" ] && [ -n "$new" ] && echo "new UNHEALTHY: $(echo "$new" | tr '\n' ';')"
     prev_unhealthy=$(printf "%s\n%s\n" "$prev_unhealthy" "$u" | grep . | sort -u)
   fi
+  throughput=$(node "$DIR/watch/throughput-alert.cjs" "$A/units.json" "$A/scheduler.log" "$W_pause" "$now" "$W_ready_stuck_minutes" "$W_no_output_hours" 2>/dev/null || true)
+  if [ -n "$throughput" ] && [ $((now - last_throughput)) -ge "$W_alert_seconds" ]; then echo "$throughput"; last_throughput=$now; fi
   read -r _ u n s i w q sq st _ < /proc/stat; tot=$((u+n+s+i+w+q+sq+st)); idle=$((i+w))
   busy=$(( ${ptot:-0} && tot > ptot ? 100 - 100 * (idle - pidle) / (tot - ptot) : 50 )); ptot=$tot; pidle=$idle
   avail=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
