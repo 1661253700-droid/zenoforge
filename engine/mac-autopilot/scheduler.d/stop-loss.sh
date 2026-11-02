@@ -6,7 +6,7 @@ recover_orphan_landing() { # landing 无活 land worker（被杀/重启）→ �
     for wp in $(jqf -r --arg u "$id" '.workers[] | select(.unit==$u and .harvested != true) | .pid' "$WORKERS"); do
       alive "$wp" && has_live=true && break
     done
-    [[ "$has_live" == true ]] || { set_unit "$id" '.stage="ready-to-merge"'; say "orphan-recover unit=$id landing -> ready-to-merge"; }
+    [[ "$has_live" == true ]] || { set_unit "$id" "$(hist orphan-recover 'landing worker missing; retry merge') | .stage=\"ready-to-merge\""; say "orphan-recover unit=$id landing -> ready-to-merge"; }
   done
 }
 
