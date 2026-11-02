@@ -154,8 +154,16 @@ register_new_issues() {
     want=1000000000; busy=""
   else
   live="$(live_workers)"
-  # 被 footprint 互斥挡住的 pending 不用 worker，不占产能（仍计入 upstream 的 WIP 额度）
-  pending="$(jqf '[.units[] | select(.stage | test("-pending$")) | select((.footprint_wait_owner // "") == "")] | length' "$UNITS")"
+  # Only pending work dispatch can start consumes a slot. Footprint waiters,
+  # supervisor-owned units, and the most recently size-refused units stay in WIP.
+  pending="$(jqf '[.units[]
+    | select(.stage | test("-pending$"))
+    | select((.footprint_wait_owner // "") == "")
+    | select((.supervisor_owned // false) != true)
+    | select(((.history // [] | last // {}) as $last
+        | $last.stage == "supervisor-escalated"
+          and (($last.result // "") | startswith("size admission:"))) | not)
+  ] | length' "$UNITS")"
   idle=$(( MAX - live - pending ))
   (( idle > 0 )) || { say "intake held: no idle slot (live $live pending $pending max $MAX)"; return 0; }
   max_up="$(jqf -r ".issue_intake.max_upstream // $((2 * MAX))" <<<"$CFG")"; [[ "$max_up" =~ ^[0-9]+$ ]] || max_up=$((2 * MAX))

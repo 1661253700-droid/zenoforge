@@ -62,6 +62,7 @@ jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .models.triage == ["gpt-6-luna", "max", "fast"]
   and .models.review_fallback == ["gpt-6-luna", "max", "fast"]
   and .models.implement_hotfix == ["gpt-6.1-terra", "high"]' "$template" >/dev/null
+jq -e '.size_admission.exempt_hotpatch == true' "$template" >/dev/null
 
 sample='{"units":[{"id":"pr-1","stage":"ready-to-merge"},{"id":"pr-2","stage":"ready-to-merge"},{"id":"pr-3","stage":"merged"}]}'
 updated="$(jq --arg id pr-2 \
@@ -2245,6 +2246,45 @@ JSON
 }
 sched_run_case size_admission_repair
 
+sched_case_size_admission_hotpatch() {
+  (
+    TF="$test_env_root/size-admission-hotpatch"
+    mkdir -p "$TF"
+    UNITS="$TF/units.json"
+    CFG='{"size_admission":{"exempt_hotpatch":true}}'
+    SIZE_ADMISSION_LINES=800
+    TICK_DISPATCH_LOCAL_REFILL=false
+    command jq -n '{units:[{id:"hotpatch",hotpatch:true}]}' > "$UNITS"
+    unit_json='{"id":"hotpatch","hotpatch":true,"estimated_changed_lines":900}'
+    rejects=0
+    changed_lines_of() { echo 900; }
+    changed_files_of() { echo '[]'; }
+    set_unit() { :; }
+    size_admission_reject() { rejects=$((rejects + 1)); return 1; }
+
+    write_status=0
+    size_admission_write_start hotpatch "" "$unit_json" || write_status=$?
+    recheck_status=0
+    size_admission_recheck_impl hotpatch "$TF" hotpatch "fixture" "" || recheck_status=$?
+    [[ "$write_status" == 0 && "$recheck_status" == 0 && "$rejects" == 0 ]] || exit 1
+
+    CFG='{}'
+    write_status=0
+    size_admission_write_start hotpatch "" "$unit_json" || write_status=$?
+    recheck_status=0
+    size_admission_recheck_impl hotpatch "$TF" hotpatch "fixture" "" || recheck_status=$?
+    [[ "$write_status" == 0 && "$recheck_status" == 0 && "$rejects" == 0 ]] || exit 1
+
+    CFG='{"size_admission":{"exempt_hotpatch":false}}'
+    write_status=0
+    size_admission_write_start hotpatch "" "$unit_json" || write_status=$?
+    recheck_status=0
+    size_admission_recheck_impl hotpatch "$TF" hotpatch "fixture" "" || recheck_status=$?
+    [[ "$write_status" == 1 && "$recheck_status" == 1 && "$rejects" == 2 ]] || exit 1
+  ) || { echo 'not ok - scheduler.test.sh: hotpatch size exemption ignored the configured switch' >&2; exit 1; }
+}
+sched_run_case size_admission_hotpatch
+
 sched_case_oversized_repair_pre_dispatch_recut() {
   new_tick_fixture oversized-repair-pre-dispatch
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -3238,6 +3278,37 @@ JSON
 )
 }
 sched_run_case footprint_hog_alert
+
+sched_case_intake_owned_pending() {
+  new_tick_fixture intake-owned-pending
+  mkdir -p "$TF/agent-home/state"
+  command jq '.max_workers=1 | .implement_cap=0 | .supervisor_arbiter.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '{number:779,title:"resume ordinary work",body:"finish the work",state:"OPEN",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-779.json"
+  command jq -n '{units:[{id:"owned-pending",stage:"repair-pending",supervisor_owned:true,history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  tick
+  command jq -e 'any(.units[]; .issue==779 and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: supervisor-owned pending work blocked intake' >&2; exit 1; }
+}
+sched_run_case intake_owned_pending
+
+sched_case_intake_size_refused_pending() {
+  new_tick_fixture intake-size-refused-pending
+  mkdir -p "$TF/agent-home/state"
+  command jq '.max_workers=1 | .implement_cap=0 | .supervisor_arbiter.enabled=false | .issue_intake={enabled:true,max_upstream:2,max_ready:30,labels:["pipeline-system"],product_labels:["ready-for-agent"]}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '{number:779,title:"resume ordinary work",body:"finish the work",state:"OPEN",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-779.json"
+  command jq -n '{units:[{id:"size-refused-pending",stage:"repair-pending",history:[{stage:"supervisor-escalated",result:"size admission: 2032 changed lines before dispatch exceed the 800-line limit"}]}]}' \
+    > "$TF/supervisor/autopi/units.json"
+  tick
+  command jq -e 'any(.units[]; .issue==779 and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: size-refused pending work blocked intake' >&2; exit 1; }
+}
+sched_run_case intake_size_refused_pending
 
 sched_case_hold_handoff_resume() {
   new_tick_fixture hold-handoff-resume
