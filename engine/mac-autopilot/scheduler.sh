@@ -127,6 +127,9 @@ MAX_NO_OUTPUT="$(jqf -r '.waste.max_no_output // 2' <<<"$CFG")"
 SUPERVISOR_ARBITER="$(jqf -r 'if .supervisor_arbiter.enabled == true then "true" else "false" end' <<<"$CFG")"
 SUPERVISOR_ARBITER_PROFILE="$(jqf -r '.supervisor_arbiter.profile // "terra"' <<<"$CFG")"
 SUPERVISOR_NEEDS_INFO_PER_TICK="$(jqf -r '.supervisor_arbiter.needs_info_per_tick // 3' <<<"$CFG")"
+SUPERVISOR_CAP_TRIAGE="$(jqf -r 'if .supervisor_arbiter.cap_triage == false then "false" else "true" end' <<<"$CFG")"
+SUPERVISOR_CAP_TRIAGE_PER_TICK="$(jqf -r '.supervisor_arbiter.cap_triage_per_tick // 3' <<<"$CFG")"
+[[ "$SUPERVISOR_CAP_TRIAGE_PER_TICK" =~ ^[0-9]+$ ]] || SUPERVISOR_CAP_TRIAGE_PER_TICK=3
 # 一次一个时 42 个 supervisor-review 要排 3.5 h（10-28 解除 PAUSE 后实测）；裁决只读、轻量，按名额并发。
 SUPERVISOR_ARBITER_MAX="$(jqf -r '.supervisor_arbiter.max_in_flight // 4' <<<"$CFG")"
 FOCUS_SKIPPED=()

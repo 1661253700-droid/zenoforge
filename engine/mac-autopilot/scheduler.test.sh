@@ -61,6 +61,8 @@ jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .models.implement == ["gpt-6-luna", "max", "fast"]
   and .models.triage == ["gpt-6-luna", "max", "fast"]
   and .models.review_fallback == ["gpt-6-luna", "max", "fast"]
+  and .supervisor_arbiter.cap_triage == true
+  and .supervisor_arbiter.cap_triage_per_tick == 3
   and .models.implement_hotfix == ["gpt-6.1-terra", "high"]' "$template" >/dev/null
 
 sample='{"units":[{"id":"pr-1","stage":"ready-to-merge"},{"id":"pr-2","stage":"ready-to-merge"},{"id":"pr-3","stage":"merged"}]}'
@@ -910,10 +912,25 @@ if [[ "$*" == *"--output-last-message"* && "$*" == *" -p "* ]]; then
   echo "codex $*" >> "$TF/codex.calls"
   out="" prev=""
   for a in "$@"; do [[ "$prev" == --output-last-message ]] && out="$a"; prev="$a"; done
-  action="$(cat "$TF/supervise-action" 2>/dev/null || echo requeue)"
-  printf 'ACTION: %s\n' "$action" > "$out"
-  [[ "$action" != needs-info ]] || printf 'QUESTION: 这批单据要对接哪个外部系统？\n' >> "$out"
-  [[ "$action" != requeue ]] || printf 'REASON: 报告缺行\nGUIDANCE: 先 git merge origin/main 再按类别修复\n' >> "$out"
+  input="$(cat)"
+  if grep -q '"capTriage":true' <<<"$input"; then
+    unit="$(sed -n 's/^.*"unitId":"\([^"]*\)".*$/\1/p' <<<"$input" | tail -n 1)"
+    verdict="$(cat "$TF/cap-verdict-$unit" 2>/dev/null || echo RULE)"
+    case "$verdict" in
+      CLOSE) printf 'REASON: the requested outcome is already delivered\nEVIDENCE: unit history records a completed delivery\n' > "$out" ;;
+      RECUT) printf 'REASON: the remaining scope must be split before work can continue\nEVIDENCE: repeated review entries show the unit combines separate deliverables\n' > "$out" ;;
+      RULE) printf 'REASON: one disputed rule settles the remaining work\nEVIDENCE: supervisor history records the same dispute twice\n' > "$out" ;;
+      FOUNDER) printf 'REASON: the product direction is missing from the record\nEVIDENCE: unit history contains no owner decision\n' > "$out" ;;
+      *) printf 'REASON: invalid fixture verdict\nEVIDENCE: invalid fixture verdict\n' > "$out" ;;
+    esac
+    [[ "$verdict" != FOUNDER ]] || printf 'QUESTION: Which product behavior should this unit follow?\n' >> "$out"
+    printf 'VERDICT: %s\n' "$verdict" >> "$out"
+  else
+    action="$(cat "$TF/supervise-action" 2>/dev/null || echo requeue)"
+    printf 'ACTION: %s\n' "$action" > "$out"
+    [[ "$action" != needs-info ]] || printf 'QUESTION: 这批单据要对接哪个外部系统？\n' >> "$out"
+    [[ "$action" != requeue ]] || printf 'REASON: 报告缺行\nGUIDANCE: 先 git merge origin/main 再按类别修复\n' >> "$out"
+  fi
 fi
 echo 'session id: 11111111-2222-3333-4444-555555555555'
 SH
@@ -937,7 +954,7 @@ SH
   chmod +x "$TF/bin/"*
   mkdir -p "$TF/repo/engine"
   cp -a "$script_dir" "$TF/repo/engine/mac-autopilot"
-  copy_agent_library "$TF/repo/engine"
+  copy_agent_library "$TF/repo/engine" lib.d/codex-mcp.sh
   cp "$TF/supervisor/autopi/config.json" "$TF/repo/engine/mac-autopilot/config.template.json"
   # merge_candidates 每拍经 $HERE/../../ci/ 调 pr-required-aggregate.mjs（16e097913 起按 run/时间
   # 取同 head 最新检查行）；夹具 repo 是 engine 子集，需一并带上。
@@ -4160,6 +4177,152 @@ grep -Eq '^issue edit 502 .*--add-label needs-info$' "$TF/actions" \
   }
 }
 sched_run_case supervisor_arbiter
+
+cap_triage_fixture_prompt() {
+  mkdir -p "$TF/repo/engine/prompts"
+  cp "$repo_root/engine/prompts/supervisor-arbiter.md" "$TF/repo/engine/prompts/supervisor-arbiter.md"
+  export ZF_EXECUTION_MODULE_DIR="$TF/repo/engine"
+  touch "$TF/allow-dispatch"
+}
+cap_triage_history() {
+  command jq -cn '[
+    {stage:"supervisor-escalated",result:"first supervisor entry",at:"2026-10-27T00:00:00Z"},
+    {stage:"supervisor-escalated",result:"second supervisor entry",at:"2026-10-27T00:01:00Z"},
+    {stage:"supervisor-escalated",result:"third supervisor entry",at:"2026-10-27T00:02:00Z"}
+  ]'
+}
+
+sched_case_supervisor_cap_triage_verdicts() {
+  local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
+  new_tick_fixture supervisor-cap-triage-verdicts
+  command jq '.max_workers=4 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=4
+    | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=4' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  touch "$TF/size-recut-mode"
+  export ZF_ROADMAP_TREE_CACHE_FILE="$TF/roadmap-tree.json"
+  command jq -cn '{roots:[761] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+    > "$ZF_ROADMAP_TREE_CACHE_FILE"
+  cap_triage_fixture_prompt
+  printf 'CLOSE\n' > "$TF/cap-verdict-cap-close"
+  printf 'RECUT\n' > "$TF/cap-verdict-cap-recut"
+  printf 'RULE\n' > "$TF/cap-verdict-cap-rule"
+  printf 'FOUNDER\n' > "$TF/cap-verdict-cap-founder"
+  command jq -n --argjson h "$(cap_triage_history)" '{units:[
+    {id:"cap-close",issue:760,pr:760,lane:"pr",branch:"agent/issue-760",stage:"parked",parked_reason:"supervisor-arbitration-cap",supervisor_cap_return_stage:"repair-pending",history:$h},
+    {id:"cap-recut",issue:761,pr:761,lane:"pr",branch:"agent/issue-761",stage:"parked",parked_reason:"supervisor-arbitration-cap",supervisor_cap_return_stage:"repair-pending",history:$h},
+    {id:"cap-rule",issue:762,task:"one bounded fixture task",branch:"cap-rule",stage:"parked",parked_reason:"supervisor-arbitration-cap",supervisor_cap_return_stage:"review-pending",history:$h},
+    {id:"cap-founder",issue:763,stage:"parked",parked_reason:"supervisor-arbitration-cap",supervisor_cap_return_stage:"implement-pending",history:$h}
+  ]}' > "$TF/supervisor/autopi/units.json"
+  tick
+  # Hold the RULE fixture after its report is dispatched so the test can inspect its returned stage.
+  command jq '(.units[] |= (if .id=="cap-rule" then .hold_handoff_waiting=true else . end))' \
+    "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+  for attempt in $(seq 1 12); do
+    tick
+    command jq -e '[.units[] | select(.id=="cap-close")][0].stage=="closed"
+      and [.units[] | select(.id=="cap-recut")][0].stage=="closed"
+      and any(.units[] | select(.id=="cap-rule") | .history[]; .stage=="supervisor-cap-rule")
+      and [.units[] | select(.id=="cap-founder")][0].parked_reason=="supervisor-cap-founder"' \
+      "$TF/supervisor/autopi/units.json" >/dev/null && break
+  done
+  command jq -e '[.units[] | select(.id=="cap-close")][0].stage=="closed"
+    and [.units[] | select(.id=="cap-recut")][0].stage=="closed"
+    and ([.units[] | select(.id=="cap-rule")][0].stage=="review-pending")
+    and ([.units[] | select(.id=="cap-founder")][0] | .stage=="parked" and .parked_reason=="supervisor-cap-founder")' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: cap triage verdicts did not produce their required unit actions' >&2; exit 1; }
+  command jq -e '[.units[] | select(.id=="cap-rule")][0] | (.cto_rulings | length)==1
+    and any(.history[]; .stage=="supervisor-arbiter-round")' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: RULE was not recorded or did not reset the supervisor entry round' >&2; exit 1; }
+  grep -Fq 'issue close 760 --comment Cap triage closed this unit:' "$TF/actions" \
+    && grep -Fq 'pr close 760 --comment Cap triage closed this unit:' "$TF/actions" \
+    || { echo 'not ok - scheduler.test.sh: CLOSE did not comment and close the issue and PR' >&2; exit 1; }
+  grep -Fq 'pr close 761 --comment Cap triage is sending issue #761 to recut:' "$TF/actions" \
+    || { echo 'not ok - scheduler.test.sh: RECUT did not close the PR with the recut issue named' >&2; exit 1; }
+  command jq -e '.state=="needs-recut"' "$TF/agent-home/state/761.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: RECUT did not route the issue through the recut state transition' >&2; exit 1; }
+  grep -Fq 'question=Which product behavior should this unit follow?' "$TF/agent-home/supervisor-inbox" \
+    || { echo 'not ok - scheduler.test.sh: FOUNDER did not post one question to the supervisor inbox' >&2; exit 1; }
+  [[ "$(grep -c 'cap-triage-founder' "$TF/agent-home/supervisor-inbox")" == 1 ]] \
+    || { echo 'not ok - scheduler.test.sh: FOUNDER question was posted more than once' >&2; exit 1; }
+}
+sched_run_case supervisor_cap_triage_verdicts
+
+sched_case_supervisor_cap_triage_rule_twice() {
+  local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
+  new_tick_fixture supervisor-cap-triage-rule-twice
+  command jq '.max_workers=1 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=1
+    | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=1' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  cap_triage_fixture_prompt
+  printf 'RULE\n' > "$TF/cap-verdict-cap-rule-repeat"
+  command jq -n --argjson h "$(cap_triage_history)" '{units:[{id:"cap-rule-repeat",issue:764,task:"one bounded fixture task",branch:"cap-rule-repeat",
+    stage:"supervisor-review",supervisor_cap_return_stage:"repair-pending",history:$h}]}' > "$TF/supervisor/autopi/units.json"
+  tick
+  command jq '(.units[0].hold_handoff_waiting=true)' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+  for attempt in $(seq 1 10); do
+    tick
+    command jq -e 'any(.units[0].history[]; .stage=="supervisor-cap-rule")' "$TF/supervisor/autopi/units.json" >/dev/null && break
+  done
+  command jq -e '.units[0].stage=="repair-pending" and (.units[0].cto_rulings|length)==1
+    and ([.units[0].history[] | select(.stage=="supervisor-arbiter-round")]|length)==1' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: first cap RULE did not return the unit and record one ruling' >&2; exit 1; }
+  command jq --argjson h "$(cap_triage_history)" '(.units[0].history += $h) | .units[0].stage="supervisor-review" | .units[0].hold_handoff_waiting=false' \
+    "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+  for attempt in $(seq 1 12); do
+    tick
+    command jq -e '.units[0].stage=="parked" and .units[0].parked_reason=="supervisor-cap-founder"' \
+      "$TF/supervisor/autopi/units.json" >/dev/null && break
+  done
+  command jq -e '.units[0].stage=="parked" and .units[0].parked_reason=="supervisor-cap-founder"
+    and ([.units[0].history[] | select(.stage=="supervisor-cap-rule")]|length)==1
+    and ([.units[0].history[] | select(.stage=="supervisor-cap-founder")]|length)==1' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: a second cap RULE was not sent to FOUNDER' >&2; exit 1; }
+  [[ "$(grep -c 'cap-triage-founder' "$TF/agent-home/supervisor-inbox")" == 1 ]] \
+    || { echo 'not ok - scheduler.test.sh: second cap did not post exactly one founder question' >&2; exit 1; }
+}
+sched_run_case supervisor_cap_triage_rule_twice
+
+sched_case_supervisor_cap_triage_sweep_limit() {
+  local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
+  new_tick_fixture supervisor-cap-triage-sweep-limit
+  command jq '.max_workers=5 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=5
+    | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=2' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  cap_triage_fixture_prompt
+  command jq -n --argjson h "$(cap_triage_history)" '{units:[
+    {id:"cap-sweep-a",issue:770,stage:"parked",parked_reason:"supervisor-arbitration-cap",history:$h},
+    {id:"cap-sweep-b",issue:771,stage:"parked",parked_reason:"supervisor-arbitration-cap",history:$h},
+    {id:"cap-sweep-c",issue:772,stage:"parked",parked_reason:"supervisor-arbitration-cap",history:$h},
+    {id:"cap-sweep-d",issue:773,stage:"parked",parked_reason:"supervisor-arbitration-cap",history:$h}
+  ]}' > "$TF/supervisor/autopi/units.json"
+  tick
+  command jq -e '[.workers[] | select(.type=="supervise" and .cap_triage==true)] | length==2' \
+    "$TF/supervisor/autopi/workers.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: cap sweep exceeded or missed its per-tick limit of two' >&2; exit 1; }
+  command jq -e '[.units[] | select(.stage=="parked")] | length==2' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: cap sweep did not leave the excess parked units for the next tick' >&2; exit 1; }
+}
+sched_run_case supervisor_cap_triage_sweep_limit
+
+sched_case_supervisor_cap_triage_disabled() {
+  local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
+  new_tick_fixture supervisor-cap-triage-disabled
+  command jq '.max_workers=2 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=2
+    | .supervisor_arbiter.cap_triage=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  cap_triage_fixture_prompt
+  command jq -n --argjson h "$(cap_triage_history)" '{units:[{id:"cap-disabled",issue:780,stage:"supervisor-review",history:$h}]}' \
+    > "$TF/supervisor/autopi/units.json"
+  tick
+  command jq -e '.units[0].stage=="parked" and (.units[0].note | contains("arbitration budget exhausted"))' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: disabling cap triage did not preserve the existing cap park' >&2; exit 1; }
+  command jq -e '[.workers[] | select(.type=="supervise")] | length==0' "$TF/supervisor/autopi/workers.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: arbiter dispatched after cap triage was disabled' >&2; exit 1; }
+}
+sched_run_case supervisor_cap_triage_disabled
 
 prepare_jev_f12_fixture() {
   command jq '.max_workers=2 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=1' \
