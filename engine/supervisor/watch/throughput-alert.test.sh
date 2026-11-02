@@ -19,8 +19,8 @@ run_alert() {
 set_units() {
   cat > "$units" <<'JSON'
 {"units":[
- {"id":"pr-41","pr":41,"stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-11-02T09:00:00Z"}]},
- {"id":"pr-42","pr":42,"stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-11-02T10:00:00Z"}]}
+ {"id":"pr-41","pr":41,"stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-11-02T09:00:00Z"},{"stage":"ci-infra-red","at":"2026-11-02T11:40:00Z"}]},
+ {"id":"pr-42","pr":42,"stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-11-02T10:00:00Z"},{"stage":"ci-cancelled-restart","at":"2026-11-02T11:50:00Z"}]}
 ]}
 JSON
 }

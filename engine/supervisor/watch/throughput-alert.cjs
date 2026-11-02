@@ -5,14 +5,14 @@ const fs = require('fs');
 
 const [unitsPath, logPath, pausePath, nowArg, stuckMinutesArg, noOutputHoursArg] = process.argv.slice(2);
 const now = Number(nowArg);
-const threshold = (raw, fallback) => {
+const threshold = raw => {
   const value = Number(raw);
-  return Number.isFinite(value) && value >= 0 ? value : fallback;
+  return Number.isFinite(value) && value >= 0 ? value : null;
 };
-const stuckMinutes = threshold(stuckMinutesArg, 60);
-const noOutputHours = threshold(noOutputHoursArg, 3);
+const stuckMinutes = threshold(stuckMinutesArg);
+const noOutputHours = threshold(noOutputHoursArg);
 
-if (!unitsPath || !logPath || !pausePath || !Number.isFinite(now) || fs.existsSync(pausePath)) process.exit(0);
+if (!unitsPath || !logPath || !pausePath || !Number.isFinite(now) || stuckMinutes === null || noOutputHours === null || fs.existsSync(pausePath)) process.exit(0);
 
 let ledger;
 try {
@@ -37,11 +37,25 @@ for (const line of lines) {
   if (Number.isFinite(time)) mergedAt.push(time / 1000);
 }
 
+// These events append to history at the point a unit enters ready-to-merge.
+// CI retry/status events can happen while it remains ready and must not reset its age.
+const readyEvents = new Set([
+  'ready-to-merge',
+  'review-approve',
+  'supervisor-approve',
+  'land-refused',
+  'land-retry',
+  'stuck-killed',
+  'orphan-recover',
+]);
 const historyEpoch = unit => {
   if (!Array.isArray(unit.history)) return null;
-  const dated = unit.history.filter(entry => entry && typeof entry.at === 'string' && Number.isFinite(Date.parse(entry.at)));
+  const dated = unit.history.filter(entry => entry
+    && readyEvents.has(entry.stage || entry.event || entry.ev)
+    && typeof entry.at === 'string'
+    && Number.isFinite(Date.parse(entry.at)));
   if (!dated.length) return null;
-  return Date.parse(dated[dated.length - 1].at) / 1000;
+  return Math.max(...dated.map(entry => Date.parse(entry.at))) / 1000;
 };
 const prNumber = unit => {
   if (Number.isInteger(unit.pr) && unit.pr > 0) return String(unit.pr);
