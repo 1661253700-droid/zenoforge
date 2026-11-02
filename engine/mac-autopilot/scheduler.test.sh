@@ -778,7 +778,9 @@ tick_gh() {
         echo '{}'
       fi ;;
     'api '*)
-      if [[ "$*" == *'actions/runners?per_page=100'* ]]; then
+      if [[ "$*" == *'/commits/'*'/check-runs?per_page=100'* && -f "$TF/main-check-runs.json" ]]; then
+        cat "$TF/main-check-runs.json"
+      elif [[ "$*" == *'actions/runners?per_page=100'* ]]; then
         # PR CI 名额按在线 PR runner 算（60ba960cf）；无夹具时默认一个在线 PR runner
         if [[ -f "$TF/ci-runners.json" ]]; then
           local runners_q="" runners_prev="" arg
@@ -1827,6 +1829,170 @@ command jq -e --arg id "$main_red_id" '
 
 }
 sched_run_case main_red_superseded
+
+sched_case_main_red_ci_unpark() {
+# A PR red on check names that also failed on main is held without invalidating
+# its approval, then resumed with a fresh update-branch request after main is fixed.
+new_tick_fixture main-red-ci-unpark
+command jq '.auto_merge=true | .batch_max=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+main_red_failed_sha="$(printf '%040x' 99)"
+main_red_green_sha="$(printf '%040x' 100)"
+main_red_pr_head="$(printf '%040x' 77)"
+main_red_id="main-red-${main_red_failed_sha:0:9}"
+printf '%s\n' "$main_red_failed_sha" > "$TF/main-sha"
+printf '%s\n' "$main_red_pr_head" > "$TF/pr-head-77"
+printf '%s\n' "$main_red_pr_head" > "$TF/fetched-head"
+printf '{"check_runs":[{"name":"Touched packages PR gate","conclusion":"failure"},{"name":"Repo-path regression PR gate","conclusion":"failure"}]}' > "$TF/main-check-runs.json"
+printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"failure","createdAt":"2026-11-02T11:17:00Z"}' > "$TF/run.json"
+command jq -n --arg sha "$main_red_failed_sha" \
+  '[{headSha:$sha,status:"completed",conclusion:"failure",createdAt:"2026-11-02T11:17:00Z",databaseId:700,attempt:1}]' \
+  > "$TF/main-suites.json"
+printf '%s %s\n%s %s\n' "$main_red_failed_sha" "$main_red_green_sha" "$main_red_green_sha" "$main_red_green_sha" > "$TF/ancestry.tsv"
+command jq -n --arg head "$main_red_pr_head" \
+  '[{number:77,headRefName:"feature/77",headRefOid:$head,isDraft:false,mergeable:"MERGEABLE",title:"fixture",body:"",labels:[],statusCheckRollup:[
+    {__typename:"CheckRun",name:"Touched packages PR gate",detailsUrl:"",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"},
+    {__typename:"CheckRun",name:"Repo-path regression PR gate",detailsUrl:"",startedAt:"2026-11-02T11:17:00Z",status:"COMPLETED",conclusion:"FAILURE"}
+  ]}]' > "$TF/pr-census.json"
+command jq -n --arg redid "$main_red_id" --arg red "$main_red_failed_sha" --arg head "$main_red_pr_head" \
+  '{units:[
+    {id:$redid,main_red:true,ci_sha:$red,lane:"direct-main",task:"fix the red main checks",stage:"implement-pending",history:[]},
+    {id:"pr-77",pr:77,branch:"agent/issue-77",lane:"pr",lane_policy:"unknown",stage:"ready-to-merge",approved_sha:$head,ready_since:1,history:[]}
+  ]}' > "$TF/supervisor/autopi/units.json"
+tick
+command jq -e --arg red "$main_red_failed_sha" --arg head "$main_red_pr_head" '
+  ([.units[] | select(.id=="pr-77")][0]
+    | .stage=="parked" and .parked_reason=="main-red" and .parked_main_red_sha==$red
+      and .parked_from_stage=="ready-to-merge" and .approved_sha==$head)
+  and ([.units[] | select(.id=="pr-77")][0].history | any(.[]; .stage=="ci-main-red-park"))
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: matching main-red CI was treated as a PR failure' >&2; exit 1; }
+if grep -Fq 'rerun 701' "$TF/actions"; then
+  echo 'scheduler.test.sh: PR CI was rerun while its matching main check was still red' >&2; exit 1
+fi
+
+# Only a newer green descendant resolves main red. The unit returns to its prior
+# stage and the merge lane asks GitHub to update the branch, which starts fresh CI.
+printf '%s\n' "$main_red_green_sha" > "$TF/main-sha"
+command jq -n --arg sha "$main_red_green_sha" \
+  '[{headSha:$sha,status:"completed",conclusion:"success",createdAt:"2026-11-02T12:00:00Z",databaseId:702,attempt:1}]' \
+  > "$TF/main-suites.json"
+tick
+command jq -e --arg id "$main_red_id" --arg sha "$main_red_green_sha" --arg head "$main_red_pr_head" '
+  any(.units[]; .id==$id and .stage=="closed" and .resolved_main_sha==$sha)
+  and ([.units[] | select(.id=="pr-77")][0]
+    | .stage=="ready-to-merge" and .approved_sha==$head and .parked_reason==null
+      and .parked_main_red_sha==null and .ci_rerun_sha==$head
+      and any(.history[]; .stage=="main-red-unpark"))
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: green main did not resume the parked PR at its prior stage' >&2; exit 1; }
+grep -Fq 'pulls/77/update-branch' "$TF/calls" \
+  || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: resumed PR did not request a fresh CI run through update-branch' >&2; exit 1; }
+
+# A red unit parked as its own CI failure stays parked when main is green; only
+# the explicit main-red cause is eligible for automatic resumption.
+new_tick_fixture main-green-own-ci-stays-parked
+same_red_sha="$(printf '%040x' 99)"
+same_green_sha="$(printf '%040x' 100)"
+same_red_id="main-red-${same_red_sha:0:9}"
+printf '%s\n' "$same_green_sha" > "$TF/main-sha"
+command jq -n --arg sha "$same_green_sha" \
+  '[{headSha:$sha,status:"completed",conclusion:"success",createdAt:"2026-11-02T12:00:00Z",databaseId:702,attempt:2}]' \
+  > "$TF/main-suites.json"
+printf '%s %s\n%s %s\n' "$same_red_sha" "$same_green_sha" "$same_green_sha" "$same_green_sha" > "$TF/ancestry.tsv"
+command jq -n --arg id "$same_red_id" --arg red "$same_red_sha" --arg green "$same_green_sha" \
+  '{units:[
+    {id:$id,main_red:true,ci_sha:$red,lane:"direct-main",task:"fix the red main checks",stage:"closed",history:[]},
+    {id:"pr-own-red",pr:78,lane:"pr",stage:"parked",parked_reason:"ci-red",parked_from_stage:"ready-to-merge",history:[{stage:"ci-test-red",result:"Touched packages PR gate"}]}
+  ]}' > "$TF/supervisor/autopi/units.json"
+tick
+command jq -e --arg id "$same_red_id" --arg green "$same_green_sha" '
+  any(.units[]; .id==$id and .stage=="closed" and .resolved_main_sha==$green and .resolved_main_at=="2026-11-02T12:00:00Z")
+  and any(.units[]; .id=="pr-own-red" and .stage=="parked" and .parked_reason=="ci-red")
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: legacy main-red close was not backfilled or main green released a unit parked for its own CI red' >&2; exit 1; }
+
+# A PR result processed after main is green only belongs to the old main-red
+# event when its failing checks started before the recorded green run.
+new_tick_fixture main-green-ci-started-after-resolution
+command jq '.auto_merge=true | .batch_max=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+late_red_sha="$(printf '%040x' 99)"
+late_green_sha="$(printf '%040x' 100)"
+late_pr_head="$(printf '%040x' 77)"
+late_red_id="main-red-${late_red_sha:0:9}"
+printf '%s\n' "$late_green_sha" > "$TF/main-sha"
+printf '%s\n' "$late_pr_head" > "$TF/pr-head-77"
+printf '%s\n' "$late_pr_head" > "$TF/fetched-head"
+late_failed_names='Repo-path regression PR gate,Touched packages PR gate'
+late_checked="${late_pr_head}:${late_failed_names}"
+printf '{"check_runs":[{"name":"Touched packages PR gate","conclusion":"failure"},{"name":"Repo-path regression PR gate","conclusion":"failure"}]}' > "$TF/main-check-runs.json"
+command jq -n --arg sha "$late_green_sha" \
+  '[{headSha:$sha,status:"completed",conclusion:"success",createdAt:"2026-11-02T12:00:00Z",databaseId:702,attempt:1}]' \
+  > "$TF/main-suites.json"
+printf '%s %s\n%s %s\n' "$late_red_sha" "$late_green_sha" "$late_green_sha" "$late_green_sha" > "$TF/ancestry.tsv"
+printf '%s\n' '{"databaseId":701,"attempt":1,"status":"completed","conclusion":"failure","createdAt":"2026-11-02T12:20:00Z"}' > "$TF/run.json"
+command jq -n --arg id "$late_red_id" --arg red "$late_red_sha" --arg green "$late_green_sha" --arg head "$late_pr_head" --arg checked "$late_checked" \
+  '{units:[{id:$id,main_red:true,ci_sha:$red,resolved_main_sha:$green,resolved_main_at:"2026-11-02T12:00:00Z",lane:"direct-main",stage:"closed",history:[]},
+    {id:"pr-late-red",pr:77,branch:"agent/issue-77",lane:"pr",lane_policy:"unknown",stage:"ready-to-merge",approved_sha:$head,ci_rerun_sha:$head,ci_test_checked:$checked,ready_since:1,history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
+command jq -n --arg head "$late_pr_head" \
+  '[{number:77,headRefName:"feature/77",headRefOid:$head,isDraft:false,mergeable:"MERGEABLE",title:"fixture",body:"",labels:[],statusCheckRollup:[
+    {__typename:"CheckRun",name:"Touched packages PR gate",detailsUrl:"",startedAt:"2026-11-02T12:20:00Z",status:"COMPLETED",conclusion:"FAILURE"},
+    {__typename:"CheckRun",name:"Repo-path regression PR gate",detailsUrl:"",startedAt:"2026-11-02T12:20:00Z",status:"COMPLETED",conclusion:"FAILURE"}
+  ]}]' > "$TF/pr-census.json"
+tick
+command jq -e --arg id "$late_red_id" '
+  any(.units[]; .id==$id and .stage=="closed" and .resolved_main_sha!=null)
+  and any(.units[]; .id=="pr-late-red" and .stage=="repair-pending" and .parked_reason==null)
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: a CI red started after main was green was attributed to main-red' >&2; exit 1; }
+
+# Main-red recovery must leave every other parked reason alone.
+new_tick_fixture main-red-unpark-preserves-other-reasons
+other_red_sha="$(printf '%040x' 99)"
+other_green_sha="$(printf '%040x' 100)"
+other_red_id="main-red-${other_red_sha:0:9}"
+command jq -n --arg sha "$other_green_sha" \
+  '[{headSha:$sha,status:"completed",conclusion:"success",createdAt:"2026-11-02T12:00:00Z",databaseId:702,attempt:1}]' \
+  > "$TF/main-suites.json"
+printf '%s %s\n%s %s\n' "$other_red_sha" "$other_green_sha" "$other_green_sha" "$other_green_sha" > "$TF/ancestry.tsv"
+command jq -n --arg id "$other_red_id" --arg red "$other_red_sha" --arg green "$other_green_sha" \
+  '{units:[
+    {id:$id,main_red:true,ci_sha:$red,lane:"direct-main",task:"fix the red main checks",stage:"implement-pending",history:[]},
+    {id:"pr-supervisor-park",pr:79,stage:"parked",parked_reason:"supervisor",parked_main_red_sha:$red,parked_from_stage:"repair-pending",history:[]}
+  ]}' > "$TF/supervisor/autopi/units.json"
+tick
+command jq -e --arg id "$other_red_id" --arg green "$other_green_sha" '
+  any(.units[]; .id==$id and .stage=="closed" and .resolved_main_sha==$green)
+  and any(.units[]; .id=="pr-supervisor-park" and .stage=="parked" and .parked_reason=="supervisor" and .parked_from_stage=="repair-pending")
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: resolving main red changed a unit parked for another reason' >&2; exit 1; }
+
+# Refill no more than the merge lane's batch_max*3 candidate window in one tick;
+# the persisted resolved SHA lets the remaining units resume on the next tick.
+new_tick_fixture main-red-ci-unpark-cap
+command jq '.batch_max=1' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+cap_red_sha="$(printf '%040x' 99)"
+cap_green_sha="$(printf '%040x' 100)"
+cap_red_id="main-red-${cap_red_sha:0:9}"
+printf '%s\n' "$cap_green_sha" > "$TF/main-sha"
+command jq -n --arg sha "$cap_green_sha" \
+  '[{headSha:$sha,status:"completed",conclusion:"success",createdAt:"2026-11-02T12:00:00Z",databaseId:702,attempt:1}]' \
+  > "$TF/main-suites.json"
+printf '%s %s\n%s %s\n' "$cap_red_sha" "$cap_green_sha" "$cap_green_sha" "$cap_green_sha" > "$TF/ancestry.tsv"
+command jq -n --arg id "$cap_red_id" --arg red "$cap_red_sha" --arg green "$cap_green_sha" \
+  '{units:([{id:$id,main_red:true,ci_sha:$red,resolved_main_sha:$green,lane:"direct-main",stage:"closed",history:[]}]
+    + [range(1;5) as $n | {id:("pr-cap-"+($n|tostring)),pr:$n,stage:"parked",parked_reason:"main-red",parked_main_red_sha:$red,parked_from_stage:"ready-to-merge",history:[]}])}' \
+  > "$TF/supervisor/autopi/units.json"
+tick
+command jq -e '[.units[] | select(.stage=="ready-to-merge" and (.id|startswith("pr-cap-")))] | length==3' \
+  "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: main-red recovery exceeded or missed the merge lane per-tick cap' >&2; exit 1; }
+tick
+command jq -e '[.units[] | select(.parked_reason==null and .stage=="ready-to-merge" and (.id|startswith("pr-cap-")))] | length==4' \
+  "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: remaining main-red units did not resume on the next bounded tick' >&2; exit 1; }
+}
+sched_run_case main_red_ci_unpark
 
 sched_case_body_blocked() {
 # A real scheduler tick reads the issue's Blocked by section, parks an open
