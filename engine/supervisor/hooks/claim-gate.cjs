@@ -10,13 +10,19 @@ process.stdin.on('end', () => {
     if (data.stop_hook_active) process.exit(0);
     const claim = JSON.parse(fs.readFileSync(expand(C.claim_path), 'utf8'));
     if (claim.sessionId !== data.session_id) process.exit(0);
-    let text = '';
-    const lines = fs.readFileSync(data.transcript_path, 'utf8').split('\n').filter(Boolean);
-    for (let i = lines.length - 1; i >= 0 && !text; i--) {
-      const j = JSON.parse(lines[i]);
-      if (j.type !== 'assistant') continue;
-      const c = j.message.content;
-      text = Array.isArray(c) ? c.filter(x => x.type === 'text').map(x => x.text).join('\n') : String(c);
+    let text = typeof data.last_assistant_message === 'string' && data.last_assistant_message ? data.last_assistant_message : '';
+    if (!text && data.transcript_path) {
+      const textOf = j => { const c = j.message.content; return Array.isArray(c) ? c.filter(x => x.type === 'text').map(x => x.text).join('\n') : String(c); };
+      const isPrompt = j => { const c = j.message && j.message.content; return !(Array.isArray(c) && c.some(x => x && x.type === 'tool_result')); };
+      const parts = [];
+      const lines = fs.readFileSync(data.transcript_path, 'utf8').split('\n').filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const j = JSON.parse(lines[i]);
+        if (j.type === 'user') { if (isPrompt(j)) break; continue; }
+        if (j.type !== 'assistant') continue;
+        parts.unshift(textOf(j));
+      }
+      text = parts.filter(Boolean).join('\n');
     }
     const positive = new RegExp(C.readiness_pattern);
     if (!positive.test(text)) process.exit(0);
