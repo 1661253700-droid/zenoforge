@@ -41,7 +41,14 @@ run_release_train() {
   local config_root="${ZF_CONFIG_ROOT:-$repo_dir/.zenoforge}"
   local lease_script="${ZF_CDP_BROWSER_LEASE_SCRIPT:-$engine_dir/cdp-browser-lease.sh}"
   [[ "$(jqf -r 'if .release_train.enabled == false then "false" else "true" end' <<<"$CFG")" == true ]] || return 0
-  [[ -f "$train_script" ]] || return 0
+  if [[ ! -f "$train_script" ]]; then
+    # An enabled train with a missing script must be loud: a silent return hid a lost train for days.
+    local line="release-train-missing script=$train_script: the release train is enabled but cannot start"
+    say "$line"
+    (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "release-train-missing:$train_script" "$line") \
+      || say "release-train-missing alert not delivered"
+    return 0
+  fi
   [[ ! -f "$A/.release-train" || -n "$(find "$A/.release-train" -mmin +15 2>/dev/null)" ]] || return 0
   systemctl --user is-active --quiet ${UNIT_PREFIX_TRANSIENT}-release-train 2>/dev/null && return 0
   touch "$A/.release-train"
