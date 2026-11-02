@@ -2348,6 +2348,21 @@ command grep -qxF "ZF_ENGINE_DIR=$train_dir/code/.." "$train_dir/args"
 command grep -qxF 'ZF_REPO_DIR=/fixture/root' "$train_dir/args"
 command grep -qxF 'ZF_CONFIG_ROOT=/fixture/root/.zenoforge' "$train_dir/args"
 command grep -qxF "ZF_CDP_BROWSER_LEASE_SCRIPT=$train_dir/code/../cdp-browser-lease.sh" "$train_dir/args"
+# 已启用但脚本缺失：不启动，并向 inbox 报警（静默 return 曾把丢失的列车藏了几天）
+(
+  A="$train_dir" HERE="$train_dir/code" ROOT=/fixture/root HOME=/fixture/home CFG='{}'
+  ZF_RELEASE_TRAIN_SCRIPT="$train_dir/missing/release_train.sh"
+  printf 'supervisor_inbox_append_once() { printf "%%s\\n" "$1" "$2" > "%s/inbox"; }\n' "$train_dir" > "$train_dir/lib.sh"
+  SCHEDULER_AGENT_LIB="$train_dir/lib.sh"
+  jqf() { command jq "$@"; }
+  say() { :; }
+  systemd-run() { touch "$train_dir/missing-started"; }
+  eval "$(command sed -n '/^run_release_train() {/,/^}/p' "$scheduler")"
+  run_release_train
+)
+[[ ! -e "$train_dir/missing-started" ]] || { echo 'release_train_proxy: missing script still started the train' >&2; exit 1; }
+command grep -qxF "release-train-missing:$train_dir/missing/release_train.sh" "$train_dir/inbox" \
+  || { echo 'release_train_proxy: missing script raised no inbox alert' >&2; exit 1; }
 # 空的小写 https_proxy 让 git 直连被墙的 GitHub：只有大写时，列车拿到的小写必须是大写的值
 command grep -qxF 'lower=http://bridge:1|http://bridge:1|localhost' "$train_dir/args" || { echo 'train gets empty lowercase proxy vars' >&2; exit 1; }
 rm -rf "$train_dir"
