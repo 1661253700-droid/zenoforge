@@ -181,6 +181,10 @@ footprint_preflight_snapshot() {
     while IFS= read -r row; do
       id="$(jqf -r '.id' <<<"$row")"
       check_scope="$(jqf -c '.scope' <<<"$row")"
+      check_scope="$(scheduler_footprint_filter_main "$check_scope")" || {
+        footprint_drop_check_scope_cache
+        return 1
+      }
       TICK_CHECK_SCOPE["$id"]="$check_scope"
     done < <(jqf -c '.[]' <<<"$expanded_scopes")
     footprint_refresh_conflicts cached || return 1
@@ -223,6 +227,7 @@ hotspot_expand() { # scope_json -> scope ∪ 共同修改热点；历史读不�
   if [[ -n "$added" && "$added" != '[]' ]]; then
     scope="$(jq -cn --argjson scope "$scope" --argjson add "$added" '($scope + $add) | unique')"
   fi
+  scope="$(scheduler_footprint_filter_main "$scope")" || return 1
   printf '%s\n' "$scope"
 }
 hotspot_expand_batch() { # [{id,scope}] → 同一份 30 天 git log 上批量扩展候选 check scope

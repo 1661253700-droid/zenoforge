@@ -748,7 +748,11 @@ tick_gh() {
         echo '[]'
       fi ;;
     'issue list')
-      if [[ -f "$TF/intake-issue.json" && " $* " == *' --label ready-for-agent '* ]]; then
+      if [[ -f "$TF/intake-issues.json" && " $* " == *' --label ready-for-agent '* ]]; then
+        command jq -c '[.[] | select(any(.labels[]?; .name=="ready-for-agent"))]' "$TF/intake-issues.json"
+      elif [[ -f "$TF/intake-issues.json" && " $* " == *' --label pipeline-system '* ]]; then
+        command jq -c '[.[] | select(any(.labels[]?; .name=="pipeline-system"))]' "$TF/intake-issues.json"
+      elif [[ -f "$TF/intake-issue.json" && " $* " == *' --label ready-for-agent '* ]]; then
         command jq -c '[.]' "$TF/intake-issue.json"
       elif [[ -f "$TF/intake-issue.json" && " $* " == *' --label pipeline-system '* ]] \
         && command jq -e 'any(.labels[]; .name=="pipeline-system")' "$TF/intake-issue.json" >/dev/null; then
@@ -3105,6 +3109,57 @@ rm -rf "$fl_dir"
 }
 sched_run_case fast_land
 
+sched_case_footprint_main_paths() (
+# Dead predictions release waiters, while tracked paths keep their mutex.
+  local repo candidate_unit
+  repo="$(mktemp -d)"
+  ROOT="$repo"
+  command git -C "$repo" init -q -b main
+  command git -C "$repo" config user.name test
+  command git -C "$repo" config user.email t@example.invalid
+  mkdir -p "$repo/packages/example"
+  printf 'export const shared = true\n' > "$repo/packages/example/shared.ts"
+  command git -C "$repo" add packages/example/shared.ts
+  command git -C "$repo" commit -q -m 'main footprint fixture'
+  command git -C "$repo" update-ref refs/remotes/origin/main HEAD
+
+  UNITS="$fixture_supervisor/autopi/footprint-main-units.json"
+  WORKERS="$fixture_supervisor/autopi/footprint-main-workers.json"
+  echo '{"units":[
+    {"id":"active","stage":"implement","footprint":["scripts/agent/night/prod-errors-assess.py"]},
+    {"id":"dead-waiter","stage":"implement-pending","footprint":["scripts/agent/night/prod-errors-assess.py"],"footprint_wait_owner":"active"}]}' > "$UNITS"
+  echo '{"workers":[{"pid":123,"unit":"active","type":"implement"}]}' > "$WORKERS"
+  TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_FOOTPRINT_CONFLICT_VALID=false
+  TICK_FOOTPRINT_CACHE=(); TICK_CHECK_SCOPE_SOURCE=(); TICK_CHECK_SCOPE=()
+  HOTSPOT_LOG_LOADED=false
+  candidate_unit="$(jqf -c '.units[] | select(.id=="dead-waiter")' "$UNITS")"
+  footprint_room dead-waiter "$candidate_unit" true || {
+    echo 'dead main path still blocked its waiter' >&2; exit 1;
+  }
+  jqf -e '.units[] | select(.id=="dead-waiter") | .footprint==[] and (has("footprint_wait_owner")|not)' "$UNITS" >/dev/null || {
+    echo 'dead main path was not removed or its waiter was not released' >&2; exit 1;
+  }
+
+  echo '{"units":[
+    {"id":"active","stage":"implement","footprint":["packages/example/shared.ts"]},
+    {"id":"real-waiter","stage":"implement-pending","footprint":["packages/example/shared.ts"]}]}' > "$UNITS"
+  TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_FOOTPRINT_CONFLICT_VALID=false
+  TICK_FOOTPRINT_CACHE=(); TICK_CHECK_SCOPE_SOURCE=(); TICK_CHECK_SCOPE=()
+  HOTSPOT_LOG_LOADED=false
+  candidate_unit="$(jqf -c '.units[] | select(.id=="real-waiter")' "$UNITS")"
+  if footprint_room real-waiter "$candidate_unit" true; then
+    echo 'tracked shared path did not block its waiter' >&2; exit 1
+  fi
+  [[ "$(jqf -r '.units[] | select(.id=="real-waiter") | .footprint_wait_owner' "$UNITS")" == active ]] || {
+    echo 'tracked shared path did not record its owner' >&2; exit 1;
+  }
+  [[ "$(scheduler_footprint '{"footprint":["packages/example/new.ts"],"history":[{"stage":"write-end","result":["packages/example/new.ts"]}]}')" == '["packages/example/new.ts"]' ]] || {
+    echo 'a path created by the unit was removed from its actual footprint' >&2; exit 1;
+  }
+  rm -rf -- "$repo"
+)
+sched_run_case footprint_main_paths
+
 sched_case_footprint_mutex() {
 # #4190/#4192/#4193: same-file writers wait; sibling files still run.
 (
@@ -3236,12 +3291,22 @@ JSON
   echo '{"workers":[{"pid":126,"unit":"a","type":"implement","harvested":true}]}' > "$WORKERS"
   footprint_room_each_tick h
   rm -rf -- "$hdir"
-  ROOT="$(cd "$script_dir/../.." && pwd -P)"
+  selection_root="$(mktemp -d)"
+  git -C "$selection_root" init -q -b main
+  git -C "$selection_root" config user.name test
+  git -C "$selection_root" config user.email t@example.invalid
+  mkdir -p "$selection_root/packages/example/hooks"
+  printf 'export const hooks = true\n' > "$selection_root/packages/example/hooks/__init__.py"
+  git -C "$selection_root" add packages/example/hooks/__init__.py
+  git -C "$selection_root" commit -q -m 'footprint selection fixture'
+  git -C "$selection_root" update-ref refs/remotes/origin/main HEAD
+  ROOT="$selection_root"
   mkdir -p "$AGENT_HOME/state"
   echo '{"expected_paths":["packages/example/hooks/__init__.py"],"expected_packages":["packages/example"]}' > "$AGENT_HOME/state/4190.json"
   [[ "$(scheduler_footprint '{"issue":4190}')" == '["packages/example/hooks/__init__.py"]' ]]
   echo '{"expected_packages":["packages/example/hooks/__init__.py"]}' > "$AGENT_HOME/state/4190.json"
   [[ "$(scheduler_footprint '{"issue":4190}')" == '["packages/example"]' ]]
+  rm -rf -- "$selection_root"
 )
 }
 sched_run_case footprint_mutex
@@ -3405,6 +3470,55 @@ sched_case_intake_size_refused_pending() {
     || { echo 'not ok - scheduler.test.sh: size-refused pending work blocked intake' >&2; exit 1; }
 }
 sched_run_case intake_size_refused_pending
+
+sched_case_intake_footprint_selection() {
+  new_tick_fixture intake-footprint-selection
+  mkdir -p "$TF/agent-home/state" "$TF/repo/packages/fixture"
+  command jq '.max_workers=5 | .implement_cap=0 | .supervisor_arbiter.enabled=false
+    | .issue_intake={enabled:true,max_upstream:10,max_ready:30,labels:[],product_labels:["ready-for-agent"]}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  printf 'export const shared = true\n' > "$TF/repo/packages/fixture/shared.ts"
+  printf 'export const pending = true\n' > "$TF/repo/packages/fixture/pending.ts"
+  printf 'export const free = true\n' > "$TF/repo/packages/fixture/free.ts"
+  command git -C "$TF/repo" init -q -b main
+  command git -C "$TF/repo" config user.name test
+  command git -C "$TF/repo" config user.email t@example.invalid
+  command git -C "$TF/repo" add packages/fixture/shared.ts packages/fixture/pending.ts packages/fixture/free.ts
+  command git -C "$TF/repo" commit -q -m 'intake footprint fixture'
+  command git -C "$TF/repo" update-ref refs/remotes/origin/main HEAD
+  touch "$TF/real-rule-git"
+  command jq -n '{units:[
+    {id:"issue-700",issue:700,stage:"implement",task:"live fixture",footprint:["packages/fixture/shared.ts"],history:[]},
+    {id:"issue-701",issue:701,stage:"implement-pending",task:"pending fixture",footprint:["packages/fixture/pending.ts"],history:[]}
+  ]}' \
+    > "$TF/supervisor/autopi/units.json"
+  command jq -n '[{
+    "number":779,"title":"colliding candidate","body":"fix shared surface","state":"OPEN","labels":[{"name":"ready-for-agent"}]
+  },{
+    "number":778,"title":"pending collision candidate","body":"fix pending surface","state":"OPEN","labels":[{"name":"ready-for-agent"}]
+  },{
+    "number":777,"title":"independent candidate","body":"fix free surface","state":"OPEN","labels":[{"name":"ready-for-agent"}]
+  }]' > "$TF/intake-issues.json"
+  command jq -n '{expected_paths:["packages/fixture/shared.ts"]}' > "$TF/agent-home/state/779.json"
+  command jq -n '{expected_paths:["packages/fixture/pending.ts"]}' > "$TF/agent-home/state/778.json"
+  command jq -n '{expected_paths:["packages/fixture/free.ts"]}' > "$TF/agent-home/state/777.json"
+  printf '[]\n' > "$TF/sub-issues-779.json"
+  printf '[]\n' > "$TF/sub-issues-778.json"
+  printf '[]\n' > "$TF/sub-issues-777.json"
+  command jq -n '{workers:[{pid:123,unit:"issue-700",type:"implement",started:"2026-11-02T00:00:00Z"}]}' \
+    > "$TF/supervisor/autopi/workers.json"
+  touch "$TF/worker-alive"
+  tick
+  command jq -e 'any(.units[]; .issue==777 and .stage=="implement-pending")
+    and all(.units[]; .issue != 778 and .issue != 779)' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { cat "$TF/tick.out" >&2; echo 'not ok - scheduler.test.sh: intake did not skip a footprint collision and admit independent work' >&2; exit 1; }
+  grep -Fq 'intake skip issue #779: footprint overlaps unit=issue-700' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not record why the colliding candidate was skipped' >&2; exit 1; }
+  grep -Fq 'intake skip issue #778: footprint overlaps unit=issue-701' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/supervisor/autopi/scheduler.log" >&2; echo 'not ok - scheduler.test.sh: intake did not skip a collision with pending work' >&2; exit 1; }
+}
+sched_run_case intake_footprint_selection
 
 sched_case_hold_handoff_resume() {
   new_tick_fixture hold-handoff-resume
