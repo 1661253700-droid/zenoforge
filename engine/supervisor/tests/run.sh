@@ -31,6 +31,23 @@ input=$(printf '{"session_id":"s","transcript_path":"%s/transcript"}' "$HOME")
 run claim-gate.cjs "$input" 2
 printf '#!/bin/bash\nexit 0\n' > "$HOME/bin/gate"
 run claim-gate.cjs "$input" 0
+printf '#!/bin/bash\ntouch "$HOME/gate-ran"\nexit 1\n' > "$HOME/bin/gate"
+printf '%s\n' '{"type":"user","message":{"content":"first task"}}' '{"type":"assistant","message":{"content":"still working"}}' '{"type":"user","message":{"content":"second task"}}' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}' > "$HOME/transcript"
+rm -f "$HOME/gate-ran"
+run claim-gate.cjs "$(printf '{"session_id":"s","transcript_path":"%s/transcript","last_assistant_message":"demo finished, READY to ship"}' "$HOME")" 2
+[ -e "$HOME/gate-ran" ]
+printf '%s\n' '{"type":"user","message":{"content":"first task"}}' '{"type":"assistant","message":{"content":"all READY now"}}' '{"type":"user","message":{"content":"second task"}}' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{}}]}}' > "$HOME/transcript"
+rm -f "$HOME/gate-ran"
+run claim-gate.cjs "$input" 0
+[ ! -e "$HOME/gate-ran" ]
+printf '%s\n' '{"type":"user","message":{"content":"go"}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"the demo is READY"}]}}' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"wrapping up now"}]}}' > "$HOME/transcript"
+rm -f "$HOME/gate-ran"
+run claim-gate.cjs "$input" 2
+[ -e "$HOME/gate-ran" ]
+printf '%s\n' '{"type":"user","message":{"content":"go"}}' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{}}]}}' > "$HOME/transcript"
+rm -f "$HOME/gate-ran"
+run claim-gate.cjs "$input" 0
+[ ! -e "$HOME/gate-ran" ]
 printf '%s\n' '{"type":"user","message":{"content":"must"}}' '{"type":"assistant","message":{"content":"done"}}' > "$HOME/transcript"
 run ruling-gate.cjs "$input" 2
 printf '%s\n' '{"type":"user","message":{"content":"please"}}' '{"type":"assistant","message":{"content":"done"}}' > "$HOME/transcript"
