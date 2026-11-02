@@ -450,6 +450,8 @@ ci_live = {
 KNOBS = [
     ("max_workers", "同时在岗的 AI 员工数（开发、返工、评审共用）。", None),
     ("issue_intake.max_ready", "等待合并的单元超过它就暂停接新 issue，先把在制品清掉。", 30),
+    ("issue_intake.ready_buffer", "慢拍保持的可启动 pending 缓冲量；null 时等于 max_workers。", None),
+    ("issue_intake.refill_max", "每次 refill 最多新收的 issue 数。", 2),
     ("batch_max", "合并车道每拍最多合并几个。", 4),
     ("loop_breaker_rounds", "连续打回几轮触发一次仲裁评审，再不收敛交 supervisor。", 5),
     ("auto_merge", "自动合并开关。", None),
@@ -462,6 +464,8 @@ def knob_value(path, default):
     value = cfg
     for part in path.split("."):
         value = value.get(part) if isinstance(value, dict) else None
+    if value is None and path == "issue_intake.ready_buffer":
+        return cfg.get("max_workers", default)
     return default if value is None else value
 knobs = [{"key": k, "value": knob_value(k, d), "meaning": m} for k, m, d in KNOBS]
 

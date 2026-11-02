@@ -380,8 +380,9 @@ VIEWS_LOCK="$A/.views.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束的 PR 车道实现 worker（释放足迹，开 PR 有少量 GitHub 调用）、回收孤儿记录，
-# 再派发 implement/repair/review/rereview-pending。实现只读本地台账；遇到 PR 修复、评审或复审时，
-# dispatch_pending 复用慢 tick 的阶段处理器，并按需读取一次共享 PR census。报告收割与 PR 注册仍由慢 tick 处理。
+# 当可启动 pending 少于空槽时先收 issue，再派发 implement/repair/review/rereview-pending。新候选优先复用慢拍缓存，
+# 缓存失效时最多查询一个标签；实现派发只读本地台账，PR 修复、评审或复审按需读取一次共享 PR census。
+# 报告收割与 PR 注册仍由慢 tick 处理。
 refill_tick() {
   local TICK_LOCAL_REFILL=true
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
@@ -402,11 +403,13 @@ refill_tick() {
     say "refill paused by $PAUSE_FILE: no dispatch"
   else
     # 补派进程看不到慢拍的标记结果：自己先跑 supervisor-owned 标记（开关关时不发任何 GitHub 请求），
-    # 分类不可用就本拍不派发——未标记的热修车道单元不能由补派抢走。
+    # 分类不可用就本拍不派发——未标记的热修车道单元不能由补派抢走。可启动 pending 少于空槽时先收 issue，
+    # 复用慢拍候选缓存；缓存过期时补派最多查询一个候选标签，并受 issue_intake.refill_max 限制。
     phase mark_supervisor_owned_units
     if supervisor_marking_deferred; then
       say "refill dispatch held: supervisor-owned marking deferred"
     else
+      phase register_new_issues 0 true
       phase dispatch_pending true
     fi
   fi

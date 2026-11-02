@@ -2310,7 +2310,7 @@ harvest_workers || :
 [[ "$(field issue-7 .stage)" == landed && "${GH_ISSUE_CALLS[*]}" == *"issue close 7"* ]] || fail 'landed PR-less unit did not close its issue'
 # intake：按空闲产能收单（max_workers - 在跑 - 待派）；非产品标签走直落、ready-for-agent 走 PR 车道；跳过搁置标签与已有 PR 的 issue，focus 优先
 MAX_SAVED="$MAX"; MAX=4
-INTAKE_CFG_SAVED="$CFG"; CFG="$(jq '.issue_intake.labels=["pipeline-system"]' <<<"$CFG")"
+INTAKE_CFG_SAVED="$CFG"; CFG="$(jq '.issue_intake.labels=["pipeline-system"] | .issue_intake.ready_buffer=0' <<<"$CFG")"
 GH_ISSUE_LIST='[{"number":23,"title":"p","labels":[{"name":"ready-for-agent"},{"name":"bug"},{"name":"stack-pilot"}]},{"number":24,"title":"t","labels":[{"name":"ready-for-agent"},{"name":"needs-triage"}]},{"number":20,"title":"a","labels":[{"name":"pipeline-system"}]},{"number":21,"title":"b","labels":[{"name":"pipeline-system"},{"name":"on-hold"}]},{"number":22,"title":"c","labels":[{"name":"pipeline-system"}]},{"number":19,"title":"d","labels":[{"name":"pipeline-system"},{"name":"focus"}]},{"number":18,"title":"e","labels":[{"name":"pipeline-system"}]},{"number":17,"title":"f","labels":[{"name":"pipeline-system"}]},{"number":16,"title":"g","labels":[{"name":"pipeline-system"}]}]'
 GH_PR_BRANCHES='[{"number":22,"headRefName":"agent/issue-22","title":"fix c","body":""},{"number":18,"headRefName":"node-auto/x","title":"implement it","body":"Fixes #18"}]'
 units '{"units":[]}'

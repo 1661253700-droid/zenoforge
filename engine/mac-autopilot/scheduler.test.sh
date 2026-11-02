@@ -65,6 +65,7 @@ jq -e '.max_workers == 10 and .auto_merge == true and .implement_cap == 8
   and .supervisor_arbiter.cap_triage_per_tick == 3
   and .models.implement_hotfix == ["gpt-6.1-terra", "high"]' "$template" >/dev/null
 jq -e '.size_admission.exempt_hotpatch == true' "$template" >/dev/null
+jq -e '.issue_intake.ready_buffer == null and .issue_intake.refill_max == 2' "$template" >/dev/null
 
 sample='{"units":[{"id":"pr-1","stage":"ready-to-merge"},{"id":"pr-2","stage":"ready-to-merge"},{"id":"pr-3","stage":"merged"}]}'
 updated="$(jq --arg id pr-2 \
@@ -2881,7 +2882,7 @@ WT_ROOT="$TF/clones"; LUNA_SLOTS="$TF/luna-slots"
 mkdir -p "$WT_ROOT/wt-repair" "$TF/clone" "$A/alerts" "$LUNA_SLOTS"
 touch "$LOG"
 SCHED_LOCK_HELD=true
-CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"size_admission_lines":800}'
+CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"size_admission_lines":800,"issue_intake":{"enabled":false}}'
 MAX=4; IMPLEMENT_CAP=2; SIZE_ADMISSION_LINES=800; FOCUS_MODE=all
 LOOP_TOTAL_ROUNDS=4; LOOP_BREAKER_ROUNDS=4; ADVISOR_ROUNDS=4
 NOW_EPOCH=1793577600; STAMP=refill-pending-stages; TAG=refill-test
@@ -2941,6 +2942,7 @@ state_schema_ok() { return 0; }
 phase() {
   case "$1" in
     harvest_workers|recover_orphans|mark_supervisor_owned_units) return 0 ;;
+    register_new_issues) shift; register_new_issues "$@" ;;
     dispatch_pending) shift; dispatch_pending "$@" ;;
     *) return 1 ;;
   esac
@@ -3487,6 +3489,89 @@ sched_case_intake_size_refused_pending() {
     || { echo 'not ok - scheduler.test.sh: size-refused pending work blocked intake' >&2; exit 1; }
 }
 sched_run_case intake_size_refused_pending
+
+sched_case_intake_ready_buffer() {
+# A full worker pool still keeps one MAX-sized ready buffer. Without ready_buffer,
+# the old MAX-live-pending calculation holds intake at zero here.
+  new_tick_fixture intake-ready-buffer
+  mkdir -p "$TF/agent-home/state"
+  command jq '.max_workers=2 | .implement_cap=0 | .hotfix_lane.supervisor_owned=false
+    | .supervisor_arbiter.enabled=false
+    | .issue_intake={enabled:true,max_upstream:8,max_ready:30,labels:[],product_labels:["ready-for-agent"]}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '{units:[
+    {id:"review-live-1",stage:"review",history:[]},
+    {id:"review-live-2",stage:"review",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  command jq -n '{workers:[
+    {pid:123,unit:"review-live-1",type:"review",log:"review-live-1.log",report:"review-live-1.md",started:"2026-11-02T00:00:00Z",harvested:false},
+    {pid:124,unit:"review-live-2",type:"review",log:"review-live-2.log",report:"review-live-2.md",started:"2026-11-02T00:00:00Z",harvested:false}]}' \
+    > "$TF/supervisor/autopi/workers.json"
+  command jq -n '[
+    {number:9101,title:"buffer candidate one",body:"Implement fixture one.",state:"OPEN",labels:[{name:"ready-for-agent"}]},
+    {number:9102,title:"buffer candidate two",body:"Implement fixture two.",state:"OPEN",labels:[{name:"ready-for-agent"}]},
+    {number:9103,title:"buffer candidate three",body:"Implement fixture three.",state:"OPEN",labels:[{name:"ready-for-agent"}]}
+  ]' > "$TF/intake-issues.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-9101.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-9102.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-9103.json"
+  seed_roadmap_tree 9101 9102 9103
+  touch "$TF/worker-alive"
+  tick
+  command jq -e '([.units[] | select(.issue == 9102 or .issue == 9103)] | length) == 2
+    and all(.units[]; .issue != 9101)' "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: full slots did not retain exactly MAX startable units in the intake buffer' >&2; exit 1; }
+}
+sched_run_case intake_ready_buffer
+
+sched_case_refill_intake_cap() {
+# A refill fills free slots from intake, but admits at most issue_intake.refill_max.
+  new_tick_fixture refill-intake-cap
+  mkdir -p "$TF/agent-home/state"
+  command jq '.max_workers=3 | .implement_cap=0 | .hotfix_lane.supervisor_owned=false
+    | .issue_intake={enabled:true,max_upstream:8,max_ready:30,labels:[],product_labels:["ready-for-agent"],refill_max:1}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '[
+    {number:9201,title:"refill candidate one",body:"Implement fixture one.",state:"OPEN",labels:[{name:"ready-for-agent"}]},
+    {number:9202,title:"refill candidate two",body:"Implement fixture two.",state:"OPEN",labels:[{name:"ready-for-agent"}]},
+    {number:9203,title:"refill candidate three",body:"Implement fixture three.",state:"OPEN",labels:[{name:"ready-for-agent"}]}
+  ]' > "$TF/intake-issues.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-9201.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-9202.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-9203.json"
+  seed_roadmap_tree 9201 9202 9203
+  tick --refill
+  command jq -e '([.units[] | select(.issue == 9201 or .issue == 9202 or .issue == 9203)] | length) == 1' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill ignored issue_intake.refill_max=1' >&2; exit 1; }
+  [[ "$(grep -c '^gh issue list ' "$TF/calls" || true)" == 1 ]] \
+    || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: refill made more than one fresh issue-list call' >&2; exit 1; }
+}
+sched_run_case refill_intake_cap
+
+sched_case_refill_intake_footprint_wait() {
+# A footprint waiter is not startable pending work, so it cannot suppress refill intake.
+  new_tick_fixture refill-intake-footprint-wait
+  mkdir -p "$TF/agent-home/state"
+  command jq '.max_workers=1 | .implement_cap=0 | .hotfix_lane.supervisor_owned=false
+    | .issue_intake={enabled:true,max_upstream:8,max_ready:30,labels:[],product_labels:["ready-for-agent"],ready_buffer:0,refill_max:2}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '{units:[{id:"footprint-waiter",stage:"implement-pending",task:"waiting fixture",
+    footprint:[],footprint_wait_owner:"issue-9299",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  command jq -n '{number:9301,title:"independent refill candidate",body:"Implement an independent fixture.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
+    > "$TF/intake-issue.json"
+  command jq -n '{expected_paths:[]}' > "$TF/agent-home/state/9301.json"
+  printf '%s\n' '[]' > "$TF/sub-issues-9301.json"
+  seed_roadmap_tree 9301
+  tick --refill
+  command jq -e 'any(.units[]; .id=="footprint-waiter" and .footprint_wait_owner=="issue-9299")
+    and any(.units[]; .issue==9301 and .stage=="implement-pending")' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: footprint-waiting work was counted as startable and blocked refill intake' >&2; exit 1; }
+}
+sched_run_case refill_intake_footprint_wait
 
 sched_case_intake_footprint_selection() {
   new_tick_fixture intake-footprint-selection

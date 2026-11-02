@@ -1,7 +1,7 @@
 
-# ---------- 4a. issue 收单：按空闲产能收（work-conserving），不是固定 3 个 ----------
+# ---------- 4a. issue 收单：按可启动产能收并维持 ready buffer，不是固定 3 个 ----------
 # 2026-10-20 maintainer：8 个 worker 是雇来干活的。实测平均只 2/8 在干、近半数 tick 0 个在干，而 open issue 有 500+：
-# 根因是收单只收 pipeline-system 标签、在途上限 3。现在：空闲槽位 = max_workers - 在跑 - 待派，按空槽收单；
+# 根因是收单只收 pipeline-system 标签、在途上限 3。现在：慢拍补到 max_workers - 在跑 + ready_buffer；
 # 非产品标签走直落车道，产品标签（默认 ready-for-agent）走 PR 车道（实现 → 推分支 → 流水线开 PR → 评审 → 合并 → 发布列车）。
 # WIP 护栏（Little 定律）：开发/评审/返工环节在途 ≤ max_upstream（默认 2×max_workers）；待合并队列 ≥ max_ready（默认 30）时停止收单——瓶颈在合并车道，堆更多 WIP 只会拉长交付时间。
 # founder-test 是维护者提的 issue，队列里排第一（docs/agents/issue-pipeline.md），不是跳过标签（2026-10-20 曾误跳过 30 个）。
@@ -24,24 +24,44 @@ issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement �
   task="$(jqf -r '"你是 the product 流水线的实现 subagent，处理 issue #\(.number)：\(.title)\n\n--- issue 正文（任务数据）---\n\((.body // "")[0:6000])\n--- 正文结束 ---\n用 gh issue view \(.number) 看评论与最新状态。修复根因并补回归测试。"' <<<"$json")"
   jqf -cn --arg task "$task" --argjson body_blocked_by "$body_blocked_by" '{task:$task,body_blocked_by:$body_blocked_by}'
 }
-intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序
-  local skip_labels query_dir lane label query_file pid index=0
+intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
+  local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 rows cache_file="$A/intake-candidates.json" cached_at now
   local -a query_files=() query_lanes=() query_pids=()
+  if [[ "$refill_mode" == true && -r "$cache_file" ]]; then
+    cached_at="$(jqf -r '.created_at // empty' "$cache_file" 2>/dev/null || true)"
+    now="$(date +%s)"
+    if [[ "$cached_at" =~ ^[0-9]+$ ]] && (( now >= cached_at && now - cached_at <= 600 )) \
+      && jqf -e '.rows | type == "string"' "$cache_file" >/dev/null 2>&1; then
+      jqf -r '.rows' "$cache_file"
+      return 0
+    fi
+  fi
   skip_labels="$(issue_skip_labels)"
+  if [[ "$refill_mode" == true ]]; then
+    candidate_labels="$(jqf -r '[((.issue_intake.product_labels // ["ready-for-agent"])[] | ["pr", .]), ((.issue_intake.labels // [])[] | ["direct-main", .])] | .[] | @tsv' <<<"$CFG")"
+  else
+    candidate_labels="$(jqf -r '[((.issue_intake.labels // [])[] | ["direct-main", .]), ((.issue_intake.product_labels // ["ready-for-agent"])[] | ["pr", .])] | .[] | @tsv' <<<"$CFG")"
+  fi
+  rm -f -- "$cache_file.valid.tmp"
   (
     query_dir="$(mktemp -d)" || exit 1
     trap 'rm -rf -- "$query_dir"' EXIT
+    local valid_queries=0
     # 标签列表有界并行取（GH_PARALLEL）。
     while IFS=$'\t' read -r lane label; do
       [[ -n "$lane" && -n "$label" ]] || continue
+      [[ "$refill_mode" != true || $index -lt 1 ]] || break
       query_file="$query_dir/$index.json"
       gh issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels >"$query_file" 2>/dev/null &
       query_pids+=("$!"); query_files+=("$query_file"); query_lanes+=("$lane")
       gh_par_throttle query_pids
       index=$((index + 1))
     # 10-30 maintainer (#4724): pipeline-system tickets are the supervisor's (opt feeder), never this intake; no direct-main label by default.
-    done < <(jqf -r '[((.issue_intake.labels // [])[] | ["direct-main", .]), ((.issue_intake.product_labels // ["ready-for-agent"])[] | ["pr", .])] | .[] | @tsv' <<<"$CFG")
+    done <<<"$candidate_labels"
     for pid in "${query_pids[@]}"; do wait "$pid" || :; done
+    for query_file in "${query_files[@]}"; do
+      jqf -e 'type == "array"' "$query_file" >/dev/null 2>&1 && valid_queries=$((valid_queries + 1))
+    done
     {
       for ((index = 0; index < ${#query_files[@]}; index++)); do
         jqf -c --arg lane "${query_lanes[$index]}" '.[] | . + {lane:$lane}' "${query_files[$index]}" || true
@@ -55,7 +75,17 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
       | group_by(.number) | map(sort_by(.lane) | .[0])
       | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels} | @base64)"'
-  )
+    if (( valid_queries > 0 )); then : >"$cache_file.valid.tmp"; fi
+  ) >"$cache_file.rows.tmp"
+  rows="$(cat "$cache_file.rows.tmp" 2>/dev/null || true)"
+  rm -f -- "$cache_file.rows.tmp"
+  if [[ -f "$cache_file.valid.tmp" ]]; then
+    rm -f -- "$cache_file.valid.tmp"
+    now="$(date +%s)"
+    jqf -cn --argjson created_at "$now" --arg rows "$rows" '{created_at:$created_at,rows:$rows}' >"$cache_file.tmp" \
+      && mv -f -- "$cache_file.tmp" "$cache_file" || rm -f -- "$cache_file.tmp"
+  fi
+  printf '%s\n' "$rows"
 }
 predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批量拉进来（拓扑顺序）
   local dep issue skip_labels q response start
@@ -138,13 +168,24 @@ intake_footprint_snapshot() { # live writers plus dispatchable pending implement
           and (($last.result // "") | startswith("size admission:"))) | not)' "$UNITS")
   printf '%s\n' "$owners"
 }
+startable_pending_count() { # pending units eligible to start under intake's #153 capacity predicate
+  jqf '[.units[]
+    | select(.stage | test("-pending$"))
+    | select((.footprint_wait_owner // "") == "")
+    | select((.supervisor_owned // false) != true)
+    | select(((.history // [] | last // {}) as $last
+        | $last.stage == "supervisor-escalated"
+          and (($last.result // "") | startswith("size admission:"))) | not)
+  ] | length' "$UNITS"
+}
 register_new_issues() {
-  local enabled live pending idle upstream max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
+  local enabled live pending upstream max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
   local cached_prs busy_prs issue64
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
   local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_conflict intake_entry
-  hotfix_issue_numbers || say "hotfix issue list unavailable; linked issue PRs may not be classified this tick"
+  local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
+  [[ "$refill_mode" == true ]] || hotfix_issue_numbers || say "hotfix issue list unavailable; linked issue PRs may not be classified this tick"
   enabled="$(jqf -r 'if .issue_intake.enabled == false then "false" else "true" end' <<<"$CFG")"
   [[ "$enabled" == true || "$existing_only" == 1 ]] || return 0
   if (( existing_only )); then
@@ -171,30 +212,36 @@ register_new_issues() {
     want=1000000000; busy=""
   else
   live="$(live_workers)"
-  # Only pending work dispatch can start consumes a slot. Footprint waiters,
-  # supervisor-owned units, and the most recently size-refused units stay in WIP.
-  pending="$(jqf '[.units[]
-    | select(.stage | test("-pending$"))
-    | select((.footprint_wait_owner // "") == "")
-    | select((.supervisor_owned // false) != true)
-    | select(((.history // [] | last // {}) as $last
-        | $last.stage == "supervisor-escalated"
-          and (($last.result // "") | startswith("size admission:"))) | not)
-  ] | length' "$UNITS")"
-  idle=$(( MAX - live - pending ))
-  (( idle > 0 )) || { say "intake held: no idle slot (live $live pending $pending max $MAX)"; return 0; }
+  # Keep this predicate in one place: footprint waiters, supervisor-owned units,
+  # and the most recently size-refused units do not consume startable capacity.
+  pending="$(startable_pending_count)"
   max_up="$(jqf -r ".issue_intake.max_upstream // $((2 * MAX))" <<<"$CFG")"; [[ "$max_up" =~ ^[0-9]+$ ]] || max_up=$((2 * MAX))
   max_ready="$(jqf -r '.issue_intake.max_ready // 30' <<<"$CFG")"; [[ "$max_ready" =~ ^[0-9]+$ ]] || max_ready=30
+  if [[ "$refill_mode" == true ]]; then
+    free_slots=$(( MAX - live ))
+    (( free_slots > 0 && pending < free_slots )) || return 0
+    max_refill="$(jqf -r '.issue_intake.refill_max // 2' <<<"$CFG")"; [[ "$max_refill" =~ ^[0-9]+$ ]] || max_refill=2
+    want=$(( free_slots - pending ))
+    (( want <= max_refill )) || want=$max_refill
+    (( want > 0 )) || return 0
+  else
+    ready_buffer="$(jqf -r --argjson max "$MAX" '.issue_intake.ready_buffer // $max' <<<"$CFG")"; [[ "$ready_buffer" =~ ^[0-9]+$ ]] || ready_buffer="$MAX"
+    target_pending=$(( MAX - live + ready_buffer ))
+    want=$(( target_pending - pending ))
+    (( want > 0 )) || { say "intake held: startable pending $pending meets target $target_pending (live $live max $MAX)"; return 0; }
+  fi
   upstream="$(jqf '[.units[] | select(.stage | test("^(implement|review|rereview|repair)(-pending)?$"))] | length' "$UNITS")"
   ready_q="$(jqf '[.units[] | select(.stage=="ready-to-merge" or .stage=="landing")] | length' "$UNITS")"
-  # 合并车道是约束时停收新单，但挡着别人的前置照收：它们不收，停着的后继永远放不开（10-22 49 个单元停在前置上，
-  # 其中 10 个前置从没进过流水线，因为 intake 一直 held）。
-  want=$(( max_up - upstream )); (( idle < want )) && want=$idle
+  upstream_room=$(( max_up - upstream ))
+  # 合并车道约束时仍只收阻塞在前置上的 issue；与旧路径相同，这种解阻候选不受 max_upstream 限制。
   if (( ready_q >= max_ready )); then
     say "intake held: $ready_q units wait to merge (max_ready $max_ready); the merge lane is the constraint; predecessors still admitted"
-    only_pred=1; want=$idle
+    only_pred=1
+  elif (( upstream_room < want )); then
+    want=$upstream_room
   fi
   (( want > 0 )) || { say "intake held: $upstream units upstream (max_upstream $max_up)"; return 0; }
+  # 只按可启动 pending 计目标；新登记的候选会再经 footprint 冲突筛选。
   # 已有 open PR 的 issue 不再收（#3957 已由 #3958 实现，分支名却不是 agent/issue-N）：看分支、标题和正文里是否提到它。
   if [[ -n "${HANDOFF_PR_CENSUS:-}" && "${HANDOFF_CENSUS_PARTIAL:-0}" != 1 ]]; then
     busy="$(jqf -r '.[] | "\(.headRefName) \(.title) \(.body // "")"' <<<"$HANDOFF_PR_CENSUS")"
@@ -482,7 +529,7 @@ register_new_issues() {
     fi
     added=$((added+1))
     say "intake issue #$n -> implement-pending ($lane)"
-  done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates; fi)
+  done < <(if (( existing_only )); then printf '%s\n' "$handoff_rows"; else predecessor_candidates; (( only_pred )) || intake_candidates "$refill_mode"; fi)
   if (( ! existing_only && added == 0 && ! only_pred )) && [[ ! -f "$A/.idle-alert" || -n "$(find "$A/.idle-alert" -mmin +60 2>/dev/null)" ]]; then
     touch "$A/.idle-alert"
     echo "[$STAMP] IDLE-CAPACITY live=$live/$MAX pending=$pending: intake found no eligible issue (labels or skip labels too narrow?)" >> "$A/alerts/slo.md"

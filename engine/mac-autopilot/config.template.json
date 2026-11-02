@@ -4,6 +4,15 @@
   "tick_seconds": 120,
   "auto_merge": true,
   "auto_dispatch_new_prs": true,
+  "issue_intake": {
+    "enabled": true,
+    "max_upstream": null,
+    "max_ready": 30,
+    "labels": [],
+    "product_labels": ["ready-for-agent"],
+    "ready_buffer": null,
+    "refill_max": 2
+  },
   "hotfix_lane": {
     "branch_prefixes": ["hotfix/", "agent/issue-hf-"],
     "label": "hotfix",
