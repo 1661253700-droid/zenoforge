@@ -2770,7 +2770,7 @@ sched_run_case dispatch_mode
 
 sched_case_refill_entry() {
 # #4628：worker 退出后 --refill 本地收割 direct-main 实现结果并派发等待中的实现；其他报告 harvest 留给慢 tick。
-# 补派不跑登记/门禁/合并车道、不查询 GitHub 或远端（hotfix_lane.supervisor_owned 关时成立；开着时补派
+# 实现专用的补派不跑登记/门禁/合并车道、不查询 GitHub 或远端（hotfix_lane.supervisor_owned 关时成立；开着时补派
 # 先跑 supervisor-owned 标记，见 supervisor_owned_deferred 的补派用例）。
 # 共享台账锁被慢 tick 占住时返回 75、状态不动；PAUSE 下不派发。
 new_tick_fixture refill-entry
@@ -2780,7 +2780,6 @@ true & refill_dead_pid=$!; wait "$refill_dead_pid"
 command jq -n '{units:[
   {id:"issue-8802",lane:"direct-main",branch:"agent/issue-8802",task:"refill fixture task",footprint:[],stage:"implement-pending",history:[]},
   {id:"issue-8801",issue:8801,lane:"direct-main",branch:"agent/issue-8801",task:"refill completed fixture task",stage:"implement",history:[]},
-  {id:"pr-8803",lane:"pr",branch:"agent/issue-8803",pr:8803,stage:"review-pending",history:[]},
   {id:"issue-8804",lane:"direct-main",branch:"agent/issue-8804",task:"blocked refill fixture",body_blocked_by:[4321],stage:"implement-pending",history:[]},
   {id:"issue-8805",lane:"direct-main",branch:"agent/issue-8805",task:"handoff refill fixture",handoff_start_ref:"rescue",handoff_start_sha:"0123456789abcdef0123456789abcdef01234567",stage:"implement-pending",history:[]},
   {id:"issue-8806",lane:"direct-main",branch:"agent/issue-8806",task:"budget refill fixture",stage:"implement-pending",history:[
@@ -2798,10 +2797,9 @@ chmod +x "$TF/bin/codex"
 touch "$TF/allow-dispatch"
 calls_before="$(wc -l < "$TF/calls")"
 TF_REAL_PS=1 tick --refill
-command jq -e '.units | length==6
+command jq -e '.units | length==5
   and any(.[]; .id=="issue-8802" and .stage=="implement")
   and any(.[]; .id=="issue-8801" and .lane=="pr" and .stage=="implement-pending")
-  and any(.[]; .id=="pr-8803" and .stage=="review-pending")
   and any(.[]; .id=="issue-8804" and .stage=="implement-pending")
   and any(.[]; .id=="issue-8805" and .stage=="implement-pending")
   and any(.[]; .id=="issue-8806" and .stage=="implement-pending")' "$TF/supervisor/autopi/units.json" >/dev/null \
@@ -2850,6 +2848,104 @@ command jq -e 'all(.workers[]; .harvested!=true)' "$TF/supervisor/autopi/workers
   || { echo 'scheduler.test.sh: paused refill tick harvested a worker report' >&2; exit 1; }
 }
 sched_run_case refill_entry
+
+sched_case_refill_pending_stages() (
+# The refill dispatcher reuses the shared per-stage gates: PR stages use one
+# cached census, supervisor-owned work stays put, and oversized implementation
+# work is refused before a worker is started.
+new_tick_fixture refill-pending-stages
+ROOT="$TF/repo"; SUP="$TF/supervisor"; A="$SUP/autopi"
+UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
+WT_ROOT="$TF/clones"; LUNA_SLOTS="$TF/luna-slots"
+mkdir -p "$WT_ROOT/wt-repair" "$TF/clone" "$A/alerts" "$LUNA_SLOTS"
+touch "$LOG"
+SCHED_LOCK_HELD=true
+CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"size_admission_lines":800}'
+MAX=4; IMPLEMENT_CAP=2; SIZE_ADMISSION_LINES=800; FOCUS_MODE=all
+LOOP_TOTAL_ROUNDS=4; LOOP_BREAKER_ROUNDS=4; ADVISOR_ROUNDS=4
+NOW_EPOCH=1793577600; STAMP=refill-pending-stages; TAG=refill-test
+TICK_DISPATCH_LOCAL_REFILL=true; TICK_FOOTPRINT_CACHE=(); TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_ACTIVE_FOOTPRINTS='[]'
+DISPATCH_PRIORITY_ORDER='["hotfix","opt","normal"]'
+declare -A TICK_FOOTPRINT_CACHE=()
+command jq -n '{units:[
+  {id:"repair-one",pr:8811,lane:"pr",branch:"agent/issue-8811",stage:"repair-pending",repair_hint:"fixture repair",footprint:[],history:[]},
+  {id:"review-one",pr:8812,lane:"pr",branch:"agent/issue-8812",stage:"review-pending",footprint:[],history:[]},
+  {id:"rereview-one",pr:8813,lane:"pr",branch:"agent/issue-8813",stage:"rereview-pending",reviewed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",review_report:"prior-rereview.md",footprint:[],history:[]},
+  {id:"owned-review",pr:8814,lane:"pr",branch:"agent/issue-8814",stage:"review-pending",supervisor_owned:true,footprint:[],history:[]},
+  {id:"size-refused",lane:"direct-main",branch:"agent/issue-8815",task:"fixture implementation",estimated_changed_lines:801,stage:"implement-pending",footprint:[],history:[]}
+]}' > "$UNITS"
+echo '{"workers":[]}' > "$WORKERS"
+printf 'VERDICT: NOT_READY\n' > "$SUP/review-8811-fixture.md"
+printf 'VERDICT: NOT_READY\n' > "$SUP/prior-rereview.md"
+dispatched=(); census_primes=0
+live_workers() { echo "${#dispatched[@]}"; }
+live_by_type() {
+  local n=0 item
+  for item in "${dispatched[@]}"; do [[ "$item" != implement:* && "$item" != repair:* ]] || n=$((n + 1)); done
+  echo "$n"
+}
+git() {
+  [[ "$*" != *'merge-base --is-ancestor'* ]] || return 0
+  [[ "$*" != *'rev-parse'*'refs/remotes/origin/main'* ]] || { printf '%s\n' 0123456789abcdef0123456789abcdef01234567; return 0; }
+  command git "$@"
+}
+dispatch() { dispatched+=("$1:$4"); }
+tick_prs_prime() { census_primes=$((census_primes + 1)); }
+pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
+footprint_room() { return 0; }
+unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
+verify_handoff_delivery() { return 0; }
+ensure_clone() { printf '%s' "$TF/clone"; }
+checkout_pr_head() { return 0; }
+pre_dispatch_pr_admission() { printf '%s' "$TF/clone"; }
+repair_failure_prompt() { printf 'fixture failure evidence'; }
+repair_demote() { :; }
+self_check_before_review() { return 0; }
+review_prompt() { printf 'fixture review prompt'; }
+review_dispositions_context() { :; }
+risk_class_safety_rule() { :; }
+lane_rule() { :; }
+review_contract_rule() { :; }
+subject_of() { printf 'fixture PR %s' "$1"; }
+matt_method_rule() { :; }
+verification_plan_for_state() { printf '{}'; }
+verification_plan_brief() { :; }
+decision_scope() { :; }
+sweep_rule() { :; }
+arbiter_rule() { :; }
+hotpatch_rule() { :; }
+supervisor_rule() { :; }
+acquire_scheduler_lock() { return 0; }
+state_schema_ok() { return 0; }
+phase() {
+  case "$1" in
+    harvest_workers|recover_orphans|mark_supervisor_owned_units) return 0 ;;
+    dispatch_pending) shift; dispatch_pending "$@" ;;
+    *) return 1 ;;
+  esac
+}
+coord_reap_expired() { return 0; }
+coord_reconcile_systemd_workers() { return 0; }
+coord_reconcile_scheduler_workers() { return 0; }
+supervisor_marking_deferred() { return 1; }
+tick_gh_calls_begin() { GH_TICK_CALLS_FILE="$TF/gh-calls"; : > "$GH_TICK_CALLS_FILE"; }
+tick_gh_calls_count() { echo 0; }
+PAUSE_FILE="$TF/pause"
+refill_tick
+command jq -e '
+  ([.units[] | select(.id=="repair-one")][0].stage == "repair")
+  and ([.units[] | select(.id=="review-one")][0].stage == "review")
+  and ([.units[] | select(.id=="rereview-one")][0].stage == "rereview")
+  and ([.units[] | select(.id=="owned-review")][0].stage == "review-pending")
+  and ([.units[] | select(.id=="size-refused")][0].stage == "implement-pending")
+' "$UNITS" >/dev/null \
+  || { echo "scheduler.test.sh: refill stage dispatch or admission result was wrong ($(command jq -c '.units | map({id,stage})' "$UNITS"))" >&2; cat "$LOG" >&2; exit 1; }
+[[ "${dispatched[*]}" == 'repair:repair-one rereview:rereview-one review:review-one' ]] \
+  || { echo "scheduler.test.sh: refill dispatched unexpected stages (${dispatched[*]})" >&2; exit 1; }
+[[ "$census_primes" == 1 ]] \
+  || { echo "scheduler.test.sh: refill did not share one PR census ($census_primes)" >&2; exit 1; }
+)
+sched_run_case refill_pending_stages
 
 sched_case_refill_yields_shared_lock() {
 # A slow GitHub phase gives the independent refill entry a chance to acquire the existing ledger lock.

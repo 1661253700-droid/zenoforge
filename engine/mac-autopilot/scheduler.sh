@@ -377,8 +377,8 @@ VIEWS_LOCK="$A/.views.lock"
 
 # 补派循环入口（#4628）：loop.sh 与慢 tick 并行检查本地台账，30 秒一次或发现新退出的 worker 时触发。
 # 慢阶段只在等待 GitHub 时让出同一 SCHED_LOCK；补派本地收割 direct-main 实现结果，另每次最多收割 2 个已结束的 PR 车道实现 worker（释放足迹，开 PR 有少量 GitHub 调用）、回收孤儿记录，
-# 再派发 implement-pending；除 supervisor-owned 标记（开关开时读一次 PR census，分类不可用则不派发）外
-# 不做 GitHub 查询/写入或远端 fetch。其他报告与 PR 注册仍由慢 tick 处理。
+# 再派发 implement/repair/review/rereview-pending。实现只读本地台账；遇到 PR 修复、评审或复审时，
+# dispatch_pending 复用慢 tick 的阶段处理器，并按需读取一次共享 PR census。报告收割与 PR 注册仍由慢 tick 处理。
 refill_tick() {
   local TICK_LOCAL_REFILL=true
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }

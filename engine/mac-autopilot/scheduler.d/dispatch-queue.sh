@@ -1,6 +1,6 @@
 
 dispatch_pending() {
-  local local_refill="${1:-false}" u id stage rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
+  local local_refill="${1:-false}" local_refill_prs_primed=false u id stage rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true
   if [[ "$local_refill" != true ]]; then
     tick_prs_changed # Running workers may have pushed since the previous phase.
@@ -17,11 +17,11 @@ dispatch_pending() {
   ordered="$(dispatch_order)" || true
   while read -r u; do
     [[ -n "$u" ]] || continue
-    [[ "$local_refill" == true ]] || tick_prs_prime
     id="$(jqf -r .id <<<"$u")"; stage="$(jqf -r .stage <<<"$u")"
-    # The independent refill controller only starts implementation workers from local ledger data.
-    # Repair, review, rerun, and supervisor transitions need GitHub or a slower gate and stay on the slow tick.
-    [[ "$local_refill" != true || "$stage" == implement-pending ]] || continue
+    # The local refill path shares every stage handler with the slow tick. PR stages need one current-head census;
+    # implementation-only refills continue to use local ledger data without a GitHub query.
+    [[ "$local_refill" != true || "$stage" == implement-pending || "$stage" == repair-pending \
+      || "$stage" == review-pending || "$stage" == rereview-pending ]] || continue
     [[ "$(jqf -r '.hold_handoff_waiting // false' <<<"$u")" != false ]] && continue
     # supervisor-owned 热修单元只计数：评审/修复/复审都由热修 supervisor 会话自己派，这里不派任何 worker。
     [[ "$(jqf -r '.supervisor_owned // false' <<<"$u")" != true ]] || continue
@@ -30,6 +30,13 @@ dispatch_pending() {
       [[ "$local_refill" != true ]] || continue
       self_fix_dispatch "$u" || true
       continue
+    fi
+    if [[ "$local_refill" != true ]]; then
+      tick_prs_prime
+    elif [[ "$stage" == repair-pending || "$stage" == review-pending || "$stage" == rereview-pending ]] \
+      && [[ "$local_refill_prs_primed" != true ]]; then
+      tick_prs_prime
+      local_refill_prs_primed=true
     fi
     # 止损预算（#4363）：第 4 轮（implement 加 repair）或超 4h 墙钟不再派发——
     # 原票经 hold.sh（on-hold 的唯一写入口，带 24h 过期的 durable hold 记录）自动搁置并评论附原因，
@@ -73,7 +80,9 @@ dispatch_pending() {
       since="$(jqf -r '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage | IN("advisor-ruling","arbiter-review")) | .key] | max // -1) as $i | [$h[($i + 1):][] | select(.stage=="review-request-changes")] | length' <<<"$u")"
       if [[ "$stage" == repair-pending ]] && (( since >= ADVISOR_ROUNDS )) && (( total > $(jqf -r '.advisor_round // 0' <<<"$u") )) \
         && [[ "$(jqf -r 'if .advisor == false then "off" else "on" end' <<<"$CFG")" == on ]] && [[ "$(jqf -r '.history[-1].stage // ""' <<<"$u")" =~ ^(review-request-changes|advisor-retry)$ ]]; then
-        jqf -e 'any(.units[]; .advisor_pid != null)' "$UNITS" >/dev/null || advisor_launch "$u" "$total"
+        if [[ "$local_refill" != true ]]; then
+          jqf -e 'any(.units[]; .advisor_pid != null)' "$UNITS" >/dev/null || advisor_launch "$u" "$total"
+        fi
         continue
       fi
       allowed="$(jqf -r --argjson d "$LOOP_TOTAL_ROUNDS" '.loop_total_allowed // $d' <<<"$u")"
