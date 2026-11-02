@@ -70,7 +70,7 @@ alert="$(run_alert)"
 assert_empty "$alert" 'PAUSE suppression'
 rm -f "$pause"
 
-# Supervisor-owned work is outside pipeline throughput and must not trigger either alert.
+# Supervisor-owned work must not trigger the stuck alert; the recent merge here suppresses no-output.
 cat > "$units" <<'JSON'
 {"units":[
  {"id":"pr-51","pr":51,"stage":"ready-to-merge","supervisor_owned":true,"history":[{"stage":"review-approve","at":"2026-11-02T08:00:00Z"}]}
