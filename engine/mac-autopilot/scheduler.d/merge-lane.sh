@@ -396,6 +396,12 @@ run_merge_lane() {
     pipe_dep=0
     jqf -e 'any(.[]; .name | startswith("Pipeline suites") or . == "Select pipeline-suite scope")' <<<"$checks" >/dev/null && pipe_dep=1
     if (( pipe_dep && ! pipe_open )); then
+      mstate="$(jqf -r '.pr_open_mergeable // empty' <<<"$ready")"
+      [[ -n "$mstate" ]] || mstate="$(tick_pr_mergeable "$pr" 2>/dev/null || true)"
+      if [[ "$mstate" == CONFLICTING ]]; then
+        merge_conflict_to_repair "$id" "$pr" "conflicts with main; pipeline-path changes include files deleted from main" "PR 与最新 main 冲突，且 main 已删除 PR 涉及的 pipeline 文件。git merge --no-edit origin/main，丢弃 main 已删除文件上的改动，保留其余改动，按两边意图解决剩余冲突，跑受影响测试后推送。" "$head"
+        continue
+      fi
       if (( hotpatch_pass )) && [[ "$(jqf -r '.hotpatch // false' <<<"$ready")" == true ]]; then
         say "merge PR#$pr hot patch while main suites are pending (not red)"
       else

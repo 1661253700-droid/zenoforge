@@ -2310,6 +2310,38 @@ command jq -e '[.units[] | select(.stage=="merged")] | length==5' "$TF/superviso
 }
 sched_run_case ready_starvation
 
+sched_case_pipeline_conflict_before_hold() {
+new_tick_fixture pipeline-conflict-before-hold
+command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+conflict_sha="$(printf '%040x' 57001)"
+clean_sha="$(printf '%040x' 57002)"
+command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" '{units:[
+  {id:"pr-pipeline-conflict",pr:57001,lane:"pr",branch:"agent/issue-57001",stage:"ready-to-merge",approved_sha:$conflict,ready_since:1,history:[]},
+  {id:"pr-pipeline-clean",pr:57002,lane:"pr",branch:"agent/issue-57002",stage:"ready-to-merge",approved_sha:$clean,ready_since:2,history:[]}
+]}' > "$TF/supervisor/autopi/units.json"
+command jq -cn --arg conflict "$conflict_sha" --arg clean "$clean_sha" '[
+  {number:57001,headRefName:"agent/issue-57001",headRefOid:$conflict,isDraft:false,mergeable:"CONFLICTING",title:"conflicting pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",status:"COMPLETED",conclusion:"SUCCESS"}]},
+  {number:57002,headRefName:"agent/issue-57002",headRefOid:$clean,isDraft:false,mergeable:"MERGEABLE",title:"clean pipeline change",labels:[],statusCheckRollup:[{__typename:"CheckRun",name:"Pipeline suites",status:"COMPLETED",conclusion:"SUCCESS"}]}
+]' > "$TF/pr-census.json"
+tick
+command jq -e '
+  ([.units[] | select(.pr==57001)][0] | .stage=="repair-pending" and .approved_sha==null
+    and any(.history[]; .stage=="merge-conflict")
+    and (.repair_hint | contains("git merge --no-edit origin/main") and contains("main 已删除") and contains("保留其余改动")))
+  and ([.units[] | select(.pr==57002)][0] | .stage=="ready-to-merge" and .approved_sha!=null)
+' "$TF/supervisor/autopi/units.json" >/dev/null \
+  || { echo 'scheduler.test.sh: conflicting pipeline PR was not routed to repair while the clean pipeline PR stayed ready' >&2; exit 1; }
+grep -Fq 'merge skipped PR#57001 (conflicts with main; pipeline-path changes include files deleted from main) -> repair-pending' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: conflicting pipeline PR repair was not logged' >&2; exit 1; }
+grep -Fq 'merge skipped PR#57002 (touches pipeline paths; pipeline merges held)' "$TF/supervisor/autopi/scheduler.log" \
+  || { echo 'scheduler.test.sh: clean pipeline PR did not remain held' >&2; exit 1; }
+if grep -Eq '^merge (57001|57002)$' "$TF/actions"; then
+  echo 'scheduler.test.sh: a pipeline-dependent PR merged while main suites were red' >&2; exit 1
+fi
+}
+sched_run_case pipeline_conflict_before_hold
+
 # #4515 发布状态单一事实源：合入 lane 在合并当时直接写 awaiting-release，
 # 依据是台账 unit→issue 关系；fixture 的 PR census 根本不带 body，等价于
 # "PR 正文里没有任何 issue 引用"，发布状态不再能从正文反推。
