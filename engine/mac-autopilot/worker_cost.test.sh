@@ -29,7 +29,7 @@ impl_log="impl-issue-4355-${impl_stamp}Z.worker.log"
 review_log="review-77-${review_stamp}Z.worker.log"
 {
   echo '{"type":"thread.started","thread_id":"aaaaaaaa-0000-0000-0000-000000000001"}'
-  echo '{"type":"turn.completed","usage":{"input_tokens":300000,"cached_input_tokens":100000,"output_tokens":30000}}'
+  echo '{"type":"turn.completed","usage":{"input_tokens":23000000,"cached_input_tokens":22310000,"output_tokens":10000}}'
 } > "$sup/$impl_log"
 touch -d "$impl_end" "$sup/$impl_log"
 {
@@ -80,24 +80,25 @@ out="$(PATH="$fixture/bin:$PATH" python3 "$script_dir/node_health.py" --runtime 
   --audit "$test_env_root/actions-run-cancellations.jsonl" --hours 5 \
   --now 2026-10-20T12:00:00Z --json "$a/node-health.json")"
 row() { grep -F "$1" <<<"$out" | head -1; }
-# 近窗（7 天）关闭的票：4355 = 330k token（300k 输入 + 30k 输出），4366 = 155k -> p90 = 330k
-# 历史票（窗口前 30 天）：200k / 100k -> p50 = p90 = 200k（int(f*2)=1 取较大样本，daily_bound 同约定）
-# -> healthy = 300k, unhealthy = 400k -> 330k 落在中间是 WARN
-grep -Eq 'per-ticket worker tokens p90.* 330000 .*<=300000.*>=400000.*WARN' <<<"$(row 'per-ticket worker tokens p90')" \
-  || fail "per-ticket tokens p90 or its history-derived bounds are wrong: $(row 'per-ticket worker tokens')"
+# 近窗（7 天）关闭的票：4355 = 700k fresh（690k uncached input + 10k output），输入缓存率 97%；
+# 4366 也有 cache split。历史票（窗口前 30 天）只有 legacy blended footer，无 cache split，不能造出 0 边界。
+# 无有效历史样本时用静态 800k / 4.8M；700k fresh 仍健康。
+grep -Eq 'per-ticket worker fresh tokens p90.* 700000 .*<=800000.*>=4800000.*OK' <<<"$(row 'per-ticket worker fresh tokens p90')" \
+  || fail "per-ticket fresh tokens p90 or its fallback bounds are wrong: $(row 'per-ticket worker fresh tokens p90')"
 grep -Eq ' 30 .*OK$' <<<"$(row 'per-ticket worker wall minutes p90')" \
   || fail "per-ticket wall p90 wrong: $(row 'per-ticket worker wall minutes')"
-jq -e '.ticket_bounds.token == {healthy:300000, unhealthy:400000, samples:2, provisional:true}
+jq -e '.ticket_bounds.token == null
   and .ticket_bounds.wall.samples == 2
   and ([.ticket_spend[] | select(.ticket == 4355)][0]
-       | .tokens == 330000 and .fresh == 230000 and .wall_min == 30 and .closed_at == "2026-10-20T11:50:00Z" and .open == false)
+       | .tokens == 23010000 and .fresh == 700000 and .wall_min == 30 and .closed_at == "2026-10-20T11:50:00Z" and .open == false)
+  and ([.ticket_spend[] | select(.ticket == 4101)][0] | .fresh == null)
   and ([.ticket_spend[] | select(.ticket == 4366)][0] | .tokens == 155000)' \
   "$a/node-health.json" >/dev/null || fail "ticket spend or bounds missing from the scorecard: $(jq -c '.ticket_bounds, .ticket_spend' "$a/node-health.json")"
 jq -e '.metrics[] | select(.id == "workorders.ticket_tokens_p90")
-  | .value == 330000 and .healthy == 300000 and .unhealthy == 400000 and .status == "WARN" and .source != ""' \
+  | .value == 700000 and .healthy == 800000 and .unhealthy == 4800000 and .status == "OK" and .source != ""' \
   "$a/node-health.json" >/dev/null || fail "ticket tokens metric missing its value, derived bounds or source"
 # unit_spend 经共享成本行走 --json 流：旧实现只读页脚时这张票是 0
-jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 330000' "$a/node-health.json" >/dev/null \
+jq -e '[.work_orders[] | select(.id == "issue-4355")][0].tokens == 23010000' "$a/node-health.json" >/dev/null \
   || fail "a --json codex worker's tokens did not reach the work-order spend: $(jq -c '.work_orders' "$a/node-health.json")"
 
 # ---------- gen_dashboard：同一份账进 cost_ledger（单元 / ticket / 阶段 / 后端 / 24h / eval） ----------
@@ -106,15 +107,15 @@ export MAC_AUTOPILOT_DASHBOARD_OUTPUT="$a/dashboard.data.js"
 PATH="$fixture/bin:$PATH" python3 "$script_dir/gen_dashboard.py" || fail "gen_dashboard failed on the fixture"
 dashboard_data="$(sed 's/^window.DASH=//; s/;$//' "$MAC_AUTOPILOT_DASHBOARD_OUTPUT")"
 jq -e '
-  (.cost_ledger.last_24h.runs == 2 and .cost_ledger.last_24h.raw == 485000)
+  (.cost_ledger.last_24h.runs == 2 and .cost_ledger.last_24h.raw == 23165000)
   and ([.cost_ledger.by_unit[] | select(.unit == "issue-4355")][0]
-       | .in == 300000 and .out == 30000 and .uncached == 200000 and .wall_min == 30 and .ticket == 4355)
+       | .in == 23000000 and .out == 10000 and .uncached == 690000 and .wall_min == 30 and .ticket == 4355)
   and ([.cost_ledger.by_unit[] | select(.unit == "pr-77")][0] | .raw == 155000 and .runs == 1)
-  and ([.cost_ledger.by_ticket[] | select(.ticket == 4355)][0] | .tokens == 330000)
+  and ([.cost_ledger.by_ticket[] | select(.ticket == 4355)][0] | .tokens == 23010000)
   and ([.cost_ledger.by_ticket[] | select(.ticket == 4366)][0] | .raw == 155000 and .uncached == 110000)
-  and .cost_ledger.by_phase.implement.raw == 330000
+  and .cost_ledger.by_phase.implement.raw == 23010000
   and .cost_ledger.by_phase.review.raw == 155000
-  and .cost_ledger.by_backend.codex.raw == 330000
+  and .cost_ledger.by_backend.codex.raw == 23010000
   and .cost_ledger.by_backend.zcode.raw == 155000
   and .cost_ledger.eval.last_24h.tokens == 1000000
   and ([.cost_ledger.eval.labels[] | select(.label == "gold-check")][0].model_wall_seconds == 150.2)

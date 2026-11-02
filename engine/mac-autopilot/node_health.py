@@ -60,8 +60,8 @@ CRITERIA = {
     "pipeline.orphan_prs":     ("pipeline", "open agent PRs outside the ledger", 3, 10, False),
     "workorders.over_standard": ("work-orders", "open work orders past a spend bug bound", 0, 3, False),
     # Frozen fallbacks (2026-10-21 distribution: tokens p50 0.53M / p90 2.4M, worker minutes p50 25 / p90 90);
-    # the effective bounds are derived per tick from the preceding 30 days of closed tickets (p50 x 1.5 / p90 x 2).
-    "workorders.ticket_tokens_p90": ("work-orders", "per-ticket worker tokens p90, tickets closed in 7 d", 800_000, 4_800_000, False),
+    # token bounds use cache-split history only and fall back here when no such sample is available.
+    "workorders.ticket_tokens_p90": ("work-orders", "per-ticket worker fresh tokens p90, tickets closed in 7 d", 800_000, 4_800_000, False),
     "workorders.ticket_wall_p90": ("work-orders", "per-ticket worker wall minutes p90, tickets closed in 7 d", 38, 180, False),
     "ci.waste_runner_pct":     ("ci+merge", "CI runner minutes that could not change a verdict %", 20, 35, False),
     "ci.held_ready_pct":       ("ci+merge", "ready-to-merge units whose CI is held for hot patches %", 20, 50, False),
@@ -150,7 +150,7 @@ MEANING = {
     "review.large_pr_pct": "非测试新增行超过 800 行的 PR 占比，只统计最近 30 天有台账活动的 PR；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也算测试路径。全量口径下旧的大 PR 永久计入，异常只会靠新 PR 稀释而不会随时间自然恢复（#4482）。PR 越大返工越多：<300 行中位 1 轮返工，>2000 行中位 9 轮（10-22 台账 170 个 PR）。高 = 票太大，要在分诊时拆小。",
     "ci.held_ready_pct": "已批准待合并、但 CI 被热修优先挡住的工作单比例：高 = 优先级变成了饥饿，整条合并车道停摆（L75：10-21 一度 100/101）。",
     "workorders.over_standard": "超过单项花费 bug 线的在途工作单数（见下方工作单标准）：每一单都按缺陷处理，查根因。",
-    "workorders.ticket_tokens_p90": "每张 ticket 生命周期 worker 累计 token（输入+输出）的 p90，取最近 7 天关闭的票；阈值来自之前 30 天已关票的 p50×1.5（健康）与 p90×2（异常）。升高 = 现在这批票比历史更烧钱，去单元表里找是哪张。",
+    "workorders.ticket_tokens_p90": "每张 ticket 生命周期 worker fresh token（未缓存输入 + 输出）的 p90，只统计有缓存拆分的票；取最近 7 天关闭的票，阈值来自之前 30 天有缓存拆分的已关票 p50×1.5（健康）与 p90×2（异常），没有可用历史时回退到静态 800k / 4.8M。升高 = 现在这批票比历史更烧钱，去单元表里找是哪张。",
     "workorders.ticket_wall_p90": "每张 ticket 生命周期 worker 墙钟（分钟）的 p90，取最近 7 天关闭的票；阈值同上取历史 p50×1.5 / p90×2。",
     "loop.advisor_fail_pct": "第 2 次评审打回后问顾问（拆票 / 定范围 / 修复方向），没拿到裁决的比例。高 = 顾问 provider 不可用。",
     "advisor.last_answer_age_hours": "needs-advisor 队列非空时，距最近一次成功 advisor 回答的小时数。高 = 顾问死了而没人发现（10-28 21:17 PDT 起约 30 小时无产出）。队列为空记 0。",
@@ -200,7 +200,7 @@ SOURCE = {
     "release.hotpatch_blockers": "release-blockers.json（release_train.sh 对照生产热修与 main）",
     "pipeline.orphan_prs": "orphan-prs.count（调度器比对 open PR 与台账）",
     "workorders.over_standard": "units.json + worker 日志：每单 token、员工分钟、返工轮、年龄对照下方工作单标准",
-    "workorders.ticket_tokens_p90": "worker 事件流（codex turn.completed / zc result 行，减派发基线）按 units.json issue 归票；窗口 7 天，阈值取窗口前 30 天已关票 p50/p90",
+    "workorders.ticket_tokens_p90": "worker_cost.ticket_spend.fresh（未缓存输入 + 输出）按 units.json issue 归票；只纳入有缓存拆分的票，窗口 7 天，阈值取窗口前 30 天有缓存拆分的已关票 p50/p90；无可用历史时用静态 800k / 4.8M",
     "workorders.ticket_wall_p90": "worker 日志文件名起始 → 最后写入，按 units.json issue 归票；窗口 7 天，阈值取窗口前 30 天已关票 p50/p90",
     "ci.waste_runner_pct": "ci-spend.json（ci_spend.py 每 30 分钟用 GitHub Actions jobs API 统计）",
     "ci.held_ready_pct": "units.json：ready-to-merge 且带 ci_held_sha 的单数 ÷ 就绪单数",
@@ -1453,21 +1453,25 @@ def main():
     metrics["engine.follow_lag_hours"] = engine_follow_lag_hours(agent_home, now)
     orders = work_orders(units, unit_spend(cost_rows), now)
     metrics["workorders.over_standard"] = sum(1 for o in orders if o["over"])
-    # Per-ticket spend from the same cost rows; bounds derive from the 30 days of closed
-    # tickets before the 7-day window (p50 x 1.5 healthy, p90 x 2 unhealthy, worker_cost.ticket_bound).
+    # Per-ticket spend from the same cost rows; token values and bounds use only complete fresh
+    # splits. Bounds use the 30 days of closed tickets before the 7-day window (p50 x 1.5 healthy,
+    # p90 x 2 unhealthy, worker_cost.ticket_bound); no usable history keeps the static criteria.
     tickets = worker_cost.ticket_spend(cost_rows, units)
     ticket_bounds = {}
-    for mid, field, key in (("workorders.ticket_tokens_p90", "tokens", "token"),
+    for mid, field, key in (("workorders.ticket_tokens_p90", "fresh", "token"),
                             ("workorders.ticket_wall_p90", "wall_min", "wall")):
         recent, history = [], []
         for t in tickets:
             closed = ts(t.get("closed_at"))
             if closed is None:
                 continue
+            value = t.get(field)
+            if value is None:
+                continue
             if now - timedelta(days=7) <= closed <= now:
-                recent.append(t[field])
+                recent.append(value)
             elif now - timedelta(days=37) <= closed < now - timedelta(days=7):
-                history.append(t[field])
+                history.append(value)
         metrics[mid] = pct(recent, .9)
         ticket_bounds[key] = worker_cost.ticket_bound(history)
         if ticket_bounds[key] and mid not in overrides:

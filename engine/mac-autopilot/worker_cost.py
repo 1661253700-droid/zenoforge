@@ -210,7 +210,9 @@ def _add_total(total, row):
         total["out"] += usage.output
         total["raw"] += usage.raw
     elif footer is not None:
+        # The legacy blended footer has no cache split; its fresh total is unknown.
         total["footer_tokens"] += footer
+        total["cached_known"] = False
     else:
         total["unknown_runs"] += 1
     total["wall_min"] += row["minutes"]
@@ -297,10 +299,15 @@ def ticket_spend(rows, units):
                 stamp = _parse_ts(event.get("at"))
                 if stamp is not None:
                     closes[ticket] = max(closes.get(ticket, stamp), stamp)
-    out = [{"ticket": ticket, **_finish(total),
-            "closed_at": closes[ticket].strftime("%Y-%m-%dT%H:%M:%SZ") if ticket in closes else None,
-            "open": ticket not in closes}
-           for ticket, total in spend.items()]
+    out = []
+    for ticket, total in spend.items():
+        complete = total
+        if total["unknown_runs"]:
+            # Per-ticket fresh spend is complete only when every worker row was measurable.
+            complete = {**total, "cached_known": False}
+        out.append({"ticket": ticket, **_finish(complete),
+                    "closed_at": closes[ticket].strftime("%Y-%m-%dT%H:%M:%SZ") if ticket in closes else None,
+                    "open": ticket not in closes})
     out.sort(key=lambda r: -r["raw"])
     return out
 
