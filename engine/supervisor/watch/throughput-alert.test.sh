@@ -14,7 +14,7 @@ fail() { printf 'throughput-alert.test.sh: %s\n' "$*" >&2; exit 1; }
 assert_contains() { [[ "$1" == *"$2"* ]] || fail "$3: missing '$2' in '$1'"; }
 assert_empty() { [[ -z "$1" ]] || fail "$2: expected no alert, got '$1'"; }
 run_alert() {
-  node "$watch_dir/throughput-alert.cjs" "$units" "$log" "$pause" "$now" 60 3 2>/dev/null || true
+  node "$watch_dir/throughput-alert.cjs" "$units" "$log" "$pause" "$now" 60 3 2>/dev/null
 }
 set_units() {
   cat > "$units" <<'JSON'
