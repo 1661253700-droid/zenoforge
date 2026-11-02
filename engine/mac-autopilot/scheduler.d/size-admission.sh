@@ -26,6 +26,12 @@ changed_files_of() { # dir branch base-branch → actual diff paths as JSON
     | jqf -Rsc '[splits("\u0000") | select(length > 0)]')
 }
 
+size_admission_exempt_unit() { # unit-json → true when the configured hotpatch exemption applies
+  jqf -e --argjson unit "$1" '(.size_admission // {}) as $sa
+    | ($unit.hotpatch == true)
+      and (if ($sa | has("exempt_hotpatch")) then $sa.exempt_hotpatch == true else true end)' <<<"$CFG" >/dev/null
+}
+
 # 尺寸准入在 write-start、开 PR、派已有 PR 的 implement/repair 前和每次 repair/self-fix 交付后复查。
 # repair-pending 的超线 PR 先走现有 needs-recut 通道，不占 worker；同一 head 已拒过或不能路由时转 supervisor。
 # repair/self-fix 仍需复查新 head（#4482：PR #4396 从 611 增到 1090、#4403 从 796 增到 1063）。返回 1 = 已升级。
@@ -53,7 +59,9 @@ size_admission_reject() { # unit lines branch context head estimate actual check
   return 1
 }
 size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-current]
-  local lines base_branch head="${5:-}" files pr
+  local lines base_branch head="${5:-}" files pr unit_json
+  unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
+  size_admission_exempt_unit "$unit_json" && return 0
   [[ -n "$2" && -n "$3" ]] || return 0
   base_branch="$(unit_field "$1" '.stacked_on_branch // "main"')"
   lines="$(changed_lines_of "$2" "$3" "$base_branch" "${6:-false}")"
@@ -81,6 +89,7 @@ size_admission_recheck() { # Keep the per-candidate diff+fetch visible inside di
 }
 size_admission_write_start() { # unit workdir unit-json → block before worker launch when estimate or current diff is oversized
   local issue estimate actual="" lines="" source="" branch base_branch head state
+  size_admission_exempt_unit "$3" && return 0
   issue="$(jqf -r '.issue // empty' <<<"$3")"
   estimate="$(jqf -r '.estimated_changed_lines // empty' <<<"$3")"
   if [[ ! "$estimate" =~ ^[0-9]+$ && "$issue" =~ ^[1-9][0-9]*$ ]]; then
