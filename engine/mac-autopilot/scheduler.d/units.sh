@@ -105,12 +105,14 @@ supervisor_budget_park() { # id evidence → parked，留给 supervisor，不发
   say "supervisor budget-park unit=$1: $2"
 }
 
+SUPERVISOR_CAP_PARK_RESULT_RE='^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for )'
+
 supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbitration-cap park (including legacy parks)
-  jqf -e '
+  jqf -e --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '
     .stage == "parked" and (
       .parked_reason == "supervisor-arbitration-cap" or
       any((.history // [])[]?; .stage == "supervisor-budget-park" and
-        ((.result // "") | test("^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for "))) or
+        ((.result // "") | test($cap_park_result_re))) or
       any((.history // [])[]?; .stage == "supervisor-cap-triage-park")
     )
   ' <<<"$1" >/dev/null
