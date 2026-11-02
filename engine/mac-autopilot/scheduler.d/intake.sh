@@ -121,12 +121,29 @@ handoff_include_pr() { # fallback after a failed census: inspect only a known PR
     HANDOFF_PR_CENSUS="$(jqf -c --slurpfile row <(printf '%s' "$row") '. + [$row[0]]' <<<"$HANDOFF_PR_CENSUS")"
   fi
 }
+intake_footprint_snapshot() { # live writers plus dispatchable pending implement units
+  local owners unit id scope entry
+  owners="$(active_footprint_snapshot)" || return 1
+  while IFS= read -r unit; do
+    [[ -n "$unit" ]] || continue
+    id="$(jqf -r '.id' <<<"$unit")"
+    jqf -e --arg id "$id" 'any(.[]; .id==$id)' <<<"$owners" >/dev/null && continue
+    scope="$(scheduler_footprint "$unit")" || return 1
+    entry="$(jqf -cn --argjson unit "$unit" --argjson scope "$scope" '$unit + {footprint:$scope}')" || return 1
+    owners="$(jqf -cn --argjson owners "$owners" --argjson entry "$entry" '$owners + [$entry]')" || return 1
+  done < <(jqf -c '.units[]
+    | select(.stage=="implement-pending" and (.supervisor_owned // false) != true and (.task // "") != "")
+    | select(((.history // [] | last // {}) as $last
+        | $last.stage == "supervisor-escalated"
+          and (($last.result // "") | startswith("size admission:"))) | not)' "$UNITS")
+  printf '%s\n' "$owners"
+}
 register_new_issues() {
   local enabled live pending idle upstream max_up ready_q max_ready want added=0 n lane title labels task_record task body_blocked_by branch busy handoff state_file acceptance
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
   local cached_prs busy_prs issue64
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
-  local issue_json parent_reason parent_status parent_transition_status
+  local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_conflict intake_entry
   hotfix_issue_numbers || say "hotfix issue list unavailable; linked issue PRs may not be classified this tick"
   enabled="$(jqf -r 'if .issue_intake.enabled == false then "false" else "true" end' <<<"$CFG")"
   [[ "$enabled" == true || "$existing_only" == 1 ]] || return 0
@@ -191,9 +208,16 @@ register_new_issues() {
     fi
   fi
   fi
+  if (( ! existing_only )); then
+    intake_footprint_owners="$(intake_footprint_snapshot)" || {
+      say "intake held: could not refresh footprint owners"
+      return 0
+    }
+  fi
   while IFS=$'\t' read -r n lane title labels issue64; do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
     (( added < want )) || break
+    intake_candidate_json=''; intake_candidate_scope=''; intake_conflict=''
     issue_json=""
     [[ -n "$issue64" ]] && issue_json="$(printf '%s' "$issue64" | base64 -d 2>/dev/null)" || true
     state_file="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json"
@@ -388,6 +412,21 @@ register_new_issues() {
     fi
     task="$(jqf -r .task <<<"$task_record")"
     body_blocked_by="$(jqf -c '.body_blocked_by // []' <<<"$task_record")"
+    if (( ! existing_only )) && [[ -z "$existing_id" ]]; then
+      intake_candidate_json="$(jqf -cn --argjson issue "$n" --arg task "$task" '{issue:$issue,task:$task}')" || continue
+      intake_candidate_scope="$(scheduler_footprint "$intake_candidate_json")" || {
+        say "intake defer issue #$n: predicted footprint unavailable"
+        continue
+      }
+      intake_conflict="$(active_footprint_conflict "$intake_candidate_scope" "$intake_footprint_owners" "__intake-$n")" || {
+        say "intake defer issue #$n: footprint comparison unavailable"
+        continue
+      }
+      if [[ -n "$intake_conflict" ]]; then
+        say "intake skip issue #$n: footprint overlaps unit=$intake_conflict"
+        continue
+      fi
+    fi
     if [[ "$lane" == direct-main ]]; then branch="agent/auto-issue-$n"; else branch="agent/issue-$n"; fi
     recovery_sha="$(jqf -r '.worktree_sha // .start_sha // empty' <<<"$handoff_all")"
     if [[ "$recovery_sha" =~ $SHA_RE ]]; then
@@ -436,6 +475,10 @@ register_new_issues() {
           + (if (($handoff_all.worktree_sha // "") | test("^[0-9a-f]{40}$")) then {handoff_worktree:$handoff_all.worktree,handoff_worktree_sha:$handoff_all.worktree_sha,handoff_worktree_dirty:$handoff_all.worktree_dirty} else {} end)
           + (if $handoff.start_ref then {handoff_start_ref:$handoff.start_ref,handoff_start_sha:$handoff.start_sha} else {} end)]' \
         "$UNITS" | write_state "$UNITS"
+    fi
+    if [[ -n "$intake_candidate_scope" ]]; then
+      intake_entry="$(jqf -cn --arg id "issue-$n" --argjson scope "$intake_candidate_scope" '{id:$id,footprint:$scope}')"
+      intake_footprint_owners="$(jqf -cn --argjson owners "$intake_footprint_owners" --argjson entry "$intake_entry" '$owners + [$entry]')"
     fi
     added=$((added+1))
     say "intake issue #$n -> implement-pending ($lane)"

@@ -88,29 +88,61 @@ scheduler_size_recut() ( # issue lines limit unit branch head → one durable re
   source "$SCHEDULER_AGENT_LIB" || return 1
   state_read "$1" | jq -e '.state == "needs-recut" and .size_admission.lines > .size_admission.limit' >/dev/null
 )
+scheduler_footprint_filter_main() (
+  local scope="$1" preserve_missing="${2:-false}" main_ref=refs/remotes/origin/main specs='' path object kept='' objects_output index
+  local -a paths=() objects=()
+  [[ "$preserve_missing" == true ]] && { printf '%s\n' "$scope"; return 0; }
+  jq -e 'type == "array" and all(.[]; type == "string")' <<<"$scope" >/dev/null 2>&1 \
+    || { printf '%s\n' "$scope"; return 0; }
+  mapfile -t paths < <(jq -r '.[]' <<<"$scope")
+  ((${#paths[@]})) || { printf '[]\n'; return 0; }
+  # A missing/stale main ref cannot prove that a prediction is dead; keep the
+  # current scope until the scheduler has a readable main tree again.
+  git -C "$ROOT" cat-file -e "$main_ref^{tree}" 2>/dev/null || { printf '%s\n' "$scope"; return 0; }
+  for path in "${paths[@]}"; do specs+="$main_ref:$path"$'\n'; done
+  objects_output="$(printf '%s' "$specs" | git -C "$ROOT" cat-file --batch-check='%(objectname)' 2>/dev/null)" \
+    || { printf '%s\n' "$scope"; return 0; }
+  mapfile -t objects <<<"$objects_output"
+  ((${#objects[@]} == ${#paths[@]})) || { printf '%s\n' "$scope"; return 0; }
+  for object in "${objects[@]}"; do
+    [[ -n "$object" ]] || { printf '%s\n' "$scope"; return 0; }
+  done
+  for ((index=0; index<${#paths[@]}; index++)); do
+    object="${objects[$index]:-}"
+    [[ -n "$object" && "$object" != *' missing' ]] || continue
+    kept+="${paths[$index]}"$'\n'
+  done
+  printf '%s' "$kept" | jq -Rsc 'split("\n") | map(select(length > 0)) | unique'
+)
+
 scheduler_footprint() (
-  local u="$1" state issue actual
+  local u="$1" state issue actual scope preserve_missing=false
   if [[ "$(jq -r '.footprint_source // empty' <<<"$u")" == pr-diff ]] \
     && jq -e '(.footprint | type) == "array"' <<<"$u" >/dev/null; then
-    jq -c '.footprint' <<<"$u"; return
-  fi
-  # Older units kept the triage package prediction beside #4510's write-end
-  # record. Once a worker has produced a PR diff, that actual file set is the
-  # scope for its next repair and for other units checking the active worker.
-  actual="$(jq -r '[.history[]? | select(.stage=="write-end") | .result] | last // empty' <<<"$u")"
-  if jq -e 'type == "array"' <<<"$actual" >/dev/null 2>&1; then
-    jq -c . <<<"$actual"; return
-  fi
-  if jq -e 'has("footprint")' <<<"$u" >/dev/null; then jq -c '.footprint' <<<"$u"; return; fi
-  REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
-  source "$SCHEDULER_AGENT_LIB" || return 1
-  issue="$(jq -r '.issue // empty' <<<"$u")"
-  state="$(cat "$STATE_DIR/$issue.json" 2>/dev/null)"; [[ -n "$state" ]] || state='{}'
-  if jq -e '(.footprint // []) | length > 0' <<<"$u" >/dev/null; then
-    jq -c '.footprint' <<<"$u"
-  elif jq -e '([.expected_paths[]?, .expected_packages[]?] | length) > 0' <<<"$state" >/dev/null; then
-    selection_scope_json <<<"$state"
+    scope="$(jq -c '.footprint' <<<"$u")"
+    preserve_missing=true
   else
-    issue_change_surface_json "$u" "$(jq -r '.task // ""' <<<"$u")" '[]'
+    # Older units kept the triage package prediction beside #4510's write-end
+    # record. Once a worker has produced a PR diff, preserve paths it created.
+    actual="$(jq -r '[.history[]? | select(.stage=="write-end") | .result] | last // empty' <<<"$u")"
+    if jq -e 'type == "array"' <<<"$actual" >/dev/null 2>&1; then
+      scope="$(jq -c . <<<"$actual")"
+      preserve_missing=true
+    elif jq -e 'has("footprint")' <<<"$u" >/dev/null; then
+      scope="$(jq -c '.footprint' <<<"$u")"
+    else
+      REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
+      source "$SCHEDULER_AGENT_LIB" || return 1
+      issue="$(jq -r '.issue // empty' <<<"$u")"
+      state="$(cat "$STATE_DIR/$issue.json" 2>/dev/null)"; [[ -n "$state" ]] || state='{}'
+      if jq -e '(.footprint // []) | length > 0' <<<"$u" >/dev/null; then
+        scope="$(jq -c '.footprint' <<<"$u")"
+      elif jq -e '([.expected_paths[]?, .expected_packages[]?] | length) > 0' <<<"$state" >/dev/null; then
+        scope="$(selection_scope_json <<<"$state")"
+      else
+        scope="$(issue_change_surface_json "$u" "$(jq -r '.task // ""' <<<"$u")" '[]')"
+      fi
+    fi
   fi
+  scheduler_footprint_filter_main "$scope" "$preserve_missing"
 )
