@@ -162,41 +162,100 @@ first_error：${first_error}
   echo "[$STAMP] LANDED-RED unit=$id landing=$owner suite=$suite run=$run" >> "$A/alerts/gate.md"
 }
 
+unpark_resolved_main_red_units() {
+  local batch_max unpark_cap unparked=0 id red_sha prior_stage resolved_sha history_update
+  batch_max="$(jqf -r '.batch_max // 4' <<<"$CFG")"
+  [[ "$batch_max" =~ ^[1-9][0-9]*$ ]] || batch_max=4
+  unpark_cap=$((batch_max * 3))
+  # The merge lane only scans batch_max*3 candidates per tick. Keep the recovery
+  # refill at that same bound; remaining units are picked up on later ticks.
+  while IFS=$'\t' read -r id red_sha prior_stage; do
+    [[ -n "$id" && "$red_sha" =~ $SHA_RE ]] || continue
+    (( unparked < unpark_cap )) || break
+    resolved_sha="$(jqf -r --arg red "$red_sha" '
+      first(.units[] | select(.main_red==true and .ci_sha==$red and .stage=="closed"
+        and ((.resolved_main_sha // "") | test("^[0-9a-f]{40}$"))) | .resolved_main_sha // empty)
+    ' "$UNITS")"
+    [[ "$resolved_sha" =~ $SHA_RE && "$prior_stage" == ready-to-merge ]] || continue
+    history_update="$(hist main-red-unpark "main red SHA $red_sha resolved by green descendant $resolved_sha")"
+    set_unit "$id" "$history_update | .stage=\"ready-to-merge\" | del(.parked_reason,.parked_main_red_sha,.parked_from_stage,.parked_head_sha,.parked_check_names,.ci_rerun_sha,.ci_test_checked,.ci_facts_head,.ci_facts)"
+    say "main-red CI park unit=$id resumed at ready-to-merge after main green $resolved_sha"
+    unparked=$((unparked + 1))
+  done < <(jqf -r '
+    .units[] | select(.stage=="parked" and .parked_reason=="main-red"
+      and ((.parked_main_red_sha // "") | test("^[0-9a-f]{40}$")))
+    | [.id,.parked_main_red_sha,(.parked_from_stage // "")] | @tsv
+  ' "$UNITS")
+}
+
 supersede_resolved_main_red_units() {
   [[ "$MAIN_HEAD" =~ $SHA_RE ]] || return 0
-  local pending green_shas id ci_sha candidate reason history_update
+  local pending unmarked_closed green_shas id ci_sha candidate reason history_update resolved_at
   pending="$(jqf -r --slurpfile workers "$WORKERS" '
     .units[] as $unit
     | select($unit.main_red == true and $unit.stage == "implement-pending")
     | select(any($workers[0].workers[]; .unit == $unit.id and .harvested != true) | not)
     | [$unit.id, ($unit.ci_sha // "")] | @tsv
   ' "$UNITS")"
-  [[ -n "$pending" ]] || return 0
-  main_suites_load
-  [[ -n "$MAIN_SUITES_RUNS" ]] || return 0
-  green_shas="$(jqf -r '
-    [ .[] | select((.headSha // "") | test("^[0-9a-f]{40}$"))
-      | {sha:.headSha, at:(.createdAt // ""), status:(.status // ""), conclusion:(.conclusion // "")}
-    ]
-    | group_by(.sha)
-    | map(sort_by(.at) | last)
-    | map(select(.status == "completed" and .conclusion == "success"))
-    | sort_by(.at) | reverse | .[].sha
-  ' <<<"$MAIN_SUITES_RUNS")"
-  [[ -n "$green_shas" ]] || return 0
-  while IFS=$'\t' read -r id ci_sha; do
-    [[ -n "$id" && "$ci_sha" =~ $SHA_RE ]] || continue
-    while read -r candidate; do
-      [[ "$candidate" =~ $SHA_RE && "$candidate" != "$ci_sha" ]] || continue
-      git -C "$ROOT" merge-base --is-ancestor "$ci_sha" "$candidate" 2>/dev/null || continue
-      git -C "$ROOT" merge-base --is-ancestor "$candidate" "$MAIN_HEAD" 2>/dev/null || continue
-      reason="newer main SHA $candidate passed Pipeline suites"
-      history_update="$(hist superseded "$reason")"
-      set_unit "$id" "$history_update | .stage=\"closed\""
-      say "main-red unit $id superseded by green Pipeline suites at $candidate"
-      break
-    done <<<"$green_shas"
-  done <<<"$pending"
+  # Older scheduler versions closed superseded main-red units without persisting
+  # the resolving SHA. Reconstruct it from the same green-descendant evidence so
+  # already parked main-red rows can resume after this version is deployed.
+  unmarked_closed="$(jqf -r '
+    .units[] | select(.main_red==true and .stage=="closed"
+      and ((.ci_sha // "") | test("^[0-9a-f]{40}$")))
+      | select((.resolved_main_sha // "")=="" or (.resolved_main_at // "")=="")
+      | [.id,.ci_sha] | @tsv
+  ' "$UNITS")"
+  if [[ -n "$pending" || -n "$unmarked_closed" ]]; then
+    main_suites_load
+    if [[ -n "$MAIN_SUITES_RUNS" ]]; then
+      green_shas="$(jqf -r '
+        [ .[] | select((.headSha // "") | test("^[0-9a-f]{40}$"))
+          | {sha:.headSha, at:(.createdAt // ""), status:(.status // ""), conclusion:(.conclusion // "")}
+        ]
+        | group_by(.sha)
+        | map(sort_by(.at) | last)
+        | map(select(.status == "completed" and .conclusion == "success"))
+        | sort_by(.at) | reverse | .[].sha
+      ' <<<"$MAIN_SUITES_RUNS")"
+      if [[ -n "$green_shas" ]]; then
+        while IFS=$'\t' read -r id ci_sha; do
+          [[ -n "$id" && "$ci_sha" =~ $SHA_RE ]] || continue
+          while read -r candidate; do
+            [[ "$candidate" =~ $SHA_RE && "$candidate" != "$ci_sha" ]] || continue
+            git -C "$ROOT" merge-base --is-ancestor "$ci_sha" "$candidate" 2>/dev/null || continue
+            git -C "$ROOT" merge-base --is-ancestor "$candidate" "$MAIN_HEAD" 2>/dev/null || continue
+            reason="newer main SHA $candidate passed Pipeline suites"
+            resolved_at="$(jqf -r --arg sha "$candidate" '
+              [.[] | select(.headSha==$sha and .status=="completed" and .conclusion=="success") | .createdAt // empty]
+              | sort | last // empty
+            ' <<<"$MAIN_SUITES_RUNS")"
+            history_update="$(hist superseded "$reason")"
+            set_unit "$id" "$history_update | .stage=\"closed\" | .resolved_main_sha=$(js "$candidate") | .resolved_main_at=$(js "$resolved_at")"
+            say "main-red unit $id superseded by green Pipeline suites at $candidate"
+            break
+          done <<<"$green_shas"
+        done <<<"$pending"
+        while IFS=$'\t' read -r id ci_sha; do
+          [[ -n "$id" && "$ci_sha" =~ $SHA_RE ]] || continue
+          while read -r candidate; do
+            [[ "$candidate" =~ $SHA_RE && "$candidate" != "$ci_sha" ]] || continue
+            git -C "$ROOT" merge-base --is-ancestor "$ci_sha" "$candidate" 2>/dev/null || continue
+            git -C "$ROOT" merge-base --is-ancestor "$candidate" "$MAIN_HEAD" 2>/dev/null || continue
+            resolved_at="$(jqf -r --arg sha "$candidate" '
+              [.[] | select(.headSha==$sha and .status=="completed" and .conclusion=="success") | .createdAt // empty]
+              | sort | last // empty
+            ' <<<"$MAIN_SUITES_RUNS")"
+            history_update="$(hist superseded-resolution-backfill "older main-red close resolved by green descendant $candidate")"
+            set_unit "$id" "$history_update | .resolved_main_sha=$(js "$candidate") | .resolved_main_at=$(js "$resolved_at")"
+            say "main-red unit $id resolution restored from green Pipeline suites at $candidate"
+            break
+          done <<<"$green_shas"
+        done <<<"$unmarked_closed"
+      fi
+    fi
+  fi
+  unpark_resolved_main_red_units
 }
 
 # ---------- 4. 新 PR 自动评审（限量：只挑最新 max_pending_reviews 个） ----------

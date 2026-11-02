@@ -14,6 +14,64 @@ ci_unit_facts() { # id head → 早期测试红路径已为同一 head 解析过
   return 0
 }
 
+declare -gA CI_MAIN_RED_CHECKS_CACHE=()
+main_red_failed_checks() { # main SHA -> check names that failed on that SHA
+  local sha="$1" raw failed
+  if [[ -v "CI_MAIN_RED_CHECKS_CACHE[$sha]" ]]; then
+    printf '%s\n' "${CI_MAIN_RED_CHECKS_CACHE[$sha]}"
+    return 0
+  fi
+  raw="$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || return 1
+  failed="$(jqf -c '[.check_runs[]? | select(.conclusion | IN("failure","timed_out","action_required","startup_failure")) | .name? | select(type=="string" and length>0)] | unique' <<<"$raw" 2>/dev/null)" || return 1
+  jqf -e 'type=="array" and all(.[]; type=="string")' <<<"$failed" >/dev/null 2>&1 || return 1
+  CI_MAIN_RED_CHECKS_CACHE["$sha"]="$failed"
+  printf '%s\n' "$failed"
+}
+
+park_ci_red_for_main_red() { # id PR head check-rows-json -> parked when every failed check also failed on an active main-red SHA
+  local failed_checks red_sha red_stage resolved_at main_checks prior_stage failed_names
+  failed_checks="$(jqf -c '[.[] | select(.bucket=="fail") | .name | select(type=="string" and length>0)] | unique' <<<"$4" 2>/dev/null)" || return 1
+  [[ "$failed_checks" != '[]' ]] || return 1
+  while IFS=$'\t' read -r red_sha red_stage resolved_at; do
+    [[ "$red_sha" =~ $SHA_RE ]] || continue
+    main_checks="$(main_red_failed_checks "$red_sha")" || continue
+    if [[ "$red_stage" == closed ]]; then
+      [[ -n "$resolved_at" ]] || continue
+      if ! jqf -en --argjson wanted "$failed_checks" --argjson main "$main_checks" --argjson rows "$4" --arg green_at "$resolved_at" \
+        '($wanted | length)>0 and all($wanted[]; . as $name
+          | ($main | index($name)) != null
+            and any($rows[]; .name==$name and .bucket=="fail"
+              and ((.started_at // "") != "") and (.started_at < $green_at)))' >/dev/null 2>&1; then
+        continue
+      fi
+      prior_stage="$(unit_field "$1" .stage)"
+      [[ "$prior_stage" == ready-to-merge ]] || return 1
+      failed_names="$(jqf -r 'join(", ")' <<<"$failed_checks")"
+      if [[ "$(unit_field "$1" .ci_main_red_sha)" != "$red_sha" ]]; then
+        set_unit "$1" "$(hist ci-main-red-resolved "checks $failed_names began before main red $red_sha recovered at $resolved_at") | .ci_main_red_sha=$(js "$red_sha")"
+      fi
+      say "CI-red unit=$1 PR#$2: checks $failed_names match resolved main red $red_sha; continuing through CI refresh path"
+      return 1
+    elif ! jqf -en --argjson wanted "$failed_checks" --argjson main "$main_checks" \
+      '($wanted | length)>0 and all($wanted[]; . as $name | ($main | index($name)) != null)' >/dev/null 2>&1; then
+      continue
+    fi
+    prior_stage="$(unit_field "$1" .stage)"
+    [[ "$prior_stage" == ready-to-merge ]] || return 1
+    failed_names="$(jqf -r 'join(", ")' <<<"$failed_checks")"
+    set_unit "$1" "$(hist ci-main-red-park "checks $failed_names also failed on main $red_sha") | .stage=\"parked\" | .parked_reason=\"main-red\" | .parked_main_red_sha=$(js "$red_sha") | .parked_from_stage=$(js "$prior_stage") | .parked_head_sha=$(js "$3") | .parked_check_names=$failed_checks"
+    say "CI-red unit=$1 PR#$2: checks $failed_names also failed on main $red_sha -> parked until main recovers"
+    return 0
+  done < <(jqf -r '
+    .units[] | select(.main_red==true and ((.ci_sha // "") | test("^[0-9a-f]{40}$")))
+      | select((.stage // "") as $stage
+        | ($stage | IN("closed","landed","merged","done") | not)
+          or ($stage=="closed" and (.resolved_main_at // "") != ""))
+      | [.ci_sha,.stage,(.resolved_main_at // "")] | @tsv
+  ' "$UNITS" | sort -u)
+  return 1
+}
+
 # 所有 update-branch 都走这一个封装：expected_head_sha 钉住观察到的 head，GitHub 在 head 已变时返回 422，不会更新陌生提交。
 ci_update_branch() { # pr head
   if jqf -e --argjson pr "$1" 'any(.units[]; .pr == $pr and .supervisor_owned == true)' "$UNITS" >/dev/null 2>&1; then

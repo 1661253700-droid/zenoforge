@@ -303,6 +303,7 @@ run_merge_lane() {
     fi
     [[ "$checks" != null && -n "$checks" ]] || { say "merge skipped PR#$pr (check census unavailable)"; MERGE_CENSUS_MISSED=1; continue; }
     fails="$(jqf -r '[.[] | select(.bucket == "fail") | .name] | sort | join(",")' <<<"$checks" 2>/dev/null || true)"
+    if [[ -n "$fails" ]] && park_ci_red_for_main_red "$id" "$pr" "$head" "$checks"; then continue; fi
     if [[ -n "$fails" && "$(jqf -r '.ci_test_checked // empty' <<<"$ready")" != "$head:$fails" ]]; then
       set_unit "$id" ".ci_test_checked=$(js "$head:$fails")"
       red_out="$(ci_test_red_checks "$checks")"
