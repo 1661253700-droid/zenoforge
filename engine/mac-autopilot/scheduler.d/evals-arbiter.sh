@@ -206,10 +206,9 @@ dispatch_prompt_evals() {
 }
 
 # ---------- f12（#4369）：supervisor-review 的自动裁决 ----------
-# 升级记录按冻结形状交给裁决 worker（terra profile，与 eval supervisor 用例同一 prompt 与输入形状）；
-# 输出六动作之一：requeue/approve/park/close/reroute/needs-info。每单元最多裁 2 次，之后 needs-info。
-supervisor_arbiter_input() { # unit-json → 冻结记录 JSON（escalationReason/unitHistory/reviewFindings/ciEvidence）
-  local u="$1" report_name report_body report_at truncated=false
+# 普通升级按冻结记录交给配置的 arbiter profile，最多两轮；触顶后再跑一轮 CLOSE/RECUT/RULE/FOUNDER cap triage。
+supervisor_arbiter_input() { # unit-json [cap-triage] → frozen record JSON
+  local u="$1" cap_triage="${2:-false}" report_name report_body report_at truncated=false
   report_name="$(jqf -r '.review_report // empty' <<<"$u")"
   report_body=""
   if [[ -n "$report_name" && -s "$SUP/$report_name" ]]; then
@@ -217,10 +216,13 @@ supervisor_arbiter_input() { # unit-json → 冻结记录 JSON（escalationReaso
     (( $(wc -c < "$SUP/$report_name") > 8000 )) && truncated=true
   fi
   report_at="$(jqf -r '[(.history // [])[] | select(((.stage // .event // .ev // "") | test("^review"))) | .at] | last // empty' <<<"$u")"
-  jqf -c --arg asof "$STAMP" --arg report "$report_name" --arg report_at "$report_at" --arg body "$report_body" --argjson truncated "$truncated" '
+  jqf -c --arg asof "$STAMP" --arg report "$report_name" --arg report_at "$report_at" --arg body "$report_body" \
+    --argjson truncated "$truncated" --argjson cap_triage "$([[ "$cap_triage" == true ]] && echo true || echo false)" '
     {
       asOf: $asof,
       unitId: .id,
+      capTriage: $cap_triage,
+      unitContext: {issue: .issue, pr: .pr, title: .title, task: .task, note: .note, rulings: (.cto_rulings // [])},
       escalationReason: (
         ([(.history // [])[] | select(.stage == "supervisor-escalated" or .stage == "supervisor-review")] | last) as $e
         | {at: ($e.at // $asof), stage: ($e.stage // "supervisor-escalated"),
@@ -240,27 +242,55 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
   local prompt_file
   prompt_file="$(sched_config_file prompts/supervisor-arbiter.md)"
   [[ -r "$prompt_file" ]] || return 0
-  local u id report log q pid w converted=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata
+  local u id report log q pid w converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage
   in_flight="$(jqf -r '[.workers[] | select(.type=="supervise" and .harvested != true)] | length' "$WORKERS")"
   (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
   while IFS= read -r u; do
     [[ -n "$u" ]] || continue
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
+    is_swept=false
+    if [[ "$(jqf -r '.stage // empty' <<<"$u")" == parked ]]; then
+      [[ "${SUPERVISOR_CAP_TRIAGE:-true}" == true ]] || continue
+      supervisor_cap_parked_unit "$u" || continue
+      is_swept=true
+    fi
     arbi_runs="$(jqf -r '(.history // []) as $h | ([$h | to_entries[] | select(.value.stage=="supervisor-arbiter-round") | .key] | max // -1) as $r | [$h[$r+1:][] | select(.stage=="supervisor-arbiter")] | length' <<<"$u")"
     entries="$(supervisor_entries "$id")"
+    cap_triage=false
     if (( arbi_runs >= 2 || entries >= 3 )); then
-      # 裁决预算或升级次数用尽：不再派、不再等，停到 parked 给 supervisor（每 tick 限量）。
-      (( converted < SUPERVISOR_NEEDS_INFO_PER_TICK )) || { say "supervisor budget park capped at $SUPERVISOR_NEEDS_INFO_PER_TICK this tick"; return 0; }
-      supervisor_budget_park "$id" "arbitration budget exhausted for $id (runs=$arbi_runs entries=$entries)" && converted=$((converted + 1))
-      continue
+      if [[ "${SUPERVISOR_CAP_TRIAGE:-true}" == true ]]; then
+        cap_triage=true
+        (( cap_triaged < SUPERVISOR_CAP_TRIAGE_PER_TICK )) || { say "supervisor cap triage capped at $SUPERVISOR_CAP_TRIAGE_PER_TICK this tick"; continue; }
+      else
+        # Compatibility switch: preserve the previous capped park behavior.
+        [[ "$is_swept" == false ]] || continue
+        (( converted < SUPERVISOR_NEEDS_INFO_PER_TICK )) || { say "supervisor budget park capped at $SUPERVISOR_NEEDS_INFO_PER_TICK this tick"; return 0; }
+        supervisor_budget_park "$id" "arbitration budget exhausted for $id (runs=$arbi_runs entries=$entries)" && converted=$((converted + 1))
+        continue
+      fi
+    elif [[ "$is_swept" == true ]]; then
+      # A legacy cap park may have a cleared round marker or incomplete history;
+      # it still receives one final cap-triage run because its park reason is authoritative.
+      cap_triage=true
+      (( cap_triaged < SUPERVISOR_CAP_TRIAGE_PER_TICK )) || { say "supervisor cap triage capped at $SUPERVISOR_CAP_TRIAGE_PER_TICK this tick"; continue; }
     fi
     (( $(live_workers) < MAX )) || { say "supervisor arbitration pending unit=$id: worker capacity full"; return 0; }
+    if [[ "$is_swept" == true ]]; then
+      return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
+      [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
+      set_unit "$id" ".stage=\"supervisor-review\" | .supervisor_cap_return_stage=$(js "$return_stage") | .supervisor_cap_from_parked=true | del(.parked_reason)"
+      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+    elif [[ -z "$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")" ]]; then
+      return_stage="$(supervisor_return_stage "$u")"
+      set_unit "$id" ".supervisor_cap_return_stage=$(js "$return_stage")"
+      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+    fi
     event_id="f12:$id:entry-$entries"
-    arbiter_input="$(supervisor_arbiter_input "$u")"
+    arbiter_input="$(supervisor_arbiter_input "$u" "$cap_triage")"
     judge_input="$(jqf -c --arg event_id "$event_id" '. + {event_id:$event_id,currentDecision:null}' <<<"$arbiter_input")"
     judge_output=""
-    if [[ -n "${TYPESAFE_API_KEY:-}${TYPESAFE_ENV_FILE:-}" ]]; then
+    if [[ "$cap_triage" != true && -n "${TYPESAFE_API_KEY:-}${TYPESAFE_ENV_FILE:-}" ]]; then
       judge_output="$(printf '%s\n' "$judge_input" | bash "${ZF_ENGINE_DIR:-$ROOT/engine}/ts-judge.sh" f12 2>/dev/null || true)"
     fi
     judge_answer="$(jqf -r 'select(.status=="answered") | .candidate // empty' <<<"$judge_output" 2>/dev/null || true)"
@@ -289,14 +319,16 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
       --skip-git-repo-check -s read-only --json --output-last-message "$SUP/$report" - < "$SUP/$q") > "$SUP/$log" 2>&1 < /dev/null &
     pid=$!
     w="$(jqf -cn --argjson pid "${pid:-0}" --arg unit "$id" --arg log "$log" --arg report "$report" --arg at "$STAMP" --arg profile "$SUPERVISOR_ARBITER_PROFILE" \
+      --argjson cap_triage "$([[ "$cap_triage" == true ]] && echo true || echo false)" \
       --argjson jev "$judge_metadata" \
-      '{pid:$pid,unit:$unit,type:"supervise",log:$log,report:$report,started:$at,model:("profile:"+$profile),jev:$jev}')"
+      '{pid:$pid,unit:$unit,type:"supervise",log:$log,report:$report,started:$at,model:("profile:"+$profile),cap_triage:$cap_triage,jev:$jev}')"
     jqf --argjson w "$w" '.workers += [$w]' "$WORKERS" | write_state "$WORKERS"
     set_unit "$id" "$(hist supervisor-arbiter "dispatched to profile $SUPERVISOR_ARBITER_PROFILE") | .supervise_report=$(js "$report")"
     say "supervisor arbitration dispatched pid=$pid unit=$id profile=$SUPERVISOR_ARBITER_PROFILE"
     in_flight=$((in_flight + 1))
+    [[ "$cap_triage" == true ]] && cap_triaged=$((cap_triaged + 1))
     (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
-  done < <(jqf -c '.units[] | select(.stage=="supervisor-review" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false)' "$UNITS")
+  done < <(jqf -c '.units[] | select((.stage=="supervisor-review" or .stage=="parked") and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap" or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test("^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for "))) or .stage=="supervisor-cap-triage-park"))' "$UNITS")
 }
 
 supervisor_action_of() { # report-path → 唯一 ACTION 行的动作名；无法判定返回 1
@@ -423,6 +455,110 @@ supervisor_apply_action() { # id action report-path —— 六动作落地，决
   esac
 }
 
+supervisor_cap_field_line() { # report field → exactly one single-line value
+  awk -v key="$2" '
+    BEGIN { prefix = key ":"; count = 0 }
+    index($0, prefix) == 1 {
+      value = substr($0, length(prefix) + 1)
+      sub(/^[[:space:]]+/, "", value)
+      count++
+    }
+    END { if (count != 1) exit 1; print value }
+  ' "$1" 2>/dev/null
+}
+
+supervisor_cap_verdict_of() { # report-path → exactly one final CLOSE/RECUT/RULE/FOUNDER verdict
+  local report="$1" verdict last reason evidence question question_count
+  [[ -s "$report" ]] || return 1
+  [[ "$(grep -c '^VERDICT:' "$report" 2>/dev/null || true)" == 1 ]] || return 1
+  verdict="$(grep -E '^VERDICT: (CLOSE|RECUT|RULE|FOUNDER)$' "$report" | sed 's/^VERDICT: //')"
+  [[ "$verdict" =~ ^(CLOSE|RECUT|RULE|FOUNDER)$ ]] || return 1
+  reason="$(supervisor_cap_field_line "$report" REASON)" || return 1
+  evidence="$(supervisor_cap_field_line "$report" EVIDENCE)" || return 1
+  [[ -n "${reason//[[:space:]]/}" && -n "${evidence//[[:space:]]/}" ]] || return 1
+  question_count="$(grep -c '^QUESTION:' "$report" 2>/dev/null || true)"
+  if [[ "$verdict" == FOUNDER ]]; then
+    [[ "$question_count" == 1 ]] || return 1
+    question="$(supervisor_cap_field_line "$report" QUESTION)" || return 1
+    [[ -n "${question//[[:space:]]/}" ]] || return 1
+  else
+    [[ "$question_count" == 0 ]] || return 1
+  fi
+  last="$(awk 'NF { line = $0 } END { print line }' "$report")"
+  [[ "$last" == "VERDICT: $verdict" ]] || return 1
+  printf '%s\n' "$verdict"
+}
+
+supervisor_cap_founder() { # id reason evidence [report-path] → one owner question in the supervisor inbox
+  local id="$1" reason="$2" evidence="$3" rep="${4:-}" u issue question message decision inbox_status=0
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  question=""
+  [[ -z "$rep" ]] || question="$(supervisor_cap_field_line "$rep" QUESTION 2>/dev/null || true)"
+  [[ -n "${question//[[:space:]]/}" ]] || question="$(supervisor_needs_info_question "$u")"
+  issue="$(jqf -r '.issue // empty' <<<"$u")"
+  message="cap-triage-founder unit=$id${issue:+ issue=#$issue} question=$question reason=$reason evidence=$evidence"
+  decision="$(decision_entry 'Supervisor cap triage: FOUNDER' "$reason" "$evidence" '[]' supervisor)"
+  ( REPO_DIR="$ROOT"; source "$SCHEDULER_AGENT_LIB" && supervisor_inbox_append_once "cap-triage-founder:$id" "$message" ) || inbox_status=$?
+  if (( inbox_status != 0 )); then
+    say "supervisor cap triage unit=$id: supervisor inbox helper failed rc=$inbox_status lib=$SCHEDULER_AGENT_LIB agent=$AGENT_HOME"
+    supervisor_cap_triage_park "$id" "could not post founder question: $question" "$decision"
+    say "supervisor cap triage unit=$id: founder question not posted; retained for retry"
+    return 0
+  fi
+  set_unit "$id" "$(hist supervisor-cap-founder "$question" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-cap-founder\" | .note=$(js "founder decision required: $reason") | .supervisor_cap_question=$(js "$question")"
+  say "supervisor cap triage unit=$id: FOUNDER question posted"
+}
+
+supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
+  local id="$1" rep="$2" verdict="$3" reason evidence decision issue pr state comment u cap_rules return_stage ruling
+  reason="$(supervisor_cap_field_line "$rep" REASON)"
+  evidence="$(supervisor_cap_field_line "$rep" EVIDENCE)"
+  decision="$(decision_entry "Supervisor cap triage: $verdict" "$reason" "$evidence" '[]' supervisor)"
+  case "$verdict" in
+    CLOSE)
+      issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
+      comment="Cap triage closed this unit: $reason Evidence: $evidence"
+      if [[ "$issue" =~ ^[0-9]+$ ]]; then
+        gh issue close "$issue" --comment "$comment" >/dev/null 2>&1 || say "supervisor cap triage unit=$id: could not close issue #$issue"
+      fi
+      if [[ "$pr" =~ ^[0-9]+$ ]]; then
+        state="$(tick_pr_state "$pr" 2>/dev/null || true)"
+        if [[ "$state" != CLOSED && "$state" != MERGED ]]; then
+          tick_prs_changed
+          gh pr close "$pr" --comment "$comment" >/dev/null 2>&1 || say "supervisor cap triage unit=$id: could not close PR #$pr"
+        fi
+      fi
+      set_unit "$id" "$(hist supervisor-cap-close "$reason" "$decision") | .stage=\"closed\" | .note=$(js "$reason") | del(.parked_reason)"
+      say "supervisor cap triage unit=$id: CLOSE" ;;
+    RECUT)
+      supervisor_budget_recut "$id" "cap triage: $reason; evidence: $evidence" "$decision" \
+        "cap triage could not complete the recut route" "supervisor cap triage recut: $reason" \
+        supervisor-cap-triage-park supervisor-cap-triage-recut true ;;
+    RULE)
+      u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+      cap_rules="$(jqf -r '[(.history // [])[] | select(.stage=="supervisor-cap-rule")] | length' <<<"$u")"
+      if (( cap_rules >= 1 )); then
+        supervisor_cap_founder "$id" "second cap after an earlier RULE: $reason" "$evidence" "$rep"
+        return 0
+      fi
+      return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
+      [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
+      ruling="Supervisor cap ruling: $reason Evidence: $evidence"
+      set_unit "$id" "$(hist supervisor-cap-rule "$reason" "$decision") | $(hist supervisor-arbiter-round "cap triage ruling applied: $reason" "$decision") | .cto_rulings=((.cto_rulings // []) + [$(js "$ruling")]) | .stage=$(js "$return_stage") | .supervisor_cap_return_stage=$(js "$return_stage") | del(.parked_reason,.note,.supervisor_cap_from_parked)"
+      say "supervisor cap triage unit=$id: RULE -> $return_stage" ;;
+    FOUNDER)
+      supervisor_cap_founder "$id" "$reason" "$evidence" "$rep" ;;
+    *) return 1 ;;
+  esac
+}
+
+supervisor_cap_triage_failed() { # id detail → retryable cap park
+  local id="$1" detail="$2" decision
+  decision="$(decision_entry 'Retry supervisor cap triage' "$detail" "$detail" '[]' scheduler)"
+  set_unit "$id" "$(hist supervisor-cap-triage-invalid "$detail" "$decision")"
+  supervisor_cap_triage_park "$id" "$detail" "$decision"
+}
+
 supervisor_apply_jev_action() { # id action confidence event-id → mature, confident Jev decision
   local id="$1" action="$2" confidence="$3" event_id="$4" u reason evidence decision question note
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
@@ -465,15 +601,27 @@ supervisor_record_jev_comparison() { # worker-json terra-action → shadow compa
   printf '%s\n' "$input" | node "${ZF_ENGINE_DIR:-$ROOT/engine}/ts-judge.mjs" record f12 >/dev/null 2>&1 || true
 }
 
-harvest_supervisor_arbiter() { # worker JSON：回收裁决报告并落地动作；无报告/无 ACTION 行也算消耗一次预算
-  local w="$1" unit pid report log action stream tk session_id
+harvest_supervisor_arbiter() { # worker JSON: harvest regular arbitration or final cap-triage report
+  local w="$1" unit pid report log action stream tk session_id cap_triage
   unit="$(jqf -r .unit <<<"$w")"; pid="$(jqf -r .pid <<<"$w")"; report="$(jqf -r .report <<<"$w")"; log="$SUP/$(jqf -r .log <<<"$w")"
+  cap_triage="$(jqf -r '.cap_triage // false' <<<"$w")"
   stream="$(python3 "$USAGE_READER" codex-stream "$log" 2>/dev/null || true)"
   tk="$(jqf -r '.fresh // empty' <<<"$stream")"
   [[ "$tk" =~ ^[0-9]+$ ]] && set_unit "$unit" ".tokens = ((.tokens // 0) + $tk)"
   session_id="$(jqf -r '.session_id // empty' <<<"$stream")"
   python3 "$USAGE_READER" codex-ingest "$log" "$session_id" "$(jqf -r .started <<<"$w")" "$BUDGET_EVENTS" >/dev/null 2>&1 || true
-  if [[ ! -s "$SUP/$report" ]]; then
+  if [[ "$cap_triage" == true ]]; then
+    if [[ ! -s "$SUP/$report" ]]; then
+      supervisor_cap_triage_failed "$unit" "final cap triage worker produced no report $report"
+      say "supervisor cap triage unit=$unit: worker produced no report"
+    elif action="$(supervisor_cap_verdict_of "$SUP/$report")"; then
+      say "supervisor cap triage unit=$unit verdict=$action"
+      supervisor_apply_cap_verdict "$unit" "$SUP/$report" "$action"
+    else
+      supervisor_cap_triage_failed "$unit" "invalid final cap triage report $report: $(head -c 200 "$SUP/$report" | tr '\n' ' ')"
+      say "supervisor cap triage unit=$unit: report did not end in one valid verdict"
+    fi
+  elif [[ ! -s "$SUP/$report" ]]; then
     set_unit "$unit" "$(hist supervisor-arbiter-no-output "$(tail -c 200 "$log" 2>/dev/null | tr '\n' ' ')")"
     say "supervisor arbitration unit=$unit: worker produced no report"
   else

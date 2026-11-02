@@ -38,18 +38,46 @@ decision_entry() { # decision why evidence rejected-json owner -> history decisi
   jqf -cn --arg decision "$1" --arg why "$2" --arg evidence "$3" --argjson rejected "$4" --arg owner "$5" \
     '{decision:$decision,why:$why,evidence:$evidence,rejected:$rejected,owner:$owner}'
 }
-to_supervisor() { # id note：升级到 supervisor；第 3 次不再升级，直接 needs-info（#4369）
-  local decision
+supervisor_return_stage() { # unit-json [stage-before-supervisor] → pending stage for a RULE decision
+  local u="$1" stage="${2:-}"
+  [[ -n "$stage" ]] || stage="$(jqf -r '.stage // empty' <<<"$u")"
+  case "$stage" in
+    implement-pending|repair-pending|review-pending|rereview-pending) printf '%s\n' "$stage" ;;
+    implement) printf 'implement-pending\n' ;;
+    repair) printf 'repair-pending\n' ;;
+    review) printf 'review-pending\n' ;;
+    rereview) printf 'rereview-pending\n' ;;
+    blocked-external)
+      local resume
+      resume="$(jqf -r '.blocked_resume_stage // empty' <<<"$u")"
+      if [[ "$resume" =~ ^(implement|repair|review|rereview)-pending$ ]]; then printf '%s\n' "$resume"
+      elif [[ -n "$(jqf -r '.pr // empty' <<<"$u")" ]]; then printf 'repair-pending\n'
+      else printf 'implement-pending\n'; fi ;;
+    *)
+      if [[ -n "$(jqf -r '.pr // empty' <<<"$u")" ]]; then printf 'repair-pending\n'
+      elif [[ -n "$(jqf -r '.task // empty' <<<"$u")" && -n "$(jqf -r '.branch // empty' <<<"$u")" ]]; then printf 'implement-pending\n'
+      else printf 'review-pending\n'; fi ;;
+  esac
+}
+
+to_supervisor() { # id note：升级到 supervisor；cap triage acts after the third entry
+  local decision u return_stage
+  u="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  return_stage="$(supervisor_return_stage "$u")"
   if [[ -n "${3:-}" ]]; then
     decision="$(decision_entry "$3" "$4" "$5" "$6" scheduler)"
   else
     decision="$(decision_entry 'Hand off to supervisor' "$2" "$2" '["Continue automated handling"]' scheduler)"
   fi
-  set_unit "$1" "$(hist supervisor-escalated "$2" "$decision") | .stage=\"supervisor-review\" | .note=$(js "$2")"
+  set_unit "$1" "$(hist supervisor-escalated "$2" "$decision") | .stage=\"supervisor-review\" | .note=$(js "$2") | .supervisor_cap_return_stage=$(js "$return_stage")"
   say "supervisor-review unit=$1: $2"
   cancel_unit_runs "$1" "parked for the supervisor"
   if (( $(supervisor_entries "$1") >= 3 )); then
-    supervisor_budget_park "$1" "third entry into supervisor-review; arbitration cap is 2 (#4369)"
+    if [[ "${SUPERVISOR_CAP_TRIAGE:-true}" == true ]]; then
+      say "supervisor cap reached unit=$1: final cap triage queued"
+    else
+      supervisor_budget_park "$1" "third entry into supervisor-review; arbitration cap is 2 (#4369)"
+    fi
   fi
 }
 
@@ -77,12 +105,33 @@ supervisor_budget_park() { # id evidence → parked，留给 supervisor，不发
   say "supervisor budget-park unit=$1: $2"
 }
 
+supervisor_cap_parked_unit() { # unit-json → whether this is a retryable arbitration-cap park (including legacy parks)
+  jqf -e '
+    .stage == "parked" and (
+      .parked_reason == "supervisor-arbitration-cap" or
+      any((.history // [])[]?; .stage == "supervisor-budget-park" and
+        ((.result // "") | test("^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for "))) or
+      any((.history // [])[]?; .stage == "supervisor-cap-triage-park")
+    )
+  ' <<<"$1" >/dev/null
+}
+
+supervisor_cap_triage_park() { # id evidence → durable retry marker swept by the cap-triage dispatcher
+  local id="$1" evidence="$2" decision="$3" return_stage u note
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  return_stage="$(jqf -r '.supervisor_cap_return_stage // empty' <<<"$u")"
+  [[ -n "$return_stage" ]] || return_stage="$(supervisor_return_stage "$u")"
+  note="supervisor arbitration cap triage pending: $evidence"
+  set_unit "$id" "$(hist supervisor-cap-triage-park "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"supervisor-arbitration-cap\" | .supervisor_cap_return_stage=$(js "$return_stage") | .note=$(js "$note")"
+  say "supervisor cap-triage parked unit=$id: $evidence"
+}
+
 # 轮数或墙钟止损已用尽且仍没有 PR：交给 recut 拆成可交付的子票。
 # 走 lib.sh 唯一的 needs-recut 入口 route_to_recut；有未提交、stash 或未推送改动时不关单元，照旧 park。
-supervisor_budget_recut() { # id evidence → 无 PR 时 issue 转 needs-recut、单元 closed；否则 park
+supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close
   local id="$1" evidence="$2" decision="${3:-null}" park_reason="${4:-supervisor budget exhausted}"
   local recut_reason="${5:-ticket stop-loss reached}" park_stage="${6:-supervisor-budget-park}" recut_stage="${7:-supervisor-budget-recut}"
-  local issue pr err note
+  local allow_pr_close="${8:-false}" issue pr err note pr_comment pr_state
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
   local d
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
@@ -91,12 +140,30 @@ supervisor_budget_recut() { # id evidence → 无 PR 时 issue 转 needs-recut�
       supervisor_budget_park "$id" "$evidence (worktree has unpushed work; not sent to recut)" "$decision" "$park_reason" "$park_stage"; return 0
     fi
   done
-  [[ -z "$pr" ]] || { supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0; }
   [[ "$issue" =~ ^[0-9]+$ ]] || { supervisor_budget_park "$id" "$evidence" "$decision" "$park_reason" "$park_stage"; return 0; }
+  if [[ -n "$pr" ]]; then
+    if [[ "$allow_pr_close" != true ]]; then
+      supervisor_budget_park "$id" "$evidence (unit already has PR #$pr)" "$decision" "$park_reason" "$park_stage"; return 0
+    fi
+    pr_comment="Cap triage is sending issue #$issue to recut: $evidence"
+    tick_prs_changed
+    pr_state="$(tick_pr_state "$pr" 2>/dev/null || true)"
+    if [[ "$pr_state" == CLOSED || "$pr_state" == MERGED ]]; then
+      if ! gh pr comment "$pr" --body "$pr_comment" >/dev/null 2>&1; then
+        supervisor_budget_park "$id" "$evidence (could not comment on PR #$pr before recut)" "$decision" "$park_reason" "$park_stage"; return 0
+      fi
+    elif ! gh pr close "$pr" --comment "$pr_comment" >/dev/null 2>&1; then
+      supervisor_budget_park "$id" "$evidence (could not close PR #$pr before recut)" "$decision" "$park_reason" "$park_stage"; return 0
+    fi
+  fi
   if ! err="$(scheduler_route_to_recut "$issue" 2>&1 >/dev/null)"; then
     supervisor_budget_park "$id" "$evidence (recut route failed: ${err:0:200})" "$decision" "$park_reason" "$park_stage"; return 0
   fi
-  note="$(js "$recut_reason without a PR; issue #$issue sent to recut: $evidence")"
+  if [[ -n "$pr" ]]; then
+    note="$(js "$recut_reason; PR #$pr closed and issue #$issue sent to recut: $evidence")"
+  else
+    note="$(js "$recut_reason without a PR; issue #$issue sent to recut: $evidence")"
+  fi
   set_unit "$id" "$(hist "$recut_stage" "$evidence" "$decision") | .stage=\"closed\" | .note=$note"
   say "supervisor budget-recut unit=$id issue=#$issue: $evidence"
 }
