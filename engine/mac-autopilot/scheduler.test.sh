@@ -4465,6 +4465,28 @@ cap_triage_fixture_prompt() {
   export ZF_EXECUTION_MODULE_DIR="$TF/repo/engine"
   touch "$TF/allow-dispatch"
 }
+
+sched_case_supervisor_cap_triage_legacy_park() {
+  new_tick_fixture supervisor-cap-triage-legacy-park
+  command jq '.max_workers=1 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=1
+    | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=1' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  cap_triage_fixture_prompt
+  command jq -n '{units:[{id:"legacy-cap-park",issue:769,stage:"parked",history:[
+    {stage:"supervisor-budget-park",result:"third entry into supervisor-review; arbitration cap is 2 (#4369)",at:"2026-10-27T00:02:00Z"}
+  ]}]}' > "$TF/supervisor/autopi/units.json"
+  printf '%s\n' '{"blockers":[]}' > "$TF/supervisor/autopi/release-blockers.json"
+  tick
+  command jq -e 'any(.workers[]; .unit=="legacy-cap-park" and .type=="supervise" and .cap_triage==true)' \
+    "$TF/supervisor/autopi/workers.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: legacy supervisor budget park was not selected for cap triage' >&2; exit 1; }
+  if grep -Fq 'jqf error' "$TF/supervisor/autopi/scheduler.log"; then
+    echo 'not ok - scheduler.test.sh: legacy cap triage dispatch logged a jq error' >&2
+    exit 1
+  fi
+}
+sched_run_case supervisor_cap_triage_legacy_park
+
 cap_triage_history() {
   command jq -cn '[
     {stage:"supervisor-escalated",result:"first supervisor entry",at:"2026-10-27T00:00:00Z"},
