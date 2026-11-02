@@ -246,6 +246,25 @@ class Ledger(unittest.TestCase):
         self.assertEqual((bound["healthy"], bound["unhealthy"], bound["provisional"]), (750, 1600, False))
         self.assertIsNone(wc.ticket_bound([]))
 
+    def test_ticket_fresh_counts_uncached_input_and_output_and_skips_legacy_history(self):
+        self.log("impl-issue-5-20261020T120000Z.worker.log",
+                 [json.dumps({"type": "pipeline.execution", "mode": "fresh"})]
+                 + codex_json_stream("aaaaaaaa-0000-0000-0000-000000000001",
+                                     [{"input_tokens": 23_000_000, "cached_input_tokens": 22_310_000,
+                                       "output_tokens": 10_000}]))
+        self.log("impl-issue-6-20261020T120000Z.worker.log",
+                 ["codex", "tokens used", "200,000", "done"])
+        units = [
+            {"id": "issue-5", "issue": 5,
+             "history": [{"stage": "merged", "at": "2026-10-20T12:20:00Z"}]},
+            {"id": "issue-6", "issue": 6,
+             "history": [{"stage": "merged", "at": "2026-10-20T12:20:00Z"}]},
+        ]
+        spend = {ticket["ticket"]: ticket for ticket in wc.ticket_spend(wc.run_rows(self.sup), units)}
+        self.assertEqual(spend[5]["fresh"], 700_000)  # 690k uncached input + 10k output
+        self.assertIsNone(spend[6]["fresh"])  # a blended footer has no cache split
+        self.assertIsNone(wc.ticket_bound([spend[6]["fresh"]]))  # cacheless history falls back
+
 
 class Eval(unittest.TestCase):
     def setUp(self):

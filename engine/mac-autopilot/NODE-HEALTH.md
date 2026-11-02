@@ -42,7 +42,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | release | production hot patches whose PR is not on main (`release.hotpatch_blockers`) | a hotfix is merged the same day | 0 | ≥ 1 | — |
 | pipeline | open agent PRs outside the ledger (`pipeline.orphan_prs`) | — | ≤ 3 | ≥ 10 | — |
 | work orders | open work orders past a spend bug bound (`workorders.over_standard`) | — | 0 | ≥ 3 | — |
-| work orders | per-ticket worker tokens p90, tickets closed in 7 d (`workorders.ticket_tokens_p90`) | thresholds derive per tick from the preceding 30 d of closed tickets — healthy p50 x 1.5, unhealthy p90 x 2 (`worker_cost.ticket_bound`); the columns here are the 2026-10-21 frozen fallback | ≤ 800 k | ≥ 4.8 M | first scorecard sample |
+| work orders | per-ticket worker fresh tokens p90, tickets closed in 7 d (`workorders.ticket_tokens_p90`) | fresh means uncached input + output; bounds derive only from preceding 30 d of closed tickets with cache splits — healthy p50 x 1.5, unhealthy p90 x 2 (`worker_cost.ticket_bound`); no usable history falls back to the static values here | ≤ 800 k | ≥ 4.8 M | first scorecard sample |
 | work orders | per-ticket worker wall minutes p90, tickets closed in 7 d (`workorders.ticket_wall_p90`) | same history-derived bounds (p50 x 1.5 healthy, p90 x 2 unhealthy) | ≤ 38 | ≥ 180 | first scorecard sample |
 | CI + merge | CI runner minutes that could not change a verdict % (`ci.waste_runner_pct`, from `ci_spend.py`) | lean: work that cannot change the outcome is waste (muda) | ≤ 20 | ≥ 35 | — |
 | CI + merge | ready-to-merge units whose CI is held for hot patches % (`ci.held_ready_pct`) | priority must not become starvation | ≤ 20 | ≥ 50 | — |
