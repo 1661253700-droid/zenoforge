@@ -290,7 +290,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     arbiter_input="$(supervisor_arbiter_input "$u" "$cap_triage")"
     judge_input="$(jqf -c --arg event_id "$event_id" '. + {event_id:$event_id,currentDecision:null}' <<<"$arbiter_input")"
     judge_output=""
-    if [[ -n "${TYPESAFE_API_KEY:-}${TYPESAFE_ENV_FILE:-}" ]]; then
+    if [[ "$cap_triage" != true && -n "${TYPESAFE_API_KEY:-}${TYPESAFE_ENV_FILE:-}" ]]; then
       judge_output="$(printf '%s\n' "$judge_input" | bash "${ZF_ENGINE_DIR:-$ROOT/engine}/ts-judge.sh" f12 2>/dev/null || true)"
     fi
     judge_answer="$(jqf -r 'select(.status=="answered") | .candidate // empty' <<<"$judge_output" 2>/dev/null || true)"

@@ -4444,6 +4444,26 @@ sched_case_jev_f12_rollout() {
     || { echo 'not ok - scheduler.test.sh: Jev recut adoption was not journaled' >&2; exit 1; }
   [[ ! -s "$TF/codex.calls" ]] \
     || { echo 'not ok - scheduler.test.sh: mature Jev recut dispatched a Terra worker despite the PR guard' >&2; exit 1; }
+
+  # A mature Jev candidate must not replace the required final cap-triage arbiter run.
+  new_tick_fixture jev-f12-cap-triage
+  prepare_jev_f12_fixture
+  export TYPESAFE_TEST_CANDIDATE=park TYPESAFE_TEST_CONFIDENCE=0.99
+  command jq --argjson h "$(cap_triage_history)" '.units[0].history=$h' \
+    "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+  printf 'CLOSE\n' > "$TF/cap-verdict-pr-4630"
+  for index in $(seq 1 20); do
+    printf '{"mode":"shadow","question_set":"f12","event_id":"cap-fixture-%s","agreement":true}\n' "$index" >> "$TYPESAFE_JUDGE_LOG"
+  done
+  for attempt in $(seq 1 10); do
+    tick
+    command jq -e '.units[0].stage=="closed"' "$TF/supervisor/autopi/units.json" >/dev/null && break
+  done
+  command jq -e '.units[0].stage=="closed" and any(.units[0].history[]; .stage=="supervisor-cap-close")' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: mature Jev candidate bypassed final cap triage' >&2; exit 1; }
+  grep -q -- '-p terra' "$TF/codex.calls" \
+    || { echo 'not ok - scheduler.test.sh: cap triage did not dispatch its configured arbiter profile' >&2; exit 1; }
   unset TYPESAFE_TEST_MOCK TYPESAFE_TEST_DRIVER TYPESAFE_JUDGE_SCRIPT TYPESAFE_JUDGE_LOG TYPESAFE_API_KEY TYPESAFE_TEST_CANDIDATE TYPESAFE_TEST_CONFIDENCE
 }
 sched_run_case jev_f12_rollout
