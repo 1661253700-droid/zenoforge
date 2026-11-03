@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GitNexus refresh behavior, separated to keep the library suites bounded.
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib-test-helpers.sh"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-lib-helpers.sh"
 # --- GitNexus refresh: WSL memory floor, remote refresh and latest-wins throttle --
 GITNEXUS_TEST_ORIGINAL_AGENT_HOME="$AGENT_HOME"
 GITNEXUS_TEST_ORIGINAL_PATH="$PATH"
