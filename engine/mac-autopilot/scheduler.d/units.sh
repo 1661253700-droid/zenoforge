@@ -203,7 +203,7 @@ cancel_unit_runs() { # id reason
   [[ "$(unit_field "$1" '.hotpatch // false')" == true ]] && return 0
   pr="$(unit_field "$1" '.pr // empty')"; [[ "$pr" =~ ^[0-9]+$ ]] || return 0
   branch="$(tick_pr_branch "$pr")"
-  cancel_branch_runs "$branch" "$2"
+  cancel_branch_runs "$branch" "$2" || : # Run cancellation is best-effort; listing failures are logged.
 }
 refresh_live_worker_cache() {
   local pid type

@@ -23,7 +23,12 @@ js() { jq -cn --arg v "$1" '$v'; }  # 任意文本 → jq 字符串字面量，�
 gh() {
   [[ -n "${GH_TICK_CALLS_FILE:-}" ]] && printf 'x\n' >>"$GH_TICK_CALLS_FILE" 2>/dev/null || :
   local started=$SECONDS rc=0 elapsed op="${1:-unknown}" unit="${id:-}"
-  command gh "$@" || rc=$?
+  local timeout_op="${1:-unknown}" timeout_unit="${id:-unknown}"
+  local timeout_seconds="${AUTOPI_GH_TIMEOUT_SECONDS:-120}"
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || timeout_seconds=120
+  [[ -z "${2:-}" ]] || timeout_op+=" $2"
+  gh_timeout -k 1 "${timeout_seconds}s" "$@" || rc=$?
+  (( rc != 124 )) || say "gh timeout op=$timeout_op unit=$timeout_unit after=${timeout_seconds}s"
   if [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" == true ]]; then
     elapsed=$((SECONDS - started))
     (( elapsed < 2 )) || say "dispatch detail gh_${op}${unit:+ unit=$unit} secs=${elapsed}s"

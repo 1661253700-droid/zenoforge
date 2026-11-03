@@ -1,11 +1,12 @@
 ci_failed_steps() { # head -> failed step names of the head's failed runs
-  local r
-  for r in $(gh run list --commit "$1" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure") | .databaseId' 2>/dev/null); do
-    gh api "repos/{owner}/{repo}/actions/runs/$r/jobs" --jq '.jobs[] | select(.conclusion=="failure") | .steps[] | select(.conclusion=="failure") | .name' 2>/dev/null
+  local r runs
+  runs="$(gh run list --commit "$1" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure") | .databaseId' 2>/dev/null)" || return 1
+  for r in $runs; do
+    gh api "repos/{owner}/{repo}/actions/runs/$r/jobs" --jq '.jobs[] | select(.conclusion=="failure") | .steps[] | select(.conclusion=="failure") | .name' 2>/dev/null || return 1
   done
 }
 ci_infra_red() { # head -> 0 when every failed step is a runner-environment step
-  local steps; steps="$(ci_failed_steps "$1")"
+  local steps; steps="$(ci_failed_steps "$1")" || return 2
   [[ -n "$steps" ]] && ! grep -qvE "$CI_INFRA_STEP_RE" <<<"$steps"
 }
 
@@ -83,7 +84,7 @@ ci_update_branch() { # pr head
 }
 
 ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（多为 runner 抖动），重跑后仍红才派 repair
-  local r n=0
+  local r n=0 runs infra_rc failed_steps
   if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]] && pr_behind_main "$2" "$3" && [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]]; then
     # 落后 main 的红多半是旧 base 的红（2026-10-19：main 自身 suites 红，5 个就绪 PR 跟着红）：服务端合入 main 再跑，
     # 不在旧 base 上重跑、不派 LLM 修复；干净合并的新 head 沿用原批准（approval_carries）。
@@ -94,7 +95,9 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     fi
   fi
   if [[ "$(unit_field "$1" .ci_deferred_sha)" == "$3" ]]; then
-    for r in $(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null); do
+    runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+      || { say "CI deferred unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
+    for r in $runs; do
       gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
     done
     set_unit "$1" "$(hist ci-deferred-start "$4") | del(.ci_deferred_sha)"
@@ -102,7 +105,9 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     return 0
   fi
   if [[ "$(unit_field "$1" .ci_rerun_sha)" != "$3" ]]; then
-    for r in $(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure") | .databaseId' 2>/dev/null); do
+    runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure") | .databaseId' 2>/dev/null)" \
+      || { say "CI red unit=$1: could not list failed runs for head $3"; return 1; }
+    for r in $runs; do
       gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
     done
     set_unit "$1" "$(hist ci-red-rerun "$4") | .ci_rerun_sha=$(js "$3")"
@@ -114,9 +119,12 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
     # 再重跑；同一 head 连红 CI_INFRA_RERUNS 次交给 supervisor 修 runner（2026-10-20 cihost /data 90% 满，
     # 磁盘门把 PR CI 全拦红，已批准单元被送去 repair 又丢批准）。
     local k decision; k="$(unit_field "$1" '.ci_infra_reruns // 0')"; [[ "$k" =~ ^[0-9]+$ ]] || k=0
-    echo "[$STAMP] RUNNER-INFRA-RED PR#$2 head=$3 steps: $(ci_failed_steps "$3" | sort -u | paste -sd ';') (rerun $((k+1))/$CI_INFRA_RERUNS)" >> "$A/alerts/gate.md"
+    failed_steps="$(ci_failed_steps "$3")" || { say "CI infra red unit=$1: failed to read failed steps for head $3"; return 1; }
+    echo "[$STAMP] RUNNER-INFRA-RED PR#$2 head=$3 steps: $(sort -u <<<"$failed_steps" | paste -sd ';') (rerun $((k+1))/$CI_INFRA_RERUNS)" >> "$A/alerts/gate.md"
     if (( k < CI_INFRA_RERUNS )); then
-      for r in $(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null); do
+      runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq '.[] | select(.conclusion=="failure" or .conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+        || { say "CI infra red unit=$1: could not list failed or cancelled runs for head $3"; return 1; }
+      for r in $runs; do
         gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
       done
       set_unit "$1" "$(hist ci-infra-red "$4") | .ci_infra_reruns=$((k+1))"
@@ -127,6 +135,9 @@ ci_red() { # id pr head names：同一 head 首次红只重跑失败的 run（�
       say "merge skipped PR#$2 (runner environment failure persists: $4) -> supervisor-review"
     fi
     return 0
+  else
+    infra_rc=$?
+    (( infra_rc != 2 )) || { say "CI red unit=$1: could not classify failed runs for head $3"; return 1; }
   fi
   set_unit "$1" "$(hist ci-red "$4") | .approved_sha=null | .repair_hint=$(js "PR head $3 的必需检查重跑后仍失败：$4。用 gh pr checks $2 与 gh run view <run-id> --log-failed 定位；失败的是集成测试就先在本机测试库复现（RUN_INTEGRATION=1 npx vitest run <文件>，PGTEST_URL 已配好），修到本地绿再 push；本 PR 引起的就修并补回归测试；确属与本 PR 无关的环境故障就不改代码，在报告里写明证据。$(ci_fact_hint "$3" "$(ci_unit_facts "$1" "$3")")") | .stage=\"repair-pending\""
   say "merge skipped PR#$2 (checks still red after rerun: $4) -> repair-pending"
@@ -137,7 +148,7 @@ ci_cancelled_upstream() { # checks_json
 }
 
 ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不动批准与重跑额度；同一 head 第 CI_CANCEL_RERUNS 次后交 supervisor；upstream=1 时 run 结论是聚合 job 的 failure
-  local r n=0 k up="${5:-}" decision
+  local r n=0 k up="${5:-}" decision runs
   k=0; [[ "$(unit_field "$1" .ci_cancel_head)" == "$3" ]] && k="$(unit_field "$1" .ci_cancel_reruns)"
   [[ "$k" =~ ^[0-9]+$ ]] || k=0
   if (( k >= CI_CANCEL_RERUNS )); then
@@ -147,7 +158,9 @@ ci_cancelled() { # id pr head names [upstream]：只重启被取消的 job，不
     return 0
   fi
   local sel='.conclusion=="cancelled"'; [[ -n "$up" ]] && sel='.conclusion=="cancelled" or .conclusion=="failure"'
-  for r in $(gh run list --commit "$3" --json databaseId,conclusion --jq ".[] | select($sel) | .databaseId" 2>/dev/null); do
+  runs="$(gh run list --commit "$3" --json databaseId,conclusion --jq ".[] | select($sel) | .databaseId" 2>/dev/null)" \
+    || { say "CI cancelled unit=$1: could not list cancelled runs for head $3"; return 1; }
+  for r in $runs; do
     gh run rerun "$r" --failed >/dev/null 2>&1 && n=$((n+1))
   done
   set_unit "$1" "$(hist ci-cancelled-restart "$4") | .ci_cancel_head=$(js "$3") | .ci_cancel_reruns=$((k+1))"
@@ -249,9 +262,11 @@ ci_fact_hint() { # head facts
 # 12 个 runner 被 PR CI 占满时 main 验证 run 要排队 50 分钟（2026-10-20）。马上会被新 head 取代的 PR run
 # （修复已派出）和快车道根本不用的 PR run 先取消，把 runner 让给 main 验证和就绪 PR。
 cancel_branch_runs() { # branch reason：reason 里第一个 ';' 之前的部分是写进审计日志的稳定原因
-  local r n=0
+  local r n=0 runs
   [[ -n "$1" ]] || return 0
-  for r in $(gh run list --branch "$1" --limit 20 --json databaseId,status,event --jq '.[] | select(.status != "completed" and .event == "pull_request") | .databaseId' 2>/dev/null); do
+  runs="$(gh run list --branch "$1" --limit 20 --json databaseId,status,event --jq '.[] | select(.status != "completed" and .event == "pull_request") | .databaseId' 2>/dev/null)" \
+    || { say "could not list PR runs on $1 for cancellation"; return 1; }
+  for r in $runs; do
     ZF_CANCEL_REASON="${2%%;*}" bash "${ZF_ENGINE_DIR:-$ROOT/engine}/night/main-ci-recovery.sh" cancel-run "$r" >/dev/null 2>&1 && n=$((n+1))
   done
   (( n > 0 )) && say "cancelled $n PR run(s) on $1 ($2)"
@@ -310,7 +325,7 @@ repair_demote() { # unit pr branch：repair 派出成功后，门控 PR 和符�
     set_unit "$1" '.gated=true'
     gated_demote_pr "$2" "$3" "$reason" && return 0
   fi
-  cancel_branch_runs "$3" "$reason"
+  cancel_branch_runs "$3" "$reason" || :
 }
 scheduler_pr_open() { # branch title body [base] → SCHED_PR_NUM / SCHED_PR_OUT；agent/issue-* 以 draft + 门控标签创建，已有 open 的非 draft PR 就退回 draft 并加标签
   local row pr draft gate=0 title body base="${4:-main}"
