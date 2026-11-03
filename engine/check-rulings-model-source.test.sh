@@ -56,6 +56,27 @@ fi
 grep -Fq "forbidden model name 'claude' appears in $candidate/.zenoforge/state/rulings.json" \
   "$TMPDIR/config-ruling.log"
 rm "$candidate/.zenoforge/state/rulings.json"
+cat > "$candidate/.zenoforge/state/incident-guards.json" <<'JSON'
+{"incidents":[{"id":"prose-only","what_happened":"Claude remains forbidden for implement."}]}
+JSON
+if ! check_config_model_sources > "$TMPDIR/config-guard-prose.log" 2>&1; then
+  cat "$TMPDIR/config-guard-prose.log" >&2
+  echo 'not ok - model source scan treated incident guard prose as a model selection' >&2
+  exit 1
+fi
+cat > "$candidate/.zenoforge/state/incident-guards.json" <<'JSON'
+{"incidents":[{"id":"forbidden-command","machine_checks":[{"command":["bash","-c","MODEL=claude"]}]}]}
+JSON
+if check_config_model_sources > "$TMPDIR/config-guard-command.log" 2>&1; then
+  echo 'not ok - model source scan ignored a forbidden model in an incident machine-check command' >&2
+  exit 1
+else
+  status=$?
+fi
+[[ "$status" == 1 ]]
+grep -Fq "forbidden model name 'claude' appears in $candidate/.zenoforge/state/incident-guards.json" \
+  "$TMPDIR/config-guard-command.log"
+rm "$candidate/.zenoforge/state/incident-guards.json"
 traffic="$candidate/engine/network-traffic.py"
 cat >> "$traffic" <<'PY'
 
