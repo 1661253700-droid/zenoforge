@@ -395,7 +395,7 @@ gated_ready() { # id branch approved_head：批准的 head 占到名额（或属
     if [[ "$unlabeled" == 1 ]]; then
       # 非 draft 的未标签 PR：CI 已自然起跑，只补 ready 证据，不做降级/重 ready 的扰动
       if [[ "$ready_sha" != "$3" || -z "$ready_at" ]]; then
-        set_unit "$1" ".ci_ready_sha=$(js "$3") | .ci_ready_at=$(js "$(date -u +%Y-%m-%dT%H:%M:%SZ)") | del(.ci_wip_wait) | del(.ci_cancel_reruns) | del(.ci_slot_wait_since) | del(.ci_slot_starve_alerted)" || :
+        set_unit "$1" ".ci_ready_sha=$(js "$3") | .ci_ready_at=$(js "$(date -u +%Y-%m-%dT%H:%M:%SZ)") | del(.ci_wip_wait) | del(.ci_cancel_reruns) | del(.ci_slot_wait_since) | del(.ci_slot_wait_ticks) | del(.ci_slot_starve_alerted)" || :
         say "gated unit=$1 PR#$pr already ready on ${3:0:9}; ready evidence recorded"
       fi
       return 0
@@ -412,7 +412,7 @@ gated_ready() { # id branch approved_head：批准的 head 占到名额（或属
   [[ "$unlabeled" == 0 ]] && GATED_OF["$2"]="$pr false $ghead"
   READIED_PRS["$pr"]=1
   [[ "$(unit_field "$1" '.ci_wip_wait // empty')" == "$3" ]] && gated_status "$3" success agent/ci-waiting "CI slot granted"
-  set_unit "$1" "$(hist ci-ready "PR#$pr readied on ${3:0:9}") | .ci_ready_sha=$(js "$3") | .ci_ready_at=$(js "$ready_at") | del(.ci_wip_wait) | del(.ci_cancel_reruns) | del(.ci_slot_wait_since) | del(.ci_slot_starve_alerted)"
+  set_unit "$1" "$(hist ci-ready "PR#$pr readied on ${3:0:9}") | .ci_ready_sha=$(js "$3") | .ci_ready_at=$(js "$ready_at") | del(.ci_wip_wait) | del(.ci_cancel_reruns) | del(.ci_slot_wait_since) | del(.ci_slot_wait_ticks) | del(.ci_slot_starve_alerted)"
   if [[ "$unlabeled" == 1 ]]; then
     say "gated unit=$1 PR#$pr readied on ${3:0:9} (no ci-gated label; census fallback)"
   else

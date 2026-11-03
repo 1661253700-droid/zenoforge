@@ -30,7 +30,7 @@
             "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
           ],
           "expected": "exit:0",
-          "why": "Replays the live four-unit unlabeled-draft population through ci_admission: all readied in one pass with 5 free slots, starvation watch alerts once after the bound and stays silent at zero free slots, and the per-pass slot_sync budget holds.",
+          "why": "Replays the live four-unit unlabeled-draft population through ci_admission: all readied in one pass with 5 free slots, starvation watch alerts after three slow admission ticks with free slots and stays silent at zero free slots, and the per-pass slot_sync and product-path lookup bounds hold.",
           "test_file": "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
         },
         {

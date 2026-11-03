@@ -8,9 +8,9 @@
 # replay to leave the drafts un-readied (exit 1 with evidence): the planted copy of the real past
 # bad code. Without the argument the fixed code must ready every draft in the same pass (exit 0).
 set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 engine_dir="$(cd -- "$script_dir/../.." && pwd -P)"
-source "$engine_dir/mac-autopilot/test-env.sh"
 
 fixture="$test_env_root/ci-admission-draft-starve"
 supervisor="$fixture/supervisor"
@@ -125,6 +125,8 @@ if [[ "${1:-}" == "--plant-old" ]]; then
   echo "ci-admission-draft-starve.test.sh: PLANTED-OLD left $(( $(command jq '.units | length' "$UNITS") )) ready-to-merge drafts un-readied with 5 free slots; guard must fail" >&2
   command jq -e 'all(.units[]; has("ci_slot_wait_since"))' "$UNITS" >/dev/null \
     || { echo 'ci-admission-draft-starve.test.sh: planted run did not start the starvation clock (ci_slot_wait_since)' >&2; exit 1; }
+  command jq -e 'all(.units[]; .ci_slot_wait_ticks == 1)' "$UNITS" >/dev/null \
+    || { echo 'ci-admission-draft-starve.test.sh: planted run did not count the first free-slot tick' >&2; exit 1; }
   exit 1 # the planted bad code fails the replay by construction
 fi
 
@@ -138,19 +140,22 @@ command jq -e --arg h1 "$head1" --arg h4 "$head4" '
   and ([.units[] | select(.id == "pr-4942")][0].ci_ready_sha == $h4)
   and (all(.units[]; .ci_wip_wait == null))
   and (all(.units[]; .ci_slot_wait_since == null))
+  and (all(.units[]; .ci_slot_wait_ticks == null))
   and (all(.units[]; .ci_slot_starve_alerted == null))
   and all(.units[]; any(.history[]?; .stage == "ci-ready"))' "$UNITS" >/dev/null \
   || { echo 'ci-admission-draft-starve.test.sh: ledger evidence after the ready flips is wrong' >&2; exit 1; }
 grep -Fq 'PR#4921 readied on' "$LOG" || { echo 'ci-admission-draft-starve.test.sh: no readied log line for PR#4921' >&2; exit 1; }
 grep -Fq 'ci slot starvation' "$LOG" && { echo 'ci-admission-draft-starve.test.sh: starvation alert fired for units readied this pass' >&2; exit 1; }
 
-# --- case 2: the recurrence guard. A draft that admission cannot ready alerts once after the bound. ---
+# --- case 2: the recurrence guard. A draft still unready after two free-slot ticks alerts once. ---
 starve_fixture starve-watch
-old_iso="$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
-command jq --arg iso "$old_iso" '(.units[] | select(.id == "pr-4921")) |= . + {ci_slot_wait_since:$iso}' "$UNITS" > "$UNITS.tmp"
-mv "$UNITS.tmp" "$UNITS"
+CI_SLOT_STARVE_SLOW_TICKS=2
 ci_slot_starve_watch
-grep -Fq "ci slot starvation unit=pr-4921 PR#4921: still draft with 5 free slot(s)" "$LOG" \
+command jq -e '([.units[] | select(.id == "pr-4921")][0].ci_slot_wait_ticks == 1)' "$UNITS" >/dev/null \
+  || { echo 'ci-admission-draft-starve.test.sh: first free-slot tick was not counted' >&2; exit 1; }
+grep -Fq 'CI-SLOT-STARVE' "$A/alerts/slo.md" 2>/dev/null && { echo 'ci-admission-draft-starve.test.sh: starvation alert fired before two slow ticks' >&2; exit 1; }
+ci_slot_starve_watch
+grep -Fq 'ci slot starvation unit=pr-4921 PR#4921: still draft with 5 free slot(s) after 2 slow tick(s)' "$LOG" \
   || { echo 'ci-admission-draft-starve.test.sh: starvation watch did not log the wait' >&2; exit 1; }
 grep -Fq 'CI-SLOT-STARVE unit=pr-4921 PR#4921 free_slots=5' "$A/alerts/slo.md" \
   || { echo 'ci-admission-draft-starve.test.sh: starvation watch did not write the slo.md alert' >&2; exit 1; }
@@ -161,8 +166,6 @@ ci_slot_starve_watch
   || { echo 'ci-admission-draft-starve.test.sh: starvation alert duplicated for one episode' >&2; exit 1; }
 starve_fixture starve-full-queue # 0 free slots is normal queueing: clock and alert both stay off
 ci_pr_free_slots() { printf '0\n'; }
-command jq --arg iso "$old_iso" '(.units[] | select(.id == "pr-4938")) |= . + {ci_slot_wait_since:$iso}' "$UNITS" > "$UNITS.tmp"
-mv "$UNITS.tmp" "$UNITS"
 ci_slot_starve_watch
 grep -Fq 'CI-SLOT-STARVE' "$A/alerts/slo.md" 2>/dev/null && { echo 'ci-admission-draft-starve.test.sh: alerted with zero free slots' >&2; exit 1; }
 
@@ -185,4 +188,30 @@ ci_assign_wip
 command jq -e '([.units[] | select(.id == "sync-3")][0].slot_sync_sha == null)' "$UNITS" >/dev/null \
   || { echo 'ci-admission-draft-starve.test.sh: third behind-main unit synced past the per-pass budget' >&2; exit 1; }
 
-echo 'ci-admission-draft-starve.test.sh: pass (drafts readied in one pass; starvation guard and slot_sync bound verified)'
+# --- case 4: per-PR path lookups are time-bounded; partial output from a timed-out query is ignored. ---
+starve_fixture product-path-budget
+command jq -cn '{units:[
+  {id:"path-1",pr:3001,stage:"ready-to-merge"},
+  {id:"path-2",pr:3002,stage:"ready-to-merge"},
+  {id:"path-3",pr:3003,stage:"ready-to-merge"},
+  {id:"path-4",pr:3004,stage:"ready-to-merge"}]}' > "$UNITS"
+GH_PARALLEL=2 PRODUCT_PATHS_PER_TICK=3 CI_PRODUCT_PATH_LOOKUP_TIMEOUT_SECONDS=7
+QUERY_LOG="$A/query-timeouts"; : > "$QUERY_LOG"
+gh() {
+  [[ "$1" == pr && "$2" == view ]] || return 97
+  printf '%s\t%s\n' "$3" "${AUTOPI_GH_TIMEOUT_SECONDS:-unset}" >> "$QUERY_LOG"
+  if [[ "$3" == 3002 ]]; then printf 'README.md\n'; return 1; fi # simulate timed out partial output
+  printf 'src/app.ts\n'
+}
+mark_product_paths
+[[ "$(wc -l < "$QUERY_LOG")" == 3 ]] || { echo 'ci-admission-draft-starve.test.sh: path lookups exceeded the per-tick cap' >&2; exit 1; }
+awk -F '\t' 'NF != 2 || $2 != 7 { exit 1 }' "$QUERY_LOG" \
+  || { echo 'ci-admission-draft-starve.test.sh: per-PR product-path timeout was not applied' >&2; exit 1; }
+command jq -e '
+  ([.units[] | select(.pr == 3001)][0].product_paths == true)
+  and ([.units[] | select(.pr == 3002)][0].product_paths == null)
+  and ([.units[] | select(.pr == 3003)][0].product_paths == true)
+  and ([.units[] | select(.pr == 3004)][0].product_paths == null)' "$UNITS" >/dev/null \
+  || { echo 'ci-admission-draft-starve.test.sh: failed/over-budget product-path query was incorrectly classified' >&2; exit 1; }
+
+echo 'ci-admission-draft-starve.test.sh: pass (one-pass draft admission, 3-tick starvation alert, slot_sync and path lookup bounds verified)'

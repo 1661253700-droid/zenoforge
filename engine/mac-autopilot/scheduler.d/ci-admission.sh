@@ -1,16 +1,20 @@
 mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记 .product_paths（true/false）
-  local id pr files query_dir pid product updates='{}'
+  local id pr files query_dir pid product updates='{}' query_timeout
   local -a ids=() pids=()
+  query_timeout="${CI_PRODUCT_PATH_LOOKUP_TIMEOUT_SECONDS:-10}"
+  [[ "$query_timeout" =~ ^[1-9][0-9]*$ ]] || query_timeout=10
   query_dir="$(mktemp -d)" || return 0
-  # 有界并行取（GH_PARALLEL）；每单元只在 .product_paths 为空时查一次。
+  # 每拍至多 20 个、GH_PARALLEL 并行；每次查询 10 秒超时，失败/超时的部分输出不可用于分类。
   while IFS=$'\t' read -r id pr; do
     [[ -n "$id" && "$pr" =~ ^[0-9]+$ ]] || continue
     ids+=("$id")
-    { gh pr view "$pr" --json files --jq '.files[].path' >"$query_dir/$id" || :; } &
+    { AUTOPI_GH_TIMEOUT_SECONDS="$query_timeout" gh pr view "$pr" --json files --jq '.files[].path' >"$query_dir/$id" \
+        && : >"$query_dir/$id.ok" || :; } &
     pids+=("$!"); gh_par_throttle pids
   done < <(jqf -r '.units[] | select(.stage == "ready-to-merge" and (.pr // null) != null and .product_paths == null) | [.id, .pr] | @tsv' "$UNITS" | head -"${PRODUCT_PATHS_PER_TICK:-20}")
   for pid in "${pids[@]}"; do wait "$pid" || :; done
   for id in "${ids[@]}"; do
+    [[ -f "$query_dir/$id.ok" ]] || continue
     files="$(cat "$query_dir/$id" 2>/dev/null)"
     [[ -n "$files" ]] || continue
     if grep -vqE "$NONPRODUCT_PATHS_RE" <<<"$files"; then product=true; else product=false; fi
@@ -207,27 +211,31 @@ ci_assign_wip() {
 }
 
 # 复发护栏（2026-11-03 草稿饿死事故）：设计上，ready-to-merge 单元的 draft PR 在有空闲名额的
-# 第一个准入拍就必须被翻转（豁免类立即翻，门控类占到名额翻）。这里给「没被翻转」计时：
-# 超过 CI_SLOT_STARVE_SECONDS（默认 2700s ≈ 2-3 个慢拍）仍有空闲名额 → 每拍 say 一行，并按单元
-# 一次性写 alerts/slo.md。名额为 0 属于正常排队，不计时也不告警。
+# 第一个准入拍就必须被翻转（豁免类立即翻，门控类占到名额翻）。累计 CI_SLOT_STARVE_SLOW_TICKS
+# （默认 3）个有空闲名额的慢拍仍未翻转 → 每拍 say 一行，并按单元一次性写 alerts/slo.md。
+# 名额为 0 属于正常排队，不计时也不告警。
 ci_slot_starve_watch() {
-  local wip prs id pr since since_epoch waited
+  local wip prs id pr since ticks threshold
+  threshold="${CI_SLOT_STARVE_SLOW_TICKS:-3}"
+  [[ "$threshold" =~ ^[1-9][0-9]*$ ]] || threshold=3
   wip="$(ci_pr_free_slots)" || return 0
   (( wip > 0 )) || return 0
   prs="$(tick_prs)" || return 0
   while IFS=$'\t' read -r id pr since; do
     [[ -n "$id" ]] || continue
     if [[ -z "$since" ]]; then
-      set_unit "$id" ".ci_slot_wait_since=$(js "$STAMP")" || :
-      continue
+      ticks=1
+      set_unit "$id" ".ci_slot_wait_since=$(js "$STAMP") | .ci_slot_wait_ticks=1" || :
+    else
+      ticks="$(unit_field "$id" '.ci_slot_wait_ticks // 1')"
+      [[ "$ticks" =~ ^[0-9]+$ ]] || ticks=1
+      ticks=$((ticks + 1))
+      set_unit "$id" ".ci_slot_wait_ticks=$ticks" || :
     fi
-    since_epoch="$(ap_iso_epoch "$since")" || since_epoch=""
-    [[ "$since_epoch" =~ ^[0-9]+$ ]] || continue
-    waited=$(( NOW_EPOCH - since_epoch ))
-    (( waited > ${CI_SLOT_STARVE_SECONDS:-2700} )) || continue
-    say "ci slot starvation unit=$id PR#$pr: still draft with $wip free slot(s) after $((waited / 60))m; admission cannot ready it"
+    (( ticks >= threshold )) || continue
+    say "ci slot starvation unit=$id PR#$pr: still draft with $wip free slot(s) after $ticks slow tick(s); admission cannot ready it"
     if [[ "$(unit_field "$id" '.ci_slot_starve_alerted // empty')" != true ]]; then
-      echo "[$STAMP] CI-SLOT-STARVE unit=$id PR#$pr free_slots=$wip waited_min=$((waited / 60))" >> "$A/alerts/slo.md" \
+      echo "[$STAMP] CI-SLOT-STARVE unit=$id PR#$pr free_slots=$wip waited_ticks=$ticks" >> "$A/alerts/slo.md" \
         && set_unit "$id" '.ci_slot_starve_alerted=true' || :
     fi
   done < <(jqf -r --argjson prs "$prs" '.units[]
