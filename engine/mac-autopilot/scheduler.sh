@@ -33,6 +33,9 @@ PAUSE_FILE="${AUTOPILOT_PAUSE_FILE:-${AGENT_HOME:-${HOME:-}/.zenoforge}/PAUSE}"
 # 每拍 gh 调用计数（#4725）：48h 审计里 scheduler.log 没有任何 gh 调用数，REST 配额被谁吃掉不可见。
 # 函数在本进程（含子 shell）内拦截 gh；计数文件按进程命名，慢阶段让锁期间并行的 refill 不会互相清零。
 GH_TICK_CALLS_FILE=""
+TICK_INTAKE_READS_FILE=""
+TICK_PHASE_DETAILS=""
+TICK_PHASES=""
 # 有界并行：#4725 把 gh 全改串行后慢拍从 350s 涨到 636s；后台 gh 最多 GH_PARALLEL 个同时在途，避开二级限流。
 GH_PARALLEL="${GH_PARALLEL:-4}"
 # 条件请求（GitHub REST best practices，#4725）：周期性 GET 带 If-None-Match，命中 304 不占主限流配额，
@@ -111,6 +114,8 @@ if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${
   [[ -z "$reconcile_event" ]] || say "$reconcile_event"
 fi
 CFG="$(cat "$A/config.json")"
+ISSUE_INTAKE_REMOTE_READ_CAP="$(jqf -r '.issue_intake.remote_reads_per_tick // 24' <<<"$CFG")"
+[[ "$ISSUE_INTAKE_REMOTE_READ_CAP" =~ ^[0-9]+$ ]] || ISSUE_INTAKE_REMOTE_READ_CAP=24
 warn_forbidden_model_config
 INCIDENT_LABELS="$(incident_labels_from_config "$CFG")"
 INCIDENT_RULE="$(incident_rule_text)"
@@ -408,6 +413,16 @@ VIEWS_LOCK="$A/.views.lock"
 # 当可启动 pending 少于空槽时先收 issue，再派发 implement/repair/review/rereview-pending。新候选优先复用慢拍缓存，
 # 缓存失效时最多查询一个标签；实现派发只读本地台账，PR 修复、评审或复审按需读取一次共享 PR census。
 # 报告收割与 PR 注册仍由慢 tick 处理。
+run_issue_intake_phases() {
+  local rc=0
+  phase register_new_issues 1 || rc=$?
+  phase register_new_issues || rc=$?
+  return "$rc"
+}
+run_refill_intake_dispatch_phases() {
+  phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
+  phase dispatch_pending true
+}
 refill_tick() {
   local TICK_LOCAL_REFILL=true refill_log_offset=0 live metrics
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
@@ -442,13 +457,15 @@ refill_tick() {
     if supervisor_marking_deferred; then
       say "refill dispatch held: supervisor-owned marking deferred"
     else
-      phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
-      phase dispatch_pending true
+      phase_yield_lock_batch run_refill_intake_dispatch_phases
     fi
   fi
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
+  say "tick-phases kind=refill secs=$SECONDS gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none}"
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
+  rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
+  TICK_INTAKE_READS_FILE=""
   live="$(live_workers)"
   metrics="$(refill_dispatch_metrics "$refill_log_offset" "$live")" \
     || metrics='free_slots=unknown pending=unknown skips=footprint:unknown,handoff:unknown,memory:unknown'
@@ -465,7 +482,7 @@ main() {
     return 2
   fi
   tick_gh_calls_begin
-  tick_prs_prime
+  phase_yield_lock tick_prs_prime
   rotate_logs
   if update_budget >/dev/null; then
     budget_alert_if_needed
@@ -493,8 +510,7 @@ main() {
   else
     phase stuck_worker_disposition
     phase_yield_lock release_dependency_blocks
-    phase register_new_issues 1
-    phase register_new_issues
+    phase_yield_lock_batch run_issue_intake_phases
     phase retire_landed_pr_units
     phase supersede_resolved_main_red_units
     # supervisor-owned 标记必须先于任何会动手的阶段（派发、快车道、CI 准入、合并车道）落进台账。
@@ -504,7 +520,7 @@ main() {
       # 裁决整拍跳过；登记与生命周期照常，分类恢复的下一拍补标记后恢复推进。
       say "acting phases held: supervisor-owned marking deferred"
     else
-      phase dispatch_pending
+      phase_yield_lock dispatch_pending
       phase dispatch_supervisor_arbiters
       phase dispatch_prompt_evals
       phase fast_land_lane
@@ -517,7 +533,7 @@ main() {
     phase aged_pr_lifecycle
     phase run_release_train
     phase stage_slo_watch
-    supervisor_marking_deferred || phase dispatch_pending
+    supervisor_marking_deferred || phase_yield_lock dispatch_pending
     phase footprint_hog_alert
     views_mode=full
   fi
@@ -526,8 +542,11 @@ main() {
   publish_pr_run_snapshot
   launch_views "$views_mode"
   gh_calls="$(tick_gh_calls_count)"
+  say "tick-phases kind=full secs=$SECONDS gh_calls=$gh_calls phases=${TICK_PHASE_DETAILS:-none}"
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
+  rm -f -- "$TICK_INTAKE_READS_FILE" "$TICK_INTAKE_READS_FILE.lock" "$TICK_INTAKE_READS_FILE.reached" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
+  TICK_INTAKE_READS_FILE=""
   say "tick done units=$(jqf '.units | length' "$UNITS") live=$(live_workers) secs=$SECONDS gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
 }
 

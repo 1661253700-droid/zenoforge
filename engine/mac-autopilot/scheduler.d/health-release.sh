@@ -15,7 +15,18 @@ run_node_health() {
   fi
 }
 # Dispatch refreshes itself because running workers may have pushed.
-phase() { local t0=$SECONDS rc=0; [[ "${TICK_LOCAL_REFILL:-false}" == true || "$1" == dispatch_pending ]] || tick_prs_prime; "$@" || rc=$?; (( SECONDS - t0 >= 5 )) && TICK_PHASES+=" $1=$((SECONDS - t0))s"; return $rc; }
+phase() {
+  local t0=$SECONDS rc=0 gh_before=0 gh_after=0 gh_delta=0 phase_name="$1" elapsed
+  gh_before="$(tick_gh_calls_count)"
+  [[ "${TICK_LOCAL_REFILL:-false}" == true || "$phase_name" == dispatch_pending || "$phase_name" == tick_prs_prime ]] || tick_prs_prime
+  "$@" || rc=$?
+  elapsed=$((SECONDS - t0))
+  gh_after="$(tick_gh_calls_count)"
+  (( gh_after >= gh_before )) && gh_delta=$((gh_after - gh_before))
+  TICK_PHASE_DETAILS+="${TICK_PHASE_DETAILS:+,}${phase_name}:${elapsed}s/${gh_delta}gh"
+  (( elapsed < 5 )) || TICK_PHASES+=" $phase_name=${elapsed}s"
+  return "$rc"
+}
 
 stage_slo_watch() {
   local budgets row id stage since key

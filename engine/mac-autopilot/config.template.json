@@ -23,7 +23,8 @@
     "labels": [],
     "product_labels": ["ready-for-agent"],
     "ready_buffer": null,
-    "refill_max": 2
+    "refill_max": 2,
+    "remote_reads_per_tick": 24
   },
   "incident": {
     "labels": ["bug", "incident", "production-anomaly"],

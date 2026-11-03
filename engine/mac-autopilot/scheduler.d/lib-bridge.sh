@@ -5,10 +5,14 @@ scheduler_jq_arg_file() (
 )
 scheduler_issue_intake_parent_reason() (
   local preserved_gh=""
-  declare -F gh >/dev/null 2>&1 && preserved_gh="$(declare -f gh)"
+  declare -F gh >/dev/null 2>&1 && preserved_gh="$(declare -f gh | sed '1s/^gh ()/scheduler_gh ()/')"
   REPO_DIR="$ROOT" MODEL_POLICY_SOURCE_CHECK_ONLY=1
   source "$SCHEDULER_AGENT_LIB" || return 2
-  [[ -z "$preserved_gh" ]] || eval "$preserved_gh"
+  if [[ -n "$preserved_gh" ]]; then
+    eval "$preserved_gh"
+    TICK_INTAKE_GH_INVOKE=scheduler_gh
+    gh() { intake_gh_read "$@"; }
+  fi
   issue_intake_parent_reason "$@"
 )
 scheduler_jq_arg_file() (

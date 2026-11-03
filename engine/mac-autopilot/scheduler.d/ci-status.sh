@@ -556,7 +556,11 @@ hotfix_issue_numbers() {
   if [[ "$TICK_HOTFIX_ISSUES_LOADED" != true ]]; then
     TICK_HOTFIX_ISSUES_LOADED=true
     label="$(hotfix_lane_label)"
-    rows="$(gh issue list --state open --label "$label" --limit 200 --json number,labels 2>/dev/null)" || return 1
+    if declare -F intake_gh_read >/dev/null 2>&1; then
+      rows="$(intake_gh_read issue list --state open --label "$label" --limit 200 --json number,labels 2>/dev/null)" || return 1
+    else
+      rows="$(gh issue list --state open --label "$label" --limit 200 --json number,labels 2>/dev/null)" || return 1
+    fi
     if ! TICK_HOTFIX_ISSUES="$(jqf -c --arg label "$label" '
       if type != "array" then error("invalid issue census")
       else [.[] | select(any(.labels[]?; .name == $label)) | .number] end
