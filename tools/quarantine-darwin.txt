@@ -22,6 +22,7 @@ engine/land-queue-recovery.test.sh	cat: /proc/<pid>/stat: No such file or direct
 engine/lib.test.sh	hand-agent-watchdog.sh: line 196: /proc/<pid>/stat: No such file or directory (PT-5)
 engine/lib-gitnexus.test.sh	extracted from the quarantined lib suite; Darwin portability remains unverified (PT-5)
 engine/lib-model-policy.test.sh	extracted from the quarantined lib suite; Darwin portability remains unverified (PT-5)
+engine/lib-supervisor-inbox.test.sh	extracted from the quarantined lib suite; Darwin portability remains unverified (PT-5)
 engine/night/hand-agent-session-discovery.test.sh	readlink -f /proc/<pid>/cwd returns empty, so no session is selected (PT-8)
 engine/night/hand-handoff-chain.test.sh	awk: fatal: cannot open file `/proc/<pid>/stat' for reading (PT-5)
 engine/night/hand-owned-issues.test.sh	hand-agent-watchdog.sh: line 196: /proc/<pid>/stat: No such file or directory (PT-5)
