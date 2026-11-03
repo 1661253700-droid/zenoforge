@@ -51,12 +51,16 @@ precheck_launch() { # id pr head
 # 每个 head 只试一次；真冲突转 repair，不消耗 CI 运行，名额让给下一个就绪单元。mergeability 或 head 数据未知不做任何转移。
 # 返回 0 = 已请求 update-branch 或处理冲突（除携带批准的门控草稿外调用方延后），1 = 照常占名额。
 SLOT_SYNC_CARRIED_HEAD=""
+SLOT_SYNC_SPENT=0 # 本拍 update-branch 名额同步预算计数（SLOT_SYNC_MAX）：每条链 5-7 个串行 gh 调用，是 wip_assignment 的大头
 slot_sync() { # id head gated
   local pr state updated_head
   SLOT_SYNC_CARRIED_HEAD=""
   pr="$(unit_field "$1" .pr)"; [[ "$pr" =~ ^[0-9]+$ && "$2" =~ $SHA_RE ]] || return 1
   [[ "$(unit_field "$1" '.slot_sync_sha // empty')" != "$2" ]] || return 1
   pr_behind_main "$pr" "$2" || return 1
+  if (( SLOT_SYNC_SPENT++ >= ${SLOT_SYNC_MAX:-2} )); then
+    return 2 # 本拍预算用完：调用方延后该单元（不占名额），下一拍再同步
+  fi
   state="$(tick_pr_mergeable "$pr")"
   case "$state" in
     MERGEABLE)
@@ -83,9 +87,10 @@ slot_sync() { # id head gated
 }
 
 ci_assign_wip() {
-  local wip k=0 id br head r st jobs n=0 started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs
+  local wip k=0 id br head r st jobs n=0 started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs sync_rc
   local detail_started detail_elapsed
   local -a jobs_to_load=()
+  SLOT_SYNC_SPENT=0
   precheck_on="$(jqf -r 'if .precheck == false then 0 else 1 end' <<<"$CFG")"
   detail_started=$SECONDS
   mark_product_paths
@@ -102,7 +107,9 @@ ci_assign_wip() {
   else
     GATED_OF=()
   fi
-  if (( ${#GATED_OF[@]} > 0 )); then
+  if [[ "$GATED_CENSUS_LOADED" == true ]]; then
+    # 普查已读就跑豁免分类：热修/非产品单元不占产品名额、直接 ready。条件不能是 GATED_OF 非空——
+    # 没有任何带标签 PR 时（只剩未标签热修 draft）豁免类也要照常处理（2026-11-03 饿死事故的形态之一）。
     gated_ready_exempt
   fi
   while IFS=$'\t' read -r id br head; do
@@ -120,13 +127,19 @@ ci_assign_wip() {
     fi
     k=$((k + 1))
     if (( k <= wip )); then
-      if [[ "$gated:$gdraft" != "1:false" ]] && slot_sync "$id" "$head" "$gated"; then
-        if (( gated )) && [[ -n "$SLOT_SYNC_CARRIED_HEAD" ]]; then
-          head="$SLOT_SYNC_CARRIED_HEAD"
-          read -r synced_pr _ <<<"${GATED_OF[$br]}"
-          GATED_OF["$br"]="$synced_pr true $head"
-        else
-          k=$((k - 1)); continue
+      if [[ "$gated:$gdraft" != "1:false" ]]; then
+        sync_rc=0
+        slot_sync "$id" "$head" "$gated" || sync_rc=$?
+        if (( sync_rc == 2 )); then
+          k=$((k - 1)); continue # 本拍同步预算用完：名额让给已同步单元，下一拍再试
+        elif (( sync_rc == 0 )); then
+          if (( gated )) && [[ -n "$SLOT_SYNC_CARRIED_HEAD" ]]; then
+            head="$SLOT_SYNC_CARRIED_HEAD"
+            read -r synced_pr _ <<<"${GATED_OF[$br]}"
+            GATED_OF["$br"]="$synced_pr true $head"
+          else
+            k=$((k - 1)); continue
+          fi
         fi
       fi
       if (( precheck_on )) && [[ "$gated:$gdraft" != "1:false" ]] && [[ "$(unit_field "$id" '.precheck_sha // empty')" != "$head" ]]; then
@@ -193,6 +206,37 @@ ci_assign_wip() {
   return 0
 }
 
+# 复发护栏（2026-11-03 草稿饿死事故）：设计上，ready-to-merge 单元的 draft PR 在有空闲名额的
+# 第一个准入拍就必须被翻转（豁免类立即翻，门控类占到名额翻）。这里给「没被翻转」计时：
+# 超过 CI_SLOT_STARVE_SECONDS（默认 2700s ≈ 2-3 个慢拍）仍有空闲名额 → 每拍 say 一行，并按单元
+# 一次性写 alerts/slo.md。名额为 0 属于正常排队，不计时也不告警。
+ci_slot_starve_watch() {
+  local wip prs id pr since since_epoch waited
+  wip="$(ci_pr_free_slots)" || return 0
+  (( wip > 0 )) || return 0
+  prs="$(tick_prs)" || return 0
+  while IFS=$'\t' read -r id pr since; do
+    [[ -n "$id" ]] || continue
+    if [[ -z "$since" ]]; then
+      set_unit "$id" ".ci_slot_wait_since=$(js "$STAMP")" || :
+      continue
+    fi
+    since_epoch="$(ap_iso_epoch "$since")" || since_epoch=""
+    [[ "$since_epoch" =~ ^[0-9]+$ ]] || continue
+    waited=$(( NOW_EPOCH - since_epoch ))
+    (( waited > ${CI_SLOT_STARVE_SECONDS:-2700} )) || continue
+    say "ci slot starvation unit=$id PR#$pr: still draft with $wip free slot(s) after $((waited / 60))m; admission cannot ready it"
+    if [[ "$(unit_field "$id" '.ci_slot_starve_alerted // empty')" != true ]]; then
+      echo "[$STAMP] CI-SLOT-STARVE unit=$id PR#$pr free_slots=$wip waited_min=$((waited / 60))" >> "$A/alerts/slo.md" \
+        && set_unit "$id" '.ci_slot_starve_alerted=true' || :
+    fi
+  done < <(jqf -r --argjson prs "$prs" '.units[]
+      | select(.stage == "ready-to-merge" and (.pr // null) != null and (.hold_handoff_waiting // false) == false
+          and (.lane // "") != "direct-main" and (.approved_sha // "") != "")
+      | . as $u | ($prs[] | select(.number == $u.pr) | select(.isDraft == true)) | [$u.id, ($u.pr | tostring), ($u.ci_slot_wait_since // "")] | @tsv' "$UNITS")
+  return 0
+}
+
 # Sole CI admission decision point for a scheduler tick. Gate-managed hotfixes are readied first; then
 # review deferral and WIP slots apply, both exempting hotfix branches. The shared cancel set makes the
 # first selected action authoritative for the rest of this pass.
@@ -217,4 +261,5 @@ ci_admission() {
   ci_assign_wip
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "ci admission detail wip_assignment=${detail_elapsed}s"
+  ci_slot_starve_watch
 }

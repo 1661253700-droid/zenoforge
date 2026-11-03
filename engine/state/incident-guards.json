@@ -1,6 +1,59 @@
 {
   "incidents": [
     {
+      "id": "ci-admission-unlabeled-draft-starvation",
+      "date": "2026-11-03",
+      "class": "membership-gate-silent-noop-starvation",
+      "what_happened": "Four ready-to-merge hotpatch units (release-blocker PRs on hotfix/* branches) stayed on draft PRs for hours while 5 of 12 PR runners idled; every slow tick logged merge skipped PR#<n> (draft, waiting for its CI slot) and no admission path flipped them.",
+      "root_cause_evidence": "Live scheduler.log 2026-11-03T05:24:24Z repeats merge skipped PR#4938/4940/4942/4921 (draft, waiting for its CI slot); the PRs carry no agent/ci-gated label, so gated_ready returned at the [[ -n \"$pr\" ]] || return 0 guard (engine/mac-autopilot/scheduler.d/ci-status.sh:371 pre-fix) while the WIP selection excludes them via (.hotpatch // false) != true (engine/mac-autopilot/scheduler.d/ci-admission.sh:156): the two selectors have an empty intersection, so no code path could ever ready them.",
+      "classic_pattern": "A membership-gated handler returns success without acting (silent no-op), and the population it silently drops is excluded from every other path by a disjoint predicate: starvation with all capacity idle.",
+      "best_known_solution": "A single admission decision point must resolve PR draft/head state from the full PR census when the gated-label census does not index the unit, and a symptom watch must alert when a ready-to-merge draft waits past a bound while free slots exist.",
+      "lesson_id": "V1273",
+      "research_sources": [
+        "https://en.wikipedia.org/wiki/Starvation_(computer_science)",
+        "https://sre.google/sre-book/monitoring-distributed-systems/"
+      ],
+      "options_considered": [
+        "Add the gated label to hotfix PRs at orphan adoption; this repairs one registration path but any other unlabeled draft source starves the same way.",
+        "Drop the hotpatch exclusion so hotpatches take product CI slots; this inverts the hotfix exemption design and queues hotfixes behind product CI.",
+        "Resolve draft/head from the full per-tick PR census inside gated_ready when the branch is unlabeled, keeping one ready decision point for labeled and unlabeled drafts; selected.",
+        "Add ci_slot_starve_watch so any future class of un-readable ready draft alerts within a bounded time while free slots exist; selected as the symptom guard."
+      ],
+      "siblings": {
+        "discovery_command": "grep -c 'draft, waiting for its CI slot' \"$A/scheduler.log\" vs gh api runners busy count",
+        "expected_result": "Zero ready-to-merge drafts remain after an admission pass with free slots; CI-SLOT-STARVE alerts otherwise."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Replays the live four-unit unlabeled-draft population through ci_admission: all readied in one pass with 5 free slots, starvation watch alerts once after the bound and stays silent at zero free slots, and the per-pass slot_sync budget holds.",
+          "test_file": "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh",
+            "--plant-old"
+          ],
+          "expected": "exit:1",
+          "why": "Plants the verbatim pre-fix gated_ready and proves the replay detects the un-readied drafts (fail against the real past bad code) and starts the starvation clock.",
+          "test_file": "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "test",
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.d/ci-status.sh",
+          "engine/mac-autopilot/scheduler.d/ci-admission.sh",
+          "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+        ]
+      }
+    },
+    {
       "id": "supervisor-cap-triage-unbalanced-jq-regex",
       "date": "2026-11-03",
       "class": "literal-jq-regex-not-compiled-before-fixture-execution",
