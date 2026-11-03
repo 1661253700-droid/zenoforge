@@ -31,13 +31,15 @@ repair_check_rows() { # PR number → latest normalized check rows from the tick
 # supervisor-owned 热修单元不进合并车道（update-branch、接管 pipeline-ci、gh pr merge 都不碰），
 # 热修 supervisor 会话自己合；台账里留着它们做 census 与发布阻断计数。
 merge_candidates() { # window → 就绪单元（每行一个 JSON）
-  local rf prs; rf="$(mktemp)" || return 0
+  local rf prs_file; rf="$(mktemp)" || return 0
+  prs_file="$(mktemp)" || { rm -f -- "$rf"; return 0; }
   # Use the same open-PR census, but normalize checks only for ready-to-merge PRs before sorting all candidates.
-  prs="$(jqf -c '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main") | .pr | tostring] | unique' "$UNITS")"
-  if [[ "$prs" == '[]' ]]; then
+  jqf -c '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main") | .pr | tostring] | unique' "$UNITS" > "$prs_file" \
+    || { rm -f -- "$rf" "$prs_file"; return 0; }
+  if [[ "$(jqf -r 'length' "$prs_file")" == 0 ]]; then
     printf '{}\n' > "$rf"
   else
-    tick_prs | jqf --argjson prs "$prs" '[.[] | select((.number | tostring) as $n | $prs | index($n) != null)]' | pr_census_by_number > "$rf"
+    tick_prs | jqf --slurpfile prs "$prs_file" '[.[] | select((.number | tostring) as $n | $prs[0] | index($n) != null)]' | pr_census_by_number > "$rf"
   fi
   jqf -e 'type == "object"' "$rf" >/dev/null 2>&1 || echo '{}' > "$rf"
   jqf -c --slurpfile r "$rf" '[.units[] | select(.stage=="ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main")]
@@ -45,7 +47,7 @@ merge_candidates() { # window → 就绪单元（每行一个 JSON）
         (if .hotpatch == true then 0 elif .critical == true then 1 else 2 end),
         ($r[0][(.pr | tostring)].ci // 2), (.merge_checked_epoch // 0), (.ready_since // 0)])
     | .[0:'"$1"'] | map(. + {pr_open_head: ($r[0][(.pr | tostring)].head // null), pr_open_draft: $r[0][(.pr | tostring)].draft, pr_open_mergeable: $r[0][(.pr | tostring)].mergeable, pr_open_checks: ($r[0][(.pr | tostring)].checks // null)}) | .[]' "$UNITS"
-  rm -f -- "$rf"
+  rm -f -- "$rf" "$prs_file"
 }
 
 # 冲突的单元送修复：作废批准、留历史、给 repair 提示。合并车道两处发现冲突（checks 未齐时、合并失败后）共用；
@@ -198,8 +200,8 @@ run_merge_lane() {
   cands="$(merge_candidates "$((merge_max * 3))")"
   candidate_ids="$(jqf -cs '[.[] | select(type=="object") | .id] | unique' <<<"$cands")"
   if jqf -e 'length > 0' <<<"$candidate_ids" >/dev/null; then
-    units_update --argjson ids "$candidate_ids" --argjson checked "$NOW_EPOCH" \
-      '.units |= map(if (.id as $id | $ids | index($id)) != null then .merge_checked_epoch=$checked else . end)' \
+    units_update --slurpfile ids <(printf '%s' "$candidate_ids") --argjson checked "$NOW_EPOCH" \
+      '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .merge_checked_epoch=$checked else . end)' \
       || { detail_elapsed=$((SECONDS - detail_started)); (( detail_elapsed < 2 )) || say "merge detail candidate_build=${detail_elapsed}s"; say "merge lane stopped: could not record the current candidate scan"; return 0; }
   fi
   detail_elapsed=$((SECONDS - detail_started))

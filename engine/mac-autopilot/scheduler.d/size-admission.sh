@@ -27,9 +27,9 @@ changed_files_of() { # dir branch base-branch → actual diff paths as JSON
 }
 
 size_admission_exempt_unit() { # unit-json → true when the configured hotpatch exemption applies
-  jqf -e --argjson unit "$1" '(.size_admission // {}) as $sa
-    | ($unit.hotpatch == true)
-      and (if ($sa | has("exempt_hotpatch")) then $sa.exempt_hotpatch == true else true end)' <<<"$CFG" >/dev/null
+  jqf -e --slurpfile cfg <(printf '%s' "$CFG") '($cfg[0].size_admission // {}) as $sa
+    | (.hotpatch == true)
+      and (if ($sa | has("exempt_hotpatch")) then $sa.exempt_hotpatch == true else true end)' <<<"$1" >/dev/null
 }
 
 # 尺寸准入在 write-start、开 PR、派已有 PR 的 implement/repair 前和每次 repair/self-fix 交付后复查。

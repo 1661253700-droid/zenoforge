@@ -834,7 +834,7 @@ main_ci_reconcile_red_quarantine() {
 # One report line: culprit=<sha> suite=<path> ..., or fallback=<reason> to keep the current rerun-verdict path.
 main_ci_attribute_red() {
   local run_id="$1" attempt="$2" run_head="$3" window green_sha red_run red_sha red_attempt
-  local candidates_output candidate suite culprit status total eligibility=0 candidate_json='[]' candidate_row subject files failed_log failed_tests judge_input judge_output judged_culprit
+  local candidates_output candidate suite culprit status total eligibility=0 candidate_rows_file='' subject files failed_log failed_tests judge_input judge_output judged_culprit
   local -a candidates=()
   [[ "$run_id" =~ ^[0-9]+$ && "$attempt" =~ ^[1-9][0-9]*$ && "$run_head" =~ ^[0-9a-f]{40}$ ]] || return 2
   main_ci_recovery_current pipeline-suites "$run_id" "$run_head" >/dev/null || eligibility=$?
@@ -860,24 +860,29 @@ main_ci_attribute_red() {
   }
   judge_output=""
   if [[ -n "${TYPESAFE_API_KEY:-}${TYPESAFE_ENV_FILE:-}" ]]; then
+    candidate_rows_file="$(mktemp)" || { echo 'fallback=candidate-list-unavailable'; return 0; }
     for candidate in "${candidates[@]}"; do
       subject="$(git -C "$REPO_DIR" log -1 --format=%s "$candidate" 2>/dev/null || true)"
       files="$(git -C "$REPO_DIR" diff-tree --no-commit-id --name-only -r "$candidate" 2>/dev/null | head -n 30 | jq -Rsc 'split("\n") | map(select(length > 0))')"
-      candidate_row="$(jq -cn --arg sha "$candidate" --arg subject "$subject" --argjson files "${files:-[]}" '{sha:$sha,subject:$subject,files:$files}')"
-      candidate_json="$(jq -cn --argjson rows "$candidate_json" --argjson row "$candidate_row" '$rows + [$row]')"
+      jq -cn --arg sha "$candidate" --arg subject "$subject" --argjson files "${files:-[]}" \
+        '{sha:$sha,subject:$subject,files:$files}' >> "$candidate_rows_file" \
+        || { rm -f -- "$candidate_rows_file"; echo 'fallback=candidate-list-unavailable'; return 0; }
     done
     failed_log="$(gh run view "$red_run" --attempt "$red_attempt" --log-failed --repo "$REPO" 2>/dev/null || true)"
     failed_tests="$(printf '%s\n' "$failed_log" | rg -e 'FAILED suite=|not ok [0-9]+ -|^[[:space:]]*FAIL[[:space:]]+' | tail -n 40 | head -c 8000 || true)"
     judge_input="$(jq -cn --arg event_id "main-red:$red_run:$red_attempt" --arg current "$culprit" \
-      --arg failedSuite "$suite" --arg failedTests "$failed_tests" --argjson candidates "$candidate_json" \
-      '{event_id:$event_id,currentDecision:$current,failedSuite:$failedSuite,failedTests:$failedTests,candidates:$candidates}')"
+      --arg failedSuite "$suite" --arg failedTests "$failed_tests" --slurpfile candidates "$candidate_rows_file" \
+      '{event_id:$event_id,currentDecision:$current,failedSuite:$failedSuite,failedTests:$failedTests,candidates:$candidates[0]}')"
     judge_output="$(printf '%s\n' "$judge_input" | bash "${ZF_ENGINE_DIR:-$REPO_DIR/engine}/ts-judge.sh" main-red 2>/dev/null || true)"
   fi
   judged_culprit="$(jq -r 'select(.status=="answered" and .adopted==true) | .decision // empty' <<<"$judge_output" 2>/dev/null || true)"
   if [[ "$judged_culprit" =~ ^[0-9a-f]{40}$ ]] \
-    && jq -e --arg sha "$judged_culprit" --argjson candidates "$candidate_json" 'any($candidates[]; .sha==$sha)' <<< '{}' >/dev/null 2>&1; then
+    && [[ -n "$candidate_rows_file" ]] \
+    && jq -e --arg sha "$judged_culprit" --slurpfile candidates "$candidate_rows_file" \
+      'any($candidates[0][]; .sha==$sha)' <<< '{}' >/dev/null 2>&1; then
     culprit="$judged_culprit"
   fi
+  [[ -z "$candidate_rows_file" ]] || rm -f -- "$candidate_rows_file"
   printf 'culprit=%s suite=%s first-red-run=%s green=%s\n' "$culprit" "$suite" "$red_run" "$green_sha"
 }
 

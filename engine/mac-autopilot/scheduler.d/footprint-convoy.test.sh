@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/test-env.sh"
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+engine_dir="$(cd -- "$script_dir/../.." && pwd -P)"
+fixture="$test_env_root/footprint-convoy"
+mkdir -p "$fixture/repo" "$fixture/supervisor/autopi/alerts"
+export MAC_AUTOPILOT_ROOT="$fixture/repo"
+export MAC_AUTOPILOT_SUPERVISOR_DIR="$fixture/supervisor"
+export MAC_AUTOPILOT_RUNTIME_DIR="$fixture/supervisor/autopi"
+export REQUIRED_PR_CHECKS_FILE="$engine_dir/mac-autopilot/required-pr-checks.json"
+jq '.max_workers=8 | .implement_cap=8 | .hotfix_lane.supervisor_owned=false
+  | .footprint_mutex.convoy_min_waiters=2 | .footprint_mutex.convoy_wait_minutes=1' \
+  "$engine_dir/mac-autopilot/config.template.json" > "$MAC_AUTOPILOT_RUNTIME_DIR/config.json"
+printf '%s\n' '{"units":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+printf '%s\n' '{"workers":[]}' > "$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
+export AUTOPI_TEST_LIBRARY_ONLY=true
+source "$engine_dir/mac-autopilot/scheduler.sh"
+unset AUTOPI_TEST_LIBRARY_ONLY
+
+LOG="$MAC_AUTOPILOT_RUNTIME_DIR/scheduler.log"
+UNITS="$MAC_AUTOPILOT_RUNTIME_DIR/units.json"
+WORKERS="$MAC_AUTOPILOT_RUNTIME_DIR/workers.json"
+STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+NOW_EPOCH="$(date +%s)"
+SCHED_LOCK_HELD=true
+DRY_RUN=0
+
+fail() { echo "footprint-convoy.test.sh: $*" >&2; exit 1; }
+write_units() { jq -n "$@" > "$UNITS"; }
+pending_fixture_stubs() {
+  dispatch_calls=0
+  dispatch_order() { jqf -c '.units[] | select(.stage | test("-pending$"))' "$UNITS"; }
+  ticket_budget_reason() { return 0; }
+  loop_rounds() { echo 0; }
+  blocking_body_dependency() { return 0; }
+  room_for() { return 0; }
+  pick() { PICK_MODEL=fixture; PICK_EFFORT=high; return 0; }
+  footprint_room() {
+    local owner
+    owner="$(unit_field "$1" '.footprint_wait_owner // empty')"
+    if [[ -n "$owner" ]] && footprint_wait_owner_active "$owner"; then return 1; fi
+    set_unit "$1" 'del(.footprint_wait_owner,.footprint_wait_since)'
+  }
+  ensure_clone() { printf '%s\n' "$ROOT"; }
+  resume_handoff_integration() { return 0; }
+  verification_plan_for_state() { echo '{}'; }
+  verification_plan_brief() { echo focused; }
+  matt_method_rule() { :; }
+  decision_scope() { :; }
+  dispatch_if_room() { dispatch_calls=$((dispatch_calls + 1)); return 0; }
+  live_workers() { echo 0; }
+  live_by_type() { echo 0; }
+}
+
+# Stale owner stage must stop suppressing the pending unit from intake and dispatch.
+write_units '{units:[
+  {id:"merged-owner",stage:"merged",footprint:["packages/fixture/shared.ts"]},
+  {id:"stale-waiter",stage:"implement-pending",task:"fixture task",branch:"agent/stale-waiter",
+   footprint:["packages/fixture/shared.ts"],footprint_wait_owner:"merged-owner",
+   footprint_wait_since:"2026-11-03T00:00:00Z",history:[]}]}'
+printf '%s\n' '{"workers":[]}' > "$WORKERS"
+startable="$(startable_pending_count)"
+[[ "$startable" == 1 ]] || fail "stale marker kept pending work unstartable (count=$startable)"
+jqf -e '.units[] | select(.id=="stale-waiter") | has("footprint_wait_owner") | not' "$UNITS" >/dev/null \
+  || fail 'stale owner marker was not cleared'
+pending_fixture_stubs
+dispatch_pending true
+[[ "$dispatch_calls" == 1 ]] || fail "stale waiter did not reach dispatch (calls=$dispatch_calls)"
+
+# A live owner retains the wait and its age; leaving the writer set clears its waiters.
+write_units '{units:[
+  {id:"live-owner",stage:"implement",footprint:["packages/fixture/shared.ts"]},
+  {id:"live-waiter",stage:"implement-pending",task:"fixture task",branch:"agent/live-waiter",
+   footprint:["packages/fixture/shared.ts"],footprint_wait_owner:"live-owner",history:[]}]}'
+printf '%s\n' '{"workers":[{"pid":100,"unit":"live-owner","type":"implement"}]}' > "$WORKERS"
+footprint_wait_mark live-waiter live-owner "$(jqf -c '.units[] | select(.id=="live-waiter")' "$UNITS")"
+jqf -e '.units[] | select(.id=="live-waiter") | .footprint_wait_owner=="live-owner" and (.footprint_wait_since|type)=="string"' "$UNITS" >/dev/null \
+  || fail 'live owner wait was not retained with an age marker'
+[[ "$(startable_pending_count)" == 0 ]] || fail 'live owner waiter counted as startable'
+pending_fixture_stubs
+dispatch_pending true
+[[ "$dispatch_calls" == 0 ]] || fail 'live owner waiter dispatched through the footprint lock'
+set_unit live-owner '.stage="merged"'
+jqf -e '.units[] | select(.id=="live-waiter") | (has("footprint_wait_owner") or has("footprint_wait_since")) | not' "$UNITS" >/dev/null \
+  || fail 'owner transition to merged did not clear waiter markers'
+
+# An aged convoy crosses the configured threshold once, even when checked on two ticks.
+AGENT_HOME="$fixture/agent"; export AGENT_HOME
+mkdir -p "$AGENT_HOME"
+SCHEDULER_AGENT_LIB="$fixture/supervisor-inbox-test.sh"
+cat > "$SCHEDULER_AGENT_LIB" <<'SH'
+supervisor_inbox_append_once() {
+  local key="$1" message="$2"
+  grep -Fqx -- "$key" "$AGENT_HOME/footprint-convoy-keys" 2>/dev/null && return 0
+  printf '%s\n' "$key" >> "$AGENT_HOME/footprint-convoy-keys"
+  printf '%s\t%s\n' "$key" "$message" >> "$AGENT_HOME/footprint-convoy-inbox"
+}
+SH
+since="$(date -u -d "@$((NOW_EPOCH - 180))" +%Y-%m-%dT%H:%M:%SZ)"
+CFG="$(jq '.footprint_mutex.convoy_min_waiters=2 | .footprint_mutex.convoy_wait_minutes=1' <<<"$CFG")"
+write_units --arg since "$since" '{units:[
+  {id:"convoy-owner",stage:"implement",footprint:["packages/fixture/shared.ts"]},
+  {id:"convoy-a",stage:"implement-pending",footprint_wait_owner:"convoy-owner",footprint_wait_since:$since},
+  {id:"convoy-b",stage:"repair-pending",footprint_wait_owner:"convoy-owner",footprint_wait_since:$since}]}'
+printf '%s\n' '{"workers":[{"pid":100,"unit":"convoy-owner","type":"implement"}]}' > "$WORKERS"
+footprint_convoy_alert
+footprint_convoy_alert
+[[ "$(wc -l < "$AGENT_HOME/footprint-convoy-inbox")" == 1 ]] || fail 'convoy alert was not deduplicated across two ticks'
+grep -Fq 'owner=convoy-owner' "$AGENT_HOME/footprint-convoy-inbox" \
+  && grep -Fq 'waiters=convoy-a,convoy-b' "$AGENT_HOME/footprint-convoy-inbox" \
+  || fail 'convoy inbox line omitted the owner or waiters'
+
+# The refill summary combines slot state with footprint, handoff, and admission skips.
+write_units '{units:[
+  {id:"metric-owner",stage:"implement"},
+  {id:"metric-footprint",stage:"implement-pending",footprint_wait_owner:"metric-owner"},
+  {id:"metric-handoff",stage:"repair-pending",hold_handoff_waiting:true},
+  {id:"metric-free",stage:"rereview-pending"}]}'
+printf '%s\n' '{"workers":[{"pid":100,"unit":"metric-owner","type":"implement"}]}' > "$WORKERS"
+: > "$LOG"
+printf '%s\n' 'prior refill line' >> "$LOG"
+log_start="$(wc -c < "$LOG")"
+printf '%s\n' '[2026-11-03T00:00:00Z] execution admission decision mode=run-unit outcome=defer MemAvailable_mb=1 load1=0 ceiling=8 held=7 decision_cap=0 reason=resource-floor' >> "$LOG"
+metrics="$(refill_dispatch_metrics "$log_start" 3)"
+[[ "$metrics" == 'free_slots=5 pending=3 skips=footprint:1,handoff:1,memory:1' ]] \
+  || fail "refill metrics were incomplete: $metrics"
+
+echo 'footprint-convoy.test.sh: pass (stale-owner release, live-owner lock, convoy dedupe, refill metrics)'

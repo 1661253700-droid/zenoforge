@@ -462,7 +462,7 @@ maintainer_health_mail_incidents_release_accepted() {
 }
 
 maintainer_health_mail_collect_reminders() {
-  local ledger="$1" home="$2" now="$3" row key kind issue state_file state text opened last hours event_key lock_fd tmp node earliest_key reminder_for
+  local ledger="$1" home="$2" now="$3" row key kind issue state_file state text text_file opened last hours event_key lock_fd tmp node earliest_key reminder_for
   local -a items=()
   mapfile -t items < <(jq -c '(.important_items // {}) | to_entries[] | select(.value.status == "open")' "$ledger")
   for row in "${items[@]}"; do
@@ -512,16 +512,18 @@ maintainer_health_mail_collect_reminders() {
     fi
     event_key="reminder:$key:$now"
     tmp="$(mktemp "${ledger}.XXXXXX")" || return 1
-    if ! jq --arg key "$key" --arg event_key "$event_key" --arg text "$text" --arg reminder_for "$reminder_for" \
+    text_file="$(jq_arg_file "$text")" || { rm -f -- "$tmp"; return 1; }
+    if ! jq --arg key "$key" --arg event_key "$event_key" --rawfile text "$text_file" --arg reminder_for "$reminder_for" \
       --argjson now "$now" '
       (.pending_events //= {}) | .important_items[$key].last_reminded_at=$now
       | if (.reported_items // {}) | has($event_key) then . else
           .pending_events[$event_key]={key:$event_key,section:"仍在处理",text:$text,kind:"reminder",highlight:false,reminder_for:$reminder_for,created_at:$now}
         end
     ' "$ledger" > "$tmp"; then
-      rm -f -- "$tmp"
+      rm -f -- "$tmp" "$text_file"
       return 1
     fi
+    rm -f -- "$text_file"
     mv -f -- "$tmp" "$ledger" || return 1
     maintainer_health_mail_unlock "$lock_fd"
   done
@@ -1346,14 +1348,19 @@ maintainer_health_mail_measure() {
       esac
     done <<< "$wake_facts"
   fi
-  local wakes_by_kind_json='{}' kind
+  local wakes_by_kind_file wakes_by_kind_object kind output_rc
+  wakes_by_kind_file="$(mktemp)" || return 1
   for kind in "${!wakes_by_kind[@]}"; do
-    wakes_by_kind_json="$(jq -cn --argjson old "$wakes_by_kind_json" --arg kind "$kind" --argjson count "${wakes_by_kind[$kind]}" '$old + {($kind):$count}')" || return 1
+    jq -cn --arg kind "$kind" --argjson count "${wakes_by_kind[$kind]}" '{($kind):$count}' >> "$wakes_by_kind_file" \
+      || { rm -f -- "$wakes_by_kind_file"; return 1; }
   done
-  jq -cSn --arg date "$day" --argjson calls "$calls" --argjson tokens "$tokens" \
+  wakes_by_kind_object="$(mktemp)" || { rm -f -- "$wakes_by_kind_file"; return 1; }
+  jq -s 'add // {}' "$wakes_by_kind_file" > "$wakes_by_kind_object" \
+    || { rm -f -- "$wakes_by_kind_file" "$wakes_by_kind_object"; return 1; }
+  if jq -cSn --arg date "$day" --argjson calls "$calls" --argjson tokens "$tokens" \
     --argjson released_issues "$released" --argjson tokens_per_released_issue "$tokens_per_release" \
     --argjson deploys "$deploys" --argjson wakeups_24h "$wakeups_24h" --argjson wakeups_day "$wakeups_day" \
-    --argjson wakes_by_kind "$wakes_by_kind_json" --argjson recurrence_tracking "$recurrence_tracking" \
+    --slurpfile wakes_by_kind "$wakes_by_kind_object" --argjson recurrence_tracking "$recurrence_tracking" \
     --argjson recurrences_day "$recurrences_day" --argjson recurrences_7d "$recurrences_7d" \
     --argjson recurrence_categories "$recurrence_categories" \
     --argjson wake_tracking "$wake_tracking" \
@@ -1364,13 +1371,19 @@ maintainer_health_mail_measure() {
     --argjson alert_classes "$alert_classes" \
     '{date:$date,calls:$calls,tokens:$tokens,released_issues:$released_issues,
       tokens_per_released_issue:$tokens_per_released_issue,deploys:$deploys,
-      wake_tracking:$wake_tracking,wakeups_24h:$wakeups_24h,wakeups_day:$wakeups_day,wakes_by_kind:$wakes_by_kind,
+      wake_tracking:$wake_tracking,wakeups_24h:$wakeups_24h,wakeups_day:$wakeups_day,wakes_by_kind:$wakes_by_kind[0],
       recurrence_tracking:$recurrence_tracking,recurrences_day:$recurrences_day,
       recurrences_7d:$recurrences_7d,recurrence_categories:$recurrence_categories,
       implement_runs:$implement_runs,implement_result_count:$implement_result_count,
       implement_successes:$implement_successes,implement_success_rate:$implement_success_rate,
       oldest_queue_age_minutes:$oldest_queue_age,repeat_failures:$repeat_failures,false_freezes:$false_freezes,
-      alert_tracking:$alert_tracking,alert_classes:$alert_classes}'
+      alert_tracking:$alert_tracking,alert_classes:$alert_classes}'; then
+    output_rc=0
+  else
+    output_rc=$?
+  fi
+  rm -f -- "$wakes_by_kind_file" "$wakes_by_kind_object"
+  return "$output_rc"
 }
 
 maintainer_health_mail_metric_lines() {

@@ -384,7 +384,7 @@ ticket_stage_record_gh_write() {
 # otherwise share `$f.tmp`, and one can move that path before another does.
 # The subshell releases the per-state lock on every return path.
 state_merge() (
-  local n="$1" filter="$2" lock_mode="${3:-}" f new filter_file previous_state previous_json legacy_epoch lock_fd
+  local n="$1" filter="$2" lock_mode="${3:-}" patch_file="${4:-}" f new filter_file previous_state previous_json legacy_epoch lock_fd
   local old_pr new_pr progress_stage
   f="$(state_file "$n")"
   mkdir -p -- "$STATE_DIR" || { echo "state_merge: could not create state directory for issue #$n -- state file $f NOT written" >&2; return 1; }
@@ -411,7 +411,14 @@ state_merge() (
   # bookkeeping must not refresh the progress clock. A legacy file's mtime is
   # copied once as its baseline, before later bookkeeping can change mtime.
   printf '%s\n' ' | if (.state // "") != $previous_state then .state_changed_from = $previous_state | .state_changed_at = (now | todate) elif (.state_changed_at // "") == "" and $legacy_epoch > 0 then .state_changed_at = ($legacy_epoch | todate) else . end' >> "$filter_file"
-  if ! new="$(jq --arg previous_state "$previous_state" --argjson legacy_epoch "$legacy_epoch" -f "$filter_file" <<< "$previous_json")" || [ -z "$new" ]; then
+  if [[ -n "$patch_file" ]]; then
+    if ! new="$(jq --arg previous_state "$previous_state" --argjson legacy_epoch "$legacy_epoch" \
+        --slurpfile state_merge_patch "$patch_file" -f "$filter_file" <<< "$previous_json")" || [ -z "$new" ]; then
+      rm -f "$filter_file"
+      echo "state_merge: jq failed for issue #$n -- state file $f NOT written (filter or patch kept in a file, out of argv)" >&2
+      return 1
+    fi
+  elif ! new="$(jq --arg previous_state "$previous_state" --argjson legacy_epoch "$legacy_epoch" -f "$filter_file" <<< "$previous_json")" || [ -z "$new" ]; then
     rm -f "$filter_file"
     echo "state_merge: jq failed for issue #$n -- state file $f NOT written (filter kept in a file, out of argv, precisely so this diagnostic -- not an exec error -- is what shows up)" >&2
     return 1

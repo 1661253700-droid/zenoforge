@@ -31,7 +31,28 @@ advisor_dispatch_or_route() { # unit-json total-review-rejections
 # 解析/运行错误按「调用方 + stderr 首行」记进 scheduler.log；返回码不变。去重靠本 tick 固定的
 # STAMP 前缀查日志同款行，命令替换子 shell 也能共享一份去重。
 jqf() {
-  local _err _rc _first _who
+  local LC_ALL=C
+  local _err _rc _first _who _i _name _value _bytes
+  local -a _jqf_args=("$@")
+  for ((_i = 0; _i < ${#_jqf_args[@]}; _i++)); do
+    case "${_jqf_args[_i]}" in
+      --arg|--argjson)
+        ((_i + 2 < ${#_jqf_args[@]})) || continue
+        _name="${_jqf_args[_i + 1]}"
+        _value="${_jqf_args[_i + 2]}"
+        _bytes=${#_value}
+        if ((_bytes > 65536)); then
+          _first="jqf: argv value $_name is $_bytes bytes > 65536; pass it via stdin or --slurpfile"
+          _who="${FUNCNAME[1]:-top}"
+          [[ "$_who" != jqf_optional_file ]] || _who="${FUNCNAME[2]:-top}"
+          [[ -z "${LOG:-}" ]] || say "jqf error (rc=126) in $_who: $_first"
+          printf '%s\n' "$_first" >&2
+          return 126
+        fi
+        _i=$((_i + 2))
+        ;;
+    esac
+  done
   _err="$(mktemp)" || { jq "$@" 2>/dev/null; return $?; }
   jq "$@" 2>"$_err"
   _rc=$?
