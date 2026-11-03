@@ -51,19 +51,19 @@ precheck_launch() { # id pr head
 # 每个 head 只试一次；真冲突转 repair，不消耗 CI 运行，名额让给下一个就绪单元。mergeability 或 head 数据未知不做任何转移。
 # 返回 0 = 已请求 update-branch 或处理冲突（除携带批准的门控草稿外调用方延后），1 = 照常占名额。
 SLOT_SYNC_CARRIED_HEAD=""
-SLOT_SYNC_SPENT=0 # 本拍 update-branch 名额同步预算计数（SLOT_SYNC_MAX）：每条链 5-7 个串行 gh 调用，是 wip_assignment 的大头
+SLOT_SYNC_SPENT=0 # 本拍 update-branch 名额同步预算计数（SLOT_SYNC_MAX）：每条 MERGEABLE 链 5-7 个串行 gh 调用，是 wip_assignment 的大头
 slot_sync() { # id head gated
   local pr state updated_head
   SLOT_SYNC_CARRIED_HEAD=""
   pr="$(unit_field "$1" .pr)"; [[ "$pr" =~ ^[0-9]+$ && "$2" =~ $SHA_RE ]] || return 1
   [[ "$(unit_field "$1" '.slot_sync_sha // empty')" != "$2" ]] || return 1
   pr_behind_main "$pr" "$2" || return 1
-  if (( SLOT_SYNC_SPENT++ >= ${SLOT_SYNC_MAX:-2} )); then
-    return 2 # 本拍预算用完：调用方延后该单元（不占名额），下一拍再同步
-  fi
   state="$(tick_pr_mergeable "$pr")"
   case "$state" in
     MERGEABLE)
+      if (( SLOT_SYNC_SPENT++ >= ${SLOT_SYNC_MAX:-2} )); then
+        return 2 # 本拍 update-branch 预算用完：调用方延后该单元（不占名额），下一拍再同步
+      fi
       set_unit "$1" ".slot_sync_sha=$(js "$2")" || :
       ci_update_branch "$pr" "$2" || return 1
       set_unit "$1" "$(hist slot-sync "PR#$pr behind main; update-branch at $2 before the CI slot")"
