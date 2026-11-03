@@ -20,7 +20,7 @@ check 'length == 2 and (unique_by(.event_id)|length) == 1' 'duplicate enqueue ha
 # The bounded observer needs only the sink, not full lib initialization.
 light="$test_env_root/light-engine"
 mkdir -p "$light/lib.d" "$test_env_root/light-agent"
-cp "$SCRIPT_DIR"/{delivery-metrics.sh,config.sh,write-guard.sh} "$light/"
+cp "$SCRIPT_DIR"/{delivery-metrics.sh,efficiency-metrics-sink.sh,config.sh,write-guard.sh} "$light/"
 cp "$SCRIPT_DIR/lib.d/issue-state.sh" "$light/lib.d/"
 printf 'exit 99\n' > "$light/lib.sh"
 AGENT_HOME="$test_env_root/light-agent" bash "$light/delivery-metrics.sh" land-enqueued "$request" || fail 'observer unnecessarily initialized full library'

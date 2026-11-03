@@ -143,7 +143,7 @@ class AttemptMetrics:
             result = subprocess.run(
                 ["timeout", "--signal=TERM", "--kill-after=1s", "2s", "bash", "-c",
                  'source "$1" 2>/dev/null || exit 1; efficiency_metrics_append_rows "$(cat)"',
-                 "execution-metrics", str(Path(__file__).with_name("lib.sh"))],
+                 "execution-metrics", str(Path(__file__).with_name("efficiency-metrics-sink.sh"))],
                 input=json.dumps(row, allow_nan=False) + "\n", text=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
             if result.returncode:

@@ -171,6 +171,7 @@ export const RELATED_TESTS = new Map([
   ]],
   ['.zenoforge/state/scheduling-policy.json', ['engine/check-rulings.test.sh']],
   ['engine/execution-admission.py', ['engine/execution-admission.test.sh', 'engine/execution-admission-metrics.test.sh']],
+  ['engine/efficiency-metrics-sink.sh', ['engine/delivery-metrics.test.sh', 'engine/execution-admission-metrics.test.sh']],
   ['engine/mac-autopilot/roi_ledger.py', ['engine/mac-autopilot/worker_cost.test.sh']],
   ['engine/mac-autopilot/roi_collect.py', ['engine/mac-autopilot/worker_cost.test.sh']],
   ['engine/mac-autopilot/roi_rollup.py', ['engine/mac-autopilot/worker_cost.test.sh']],

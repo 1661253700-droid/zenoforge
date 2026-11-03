@@ -18,12 +18,7 @@ delivery_metrics_record() (
   if ! declare -F efficiency_metrics_append_rows >/dev/null; then
     local engine_dir
     engine_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
-    # This observer has a short deadline; initializing the full model-policy
-    # library can consume it before the append even starts under load.
-    source "$engine_dir/config.sh" || return 1
-    source "$engine_dir/write-guard.sh" || return 1
-    agent_pipeline_write_guard 'delivery metrics' "$AGENT_HOME" || return 1
-    source "$engine_dir/lib.d/issue-state.sh" || return 1
+    source "$engine_dir/efficiency-metrics-sink.sh" || return 1
   fi
   row="$(jq -ce --arg kind "$kind" '
     def id: if type == "string" and test("^[a-zA-Z0-9_.:-]{1,160}$") then . else null end;
