@@ -331,7 +331,7 @@ register_new_prs() {
       [[ "$(unit_field "pr-$pr_num" '.stage')" == review-pending ]] || continue
     fi
     lane="$(ensure_lane "pr-$pr_num" "$pr_num")" || { say "new PR unit=pr-$pr_num: lane unavailable"; continue; }
-    [[ "$lane" == direct-main ]] && cancel_branch_runs "$branch" "direct-main lane; does not use PR CI"
+    if [[ "$lane" == direct-main ]]; then cancel_branch_runs "$branch" "direct-main lane; does not use PR CI" || :; fi
     room_for "pr-$pr_num" review || continue
     pick review || continue
     wt="$(ensure_clone "pr-$pr_num")" || { say "new PR unit=pr-$pr_num: clone unavailable; stays review-pending"; continue; }

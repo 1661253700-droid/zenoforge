@@ -325,7 +325,7 @@ repair_demote() { # unit pr branch：repair 派出成功后，门控 PR 和符�
     set_unit "$1" '.gated=true'
     gated_demote_pr "$2" "$3" "$reason" && return 0
   fi
-  cancel_branch_runs "$3" "$reason"
+  cancel_branch_runs "$3" "$reason" || :
 }
 scheduler_pr_open() { # branch title body [base] → SCHED_PR_NUM / SCHED_PR_OUT；agent/issue-* 以 draft + 门控标签创建，已有 open 的非 draft PR 就退回 draft 并加标签
   local row pr draft gate=0 title body base="${4:-main}"
