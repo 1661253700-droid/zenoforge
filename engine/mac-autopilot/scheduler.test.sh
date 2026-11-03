@@ -2620,6 +2620,8 @@ sched_run_case stuck_worker_disposition
 sched_case_gate_network() {
 new_tick_fixture gate-network
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq -cn '{units:[{id:"pr-gate-network",pr:9001,lane:"pr",stage:"ready-to-merge",history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
 echo 'fatal: gnutls_handshake() failed: connection reset' > "$TF/failed.log"
 tick; tick
 gate_network_reruns="$(command grep -c '^rerun ' "$TF/actions" || true)"
@@ -2631,7 +2633,7 @@ gate_network_reruns="$(command grep -c '^rerun ' "$TF/actions" || true)"
   exit 1
 }
 [[ ! -s "$TF/reverted" ]]
-command jq -e '.units | length==0' "$TF/supervisor/autopi/units.json" >/dev/null
+command jq -e '.units | length==1 and .[0].stage=="rereview-pending"' "$TF/supervisor/autopi/units.json" >/dev/null
 }
 sched_run_case gate_network
 
