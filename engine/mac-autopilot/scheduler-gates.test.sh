@@ -1803,7 +1803,20 @@ root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 # 非产品 PR 不排 CI 名额；同级先按 ready_since，依赖只在 readiness 相同时作 tie-break（maintainer 10-22：非产品尽快）
 CFG="$(jq '.precheck=false' <<<"$CFG_SAVED")"; : > "$wr/cancelled"; GH_RUN_JSON='[]'
 units "{\"units\":[{\"id\":\"pr-40\",\"pr\":40,\"stage\":\"ready-to-merge\",\"branch\":\"c\",\"approved_sha\":\"$H1\",\"ci_wip_wait\":\"$H1\",\"ready_since\":1,\"history\":[]},{\"id\":\"pr-41\",\"pr\":41,\"stage\":\"ready-to-merge\",\"branch\":\"agent/issue-77\",\"approved_sha\":\"$H1\",\"ci_wip_wait\":\"$H1\",\"ready_since\":2,\"history\":[]},{\"id\":\"pr-42\",\"pr\":42,\"stage\":\"ready-to-merge\",\"branch\":\"ci/x\",\"approved_sha\":\"$H1\",\"ready_since\":0,\"history\":[]},{\"id\":\"issue-78\",\"issue\":78,\"stage\":\"blocked-external\",\"blocked_on\":77,\"history\":[]}]}"
-gh() { if [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then case "$3" in 42) printf '.github/workflows/ci.yml\nscripts/agent/x.sh\nREADME.md\n' ;; *) printf 'packages/shared/a.ts\nscripts/b.sh\n' ;; esac; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
+# Product-path classification uses a batched GraphQL file census; keep this fixture aligned with that source.
+gh() {
+  if [[ "$1 $2" == "api graphql" && "$*" == *'pr_40'* ]]; then
+    command jq -cn '{data:{repository:{
+      pr_40:{files:{nodes:[{path:"packages/shared/a.ts"},{path:"scripts/b.sh"}]}},
+      pr_41:{files:{nodes:[{path:"packages/shared/a.ts"}]}},
+      pr_42:{files:{nodes:[{path:".github/workflows/ci.yml"},{path:"scripts/agent/x.sh"},{path:"README.md"}]}}
+    }}}'
+  elif [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then
+    case "$3" in 42) printf '.github/workflows/ci.yml\nscripts/agent/x.sh\nREADME.md\n' ;; *) printf 'packages/shared/a.ts\nscripts/b.sh\n' ;; esac
+  else
+    eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"
+  fi
+}
 TICK_UNFINISHED="[{\"databaseId\":91,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"c\"},{\"databaseId\":92,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"agent/issue-77\"},{\"databaseId\":93,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"ci/x\"}]"
 root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 [[ "$(field pr-42 .product_paths):$(field pr-40 .product_paths)" == "false:true" ]] || fail "product paths not classified ($(field pr-42 .product_paths) $(field pr-40 .product_paths))"
