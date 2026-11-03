@@ -1598,7 +1598,7 @@ HOLD_AGE_RUN="$(AGENT_HOME="$HOLD_AGE_HOME" ZF_NIGHT_DIR="$HOLD_AGE_HOME/night" 
     source "$1/lib.sh"
     gh() {
       if [[ "$1 ${2:-}" == "issue list" ]]; then
-        jq -cn '\''[{number:740042},{number:740043},{number:740049}]'\''
+        jq -cn '\''[740042,740043,740049] | map({number:.,state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"})'\''
       else
         jq -cn '\''{state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"}'\''
       fi
@@ -3575,7 +3575,7 @@ HOLD_EXPIRY_STATE="$(AGENT_HOME="$HOLD_EXPIRY_HOME" REPO=test/repo bash -c '
   roadmap_ensure_issue_parent() { :; }
   gh() {
     if [ "$1 ${2:-}" = "issue list" ]; then
-      printf "%s\\n" '\''[{"number":509988}]'\''
+      printf "%s\\n" '\''[{"number":509988,"state":"OPEN","labels":[{"name":"on-hold"}],"comments":[],"title":"fixture"}]'\''
     elif [ "$1 ${2:-}" = "issue view" ]; then
       printf "%s\\n" '\''{"state":"OPEN","labels":[{"name":"on-hold"}],"comments":[],"title":"fixture"}'\''
     elif [ "$1 ${2:-}" = "pr list" ]; then
