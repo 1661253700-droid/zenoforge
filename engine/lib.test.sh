@@ -4150,13 +4150,17 @@ assert_true "read_needs_info_email_replies() keeps applied-default threads eligi
   bash -c 'echo "$1" | grep -qF -- "needs_info_default_applied.thread_id"' _ "$READ_SIDE_FN_BODY"
 
 POST_DISPATCH_MAINTENANCE_BODY="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+MAINTENANCE_OPTIONAL_STEP_BODY="$(sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 NEEDS_INFO_RECONCILE_BODY="$(sed -n '/^reconcile_needs_info_issues() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 assert_true "post-dispatch maintenance reads needs-info mail before reply reconciliation" \
   bash -c '
     read_side_line=$(grep -nF "read_needs_info_email_replies" <<< "$1" | head -n1 | cut -d: -f1)
-    reconcile_line=$(grep -nF "reconcile_needs_info_issues" <<< "$1" | head -n1 | cut -d: -f1)
-    [ -n "$read_side_line" ] && [ -n "$reconcile_line" ] && [ "$read_side_line" -lt "$reconcile_line" ]
-  ' _ "$POST_DISPATCH_MAINTENANCE_BODY"
+    suffix_loop_line=$(grep -nF "for ((i = suffix_start;" <<< "$1" | head -n1 | cut -d: -f1)
+    reconcile_case_line=$(grep -nF "needs-info-loop)" <<< "$2" | head -n1 | cut -d: -f1)
+    reconcile_line=$(grep -nF "reconcile_needs_info_issues" <<< "$2" | head -n1 | cut -d: -f1)
+    [ -n "$read_side_line" ] && [ -n "$suffix_loop_line" ] && [ "$read_side_line" -lt "$suffix_loop_line" ] \
+      && [ -n "$reconcile_case_line" ] && [ -n "$reconcile_line" ] && [ "$reconcile_case_line" -lt "$reconcile_line" ]
+  ' _ "$POST_DISPATCH_MAINTENANCE_BODY" "$MAINTENANCE_OPTIONAL_STEP_BODY"
 
 # 2026-09-15 (restored maintainer verdict): needs-info reconciliation must route an
 # advisor-origin needs-info answer back to needs-advisor (route_to_advisor,
