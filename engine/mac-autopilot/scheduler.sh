@@ -409,7 +409,7 @@ refill_tick() {
     if supervisor_marking_deferred; then
       say "refill dispatch held: supervisor-owned marking deferred"
     else
-      phase register_new_issues 0 true
+      phase register_new_issues 0 true || say "refill intake failed; continuing to dispatch"
       phase dispatch_pending true
     fi
   fi

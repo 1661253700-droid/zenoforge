@@ -3550,6 +3550,54 @@ sched_case_refill_intake_cap() {
 }
 sched_run_case refill_intake_cap
 
+sched_case_refill_handoff_lookup_dispatch() {
+# A refill intake handoff lookup may fail independently of dispatch. The candidate
+# has a recorded PR outside any refill census; dispatch must still start existing work.
+  new_tick_fixture refill-handoff-lookup-dispatch
+  mkdir -p "$TF/agent-home/state"
+  command jq '.max_workers=2 | .implement_cap=2 | .hotfix_lane.supervisor_owned=false
+    | .issue_intake={enabled:true,max_upstream:8,max_ready:30,labels:[],product_labels:["ready-for-agent"],refill_max:1}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -n '{units:[{id:"existing-startable",issue:9300,lane:"direct-main",branch:"agent/auto-issue-9300",
+    task:"existing refill task",footprint:[],stage:"implement-pending",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  command jq -n '{number:9301,title:"refill handoff candidate",body:"Resume held work.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
+    > "$TF/intake-issue.json"
+  command jq -n '{state:"ready-for-agent",scheduler_handoff:{episode:"hold-9301",open_pr:9302,open_branch:"agent/issue-9301"}}' \
+    > "$TF/agent-home/state/9301.json"
+  command jq -n '[{number:9302,headRefName:"agent/issue-9301",title:"recovered candidate",body:"Refs #9301",state:"OPEN",labels:[]}]' \
+    > "$TF/handoff-pr-view.json"
+  cat > "$TF/bin/codex" <<'SH'
+#!/usr/bin/env bash
+[[ -f "$TF/allow-dispatch" ]] || { echo 'unexpected worker dispatch' >&2; exit 97; }
+echo 'session id: 11111111-2222-3333-4444-555555555555'
+sleep 3
+SH
+  chmod +x "$TF/bin/codex"
+  touch "$TF/allow-dispatch"
+  TF_REAL_PS=1 tick --refill
+  if grep -Fq 'HANDOFF_PR_CENSUS: unbound variable' "$TF/tick.out"; then
+    cat "$TF/tick.out" >&2
+    echo 'scheduler.test.sh: refill handoff lookup read an uninitialized PR census' >&2
+    exit 1
+  fi
+  grep -Fq 'gh pr view 9302 --json number,headRefName,title,body,state,labels' "$TF/calls" \
+    || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: refill candidate did not reach handoff_include_pr' >&2; exit 1; }
+  grep -Fq 'refill done' "$TF/supervisor/autopi/scheduler.log" \
+    || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill intake failure omitted its completion log line' >&2; exit 1; }
+  command jq -e 'any(.units[]; .id=="existing-startable" and .stage=="implement")' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill intake failure prevented dispatch of existing startable work' >&2; exit 1; }
+  command jq -e 'any(.workers[]; .unit=="existing-startable" and .harvested!=true)' \
+    "$TF/supervisor/autopi/workers.json" >/dev/null \
+    || { cat "$TF/tick.out" >&2; echo 'scheduler.test.sh: refill did not record the existing unit dispatch' >&2; exit 1; }
+  [[ "$(grep -c '^gh issue list ' "$TF/calls" || true)" == 1 ]] \
+    || { cat "$TF/calls" >&2; echo 'scheduler.test.sh: refill made more than one fresh issue-list call' >&2; exit 1; }
+  worker_pid="$(command jq -r '.workers[] | select(.unit=="existing-startable" and .harvested!=true) | .pid' "$TF/supervisor/autopi/workers.json")"
+  [[ "$worker_pid" =~ ^[1-9][0-9]*$ ]] && kill -- "-$worker_pid" 2>/dev/null || :
+}
+sched_run_case refill_handoff_lookup_dispatch
+
 sched_case_intake_cache_large_rows() {
 # A cache write must stream large candidate rows through stdin, not jq argv.
   new_tick_fixture intake-cache-large-rows
