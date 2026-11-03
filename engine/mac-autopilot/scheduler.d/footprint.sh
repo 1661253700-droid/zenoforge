@@ -48,7 +48,7 @@ live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；wor
         wait || true
       } | jq -Rsc '[splits("\u0000") | select(length>0)]'
     )"
-    scope="$(jq -cn --argjson scope "$scope" --argjson live "$live" '($scope + $live) | unique')"
+    scope="$(jq -cn --slurpfile scope <(printf '%s' "$scope") --slurpfile live <(printf '%s' "$live") '($scope[0] + $live[0]) | unique')"
   fi
   printf '%s\n' "$scope"
 }
@@ -64,8 +64,8 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
       other_scope="$(scheduler_footprint "$other")" || exit 1
       other_workdir="$(jq -r '.live_workdir // empty' <<<"$other")"
       other_scope="$(live_writes_union "$other_workdir" "$other_scope")" || exit 1
-      jq -cn --argjson unit "$other" --argjson scope "$other_scope" \
-        '$unit + {resolved_footprint:$scope}' > "$file"
+      jq -c --slurpfile resolved <(printf '%s' "$other_scope") \
+        '{id,stage,footprint,resolved_footprint:$resolved[0]}' <<<"$other" > "$file"
     } &
     pids+=("$!")
     index=$((index + 1))
@@ -76,13 +76,13 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
   updates="$(jqf -c '[.[] | select((.footprint // []) != .resolved_footprint) | {id, footprint:.resolved_footprint}]' <<<"$rows")" \
     || { rm -rf -- "$scan_dir"; return 1; }
   if jqf -e 'length > 0' <<<"$updates" >/dev/null; then
-    units_update --argjson updates "$updates" \
+    units_update --slurpfile updates <(printf '%s' "$updates") \
       '.units |= map(. as $unit
-        | ([$updates[] | select(.id == $unit.id)][0] // null) as $update
+        | ([$updates[0][] | select(.id == $unit.id)][0] // null) as $update
         | if $update == null then . else .footprint = $update.footprint end)' \
       || { rm -rf -- "$scan_dir"; return 1; }
   fi
-  resolved="$(jqf -c 'map(. + {footprint:.resolved_footprint} | del(.resolved_footprint, .live_workdir))' <<<"$rows")" \
+  resolved="$(jqf -c 'map({id,stage,footprint:.resolved_footprint})' <<<"$rows")" \
     || { rm -rf -- "$scan_dir"; return 1; }
   rm -rf -- "$scan_dir"
   printf '%s\n' "$resolved"
@@ -208,10 +208,10 @@ footprint_preflight_snapshot() {
     footprint_refresh_conflicts cached || return 1
   fi
   updates="$(jqf -Rn '[inputs | split("\t") | select(length == 2) | {key:.[0],value:(.[1] | fromjson)}] | from_entries' <<<"$scope_rows")" || return 1
-  update_count="$(jqf --argjson scopes "$updates" '[.units[] | select($scopes[.id] != null and (.footprint // []) != $scopes[.id])] | length' "$UNITS")" || return 1
+  update_count="$(jqf --slurpfile scopes <(printf '%s' "$updates") '[.units[] | select($scopes[0][.id] != null and (.footprint // []) != $scopes[0][.id])] | length' "$UNITS")" || return 1
   if (( update_count > 0 )); then
-    units_update --argjson scopes "$updates" \
-      '.units |= map(if $scopes[.id] != null then .footprint=$scopes[.id] else . end)' || return 1
+    units_update --slurpfile scopes <(printf '%s' "$updates") \
+      '.units |= map(if $scopes[0][.id] != null then .footprint=$scopes[0][.id] else . end)' || return 1
   fi
   TICK_FOOTPRINT_PREFLIGHT_STATUS=ready
   elapsed=$((SECONDS - started))
@@ -232,8 +232,8 @@ hotspot_log() { # 窗口内提交的文件分组清单，每 scheduler 进程取
 }
 hotspot_expand() { # scope_json -> scope ∪ 共同修改热点；历史读不出来时退回原足迹
   local scope="$1" added
-  added="$(hotspot_log | jq -Rsc --argjson scope "$scope" '
-    def in_scope: . as $f | any($scope[]; . as $s | $s == $f or ($f | startswith($s + "/")));
+  added="$(hotspot_log | jq -Rsc --slurpfile scope <(printf '%s' "$scope") '
+    def in_scope: . as $f | any($scope[0][]; . as $s | $s == $f or ($f | startswith($s + "/")));
     [ split("\u0001")[]
       | split("\n") | map(select(length > 0)) | unique
       | select(length > 1 and length <= 40)
@@ -243,7 +243,7 @@ hotspot_expand() { # scope_json -> scope ∪ 共同修改热点；历史读不�
       | sort_by(-.n) | .[:12] | map(.f) | unique
   ' 2>/dev/null || true)"
   if [[ -n "$added" && "$added" != '[]' ]]; then
-    scope="$(jq -cn --argjson scope "$scope" --argjson add "$added" '($scope + $add) | unique')"
+    scope="$(jq -cn --slurpfile scope <(printf '%s' "$scope") --slurpfile add <(printf '%s' "$added") '($scope[0] + $add[0]) | unique')"
   fi
   scope="$(scheduler_footprint_filter_main "$scope")" || return 1
   printf '%s\n' "$scope"
@@ -251,10 +251,10 @@ hotspot_expand() { # scope_json -> scope ∪ 共同修改热点；历史读不�
 hotspot_expand_batch() { # [{id,scope}] → 同一份 30 天 git log 上批量扩展候选 check scope
   local candidates="$1" log
   log="$(hotspot_log)"
-  jqf -Rsc --argjson candidates "$candidates" '
+  jqf -Rsc --slurpfile candidates <(printf '%s' "$candidates") '
     def in_scope($scope; $path): any($scope[]; . as $s | . == $path or ($path | startswith($s + "/")));
     (split("\u0001") | map(split("\n") | map(select(length > 0)) | unique)) as $commits
-    | [$candidates[] as $candidate
+    | [$candidates[0][] as $candidate
         | ($candidate.scope) as $scope
         | ([ $commits[]
              | select(length > 1 and length <= 40)
@@ -273,7 +273,7 @@ footprint_strip_shared_append() { # scope_json -> 去掉 shared-append 精确路
   local scope="$1"
   local shared="${SHARED_APPEND:-[]}"
   [[ "$shared" != '[]' ]] || { printf '%s\n' "$scope"; return; }
-  jqf -c --argjson sa "$shared" 'map(select(. as $x | any($sa[]; . == $x) | not))' <<<"$scope"
+  jqf -c --slurpfile sa <(printf '%s' "$shared") 'map(select(. as $x | any($sa[0][]; . == $x) | not))' <<<"$scope"
 }
 footprint_wait_mark() { # unit owner unit_json：记等待方到 unit（值没变不写 units.json），intake 据此不把它算作占用产能
   say "footprint wait unit=$1 owner=$2"

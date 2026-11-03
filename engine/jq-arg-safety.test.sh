@@ -24,21 +24,13 @@
 # python3 (already a dependency this pipeline runs elsewhere, e.g. notify.
 # sh's own MD_TO_HTML_PY) does the extraction here too.
 #
-# What counts as "known-unbounded": a curated name list (the actual bash
-# variable names this codebase's real incidents put through --arg/
-# --argjson: an issue/PR JSON blob, a prior state record, an advisor's
-# reasoning/decision/notes/brief/merge_conditions/founder_question, a MIME
-# payload, a gate-log/transcript tail, an env-fault detail, a fail reason)
-# plus a blanket rule for anything named `*_md` -- this codebase's own
-# convention for markdown prose fields (brief_md, decision_md, notes_md,
-# needs_md, recut_md, review_report_md, ...), all of them model output or
-# accumulated narrative with no size cap. Deliberately a name list, not a
-# byte-size heuristic: a static scanner can't know a value's runtime size,
-# only that this codebase already learned (three times) which NAMES carry
-# unbounded content. Like the two guards this is modeled on, it is not
-# exhaustive -- it catches a REGRESSION back to a name this convention
-# already flags, not every conceivable new unbounded variable under a new
-# name.
+# The name list preserves the prior incident cases. The loop scan adds a
+# structural check: variables appended/rebuilt from themselves inside a
+# while-read/for loop are unbounded by the unit count. It also follows a
+# variable assigned from a function that returns a GitHub list census (for
+# example tick_prs), so a list fed into jq from a loop's process substitution
+# is covered. This runs recursively across engine shell sources, including
+# scheduler.d where the original scan did not look.
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,10 +49,9 @@ assert_eq() {
   fi
 }
 
-# scan_file <path...> — prints one "BAD <line> <varname> <matched-text>" line
-# per --arg/--argjson call site that binds a known-unbounded bash variable,
-# nothing if files are clean. Exit status is always 0 (a scanner, not the
-# judgement -- same contract as notify.test.sh's own scan_file).
+# scan_file <path...> — prints one "BAD <file>:<line> <varname> <matched-text>"
+# line per known-unbounded or loop-grown --arg/--argjson value. Exit status is
+# always 0; the test below is the judgement.
 scan_files() {
 python3 - "$@" <<'PYEOF'
 import re
@@ -82,7 +73,7 @@ BANNED_EXACT = {
     "issue_json", "prior", "prior_state",
     "reasoning", "decision", "notes", "brief", "new_brief", "old_brief",
     "stored_brief", "merge_conditions", "founder_question", "ruling",
-    "encoded", "detail", "tail", "reason", "recut_reason", "reset_reason", "what", "body", "pr",
+    "encoded", "detail", "tail", "reason", "recut_reason", "reset_reason", "what", "body",
     "material", "convergence_material",
     # 2026-10-11: the roadmap tree and open-issue list overflowed the per-argument limit.
     "flat", "tree", "open_issues", "candidates",
@@ -101,10 +92,107 @@ def is_banned(name):
 # (which --arg/--argjson never bind directly anyway; only a bare "$x"/
 # "${x}" token is a size-unbounded passthrough of x's own value).
 ARG_RE = re.compile(r'--arg(?:json)?\s+[A-Za-z_][A-Za-z0-9_]*\s+"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"')
+FUNCTION_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{')
+ASSIGN_RE = re.compile(r'(?:^|;)\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(\+?=)\s*([^;]*)')
+COLLECTION_COMMAND_RE = re.compile(r'\bgh\s+(?:pr|issue|run)\s+list\b')
+PAGINATED_API_RE = re.compile(r'\bgh\s+api\b[^;]*--paginate')
 
+def code_only(line):
+    return "" if line.lstrip().startswith("#") else line
+
+def function_blocks(lines):
+    # Shell files often define functions and then run top-level code. Ending a
+    # block at the next function declaration incorrectly attributes that
+    # top-level code to the last function. In this repo function bodies close
+    # with an unindented `}`; retain top-level ranges as separate scopes.
+    functions = []
+    i = 0
+    while i < len(lines):
+        match = FUNCTION_RE.match(code_only(lines[i]))
+        if not match:
+            i += 1
+            continue
+        start, name = i, match.group(1)
+        end = len(lines) - 1
+        for j in range(start + 1, len(lines)):
+            if re.match(r'^}\s*(?:#.*)?$', code_only(lines[j])):
+                end = j
+                break
+        functions.append((name, start, end + 1))
+        i = end + 1
+    blocks = []
+    cursor = 0
+    top_index = 0
+    for name, start, end in functions:
+        if cursor < start:
+            blocks.append((f"<top-level-{top_index}>", cursor, start))
+            top_index += 1
+        blocks.append((name, start, end))
+        cursor = end
+    if cursor < len(lines):
+        blocks.append((f"<top-level-{top_index}>", cursor, len(lines)))
+    return blocks or [("<top-level-0>", 0, len(lines))]
+
+def growing_variables(lines, growable_functions):
+    growing = set()
+    loop_depth = 0
+    for raw in lines:
+        line = code_only(raw)
+        in_loop = loop_depth > 0
+        for match in ASSIGN_RE.finditer(line):
+            name, op, rhs = match.groups()
+            shell_ref = re.search(r'\$' + re.escape(name) + r'(?![A-Za-z0-9_])|\$\{' + re.escape(name) + r'\}', rhs)
+            jq_json_append = False
+            for arg_name in re.findall(r'--argjson\s+([A-Za-z_][A-Za-z0-9_]*)\s+"\$' + re.escape(name) + r'"', rhs):
+                if re.search(r'\$' + re.escape(arg_name) + r'\s*\+\s*[\[{]', rhs):
+                    jq_json_append = True
+            jq_input_append = shell_ref and re.search(r"(?:'|\")\s*\.\s*\+\s*[\[{]", rhs)
+            # A plain self-reference can be a bounded normalization (for
+            # example ${fragment_id%.json}); only treat it as growth when the
+            # old value is extended with additional shell text.
+            shell_append = False
+            if shell_ref:
+                ref_end = shell_ref.end()
+                if rhs[ref_end:].lstrip().startswith(("\"", "'", "}")):
+                    tail = rhs[ref_end:].lstrip()
+                    shell_append = bool(re.match(r'[^\"\']+[^\"\']*[\"\']', tail))
+                elif not rhs[max(0, shell_ref.start() - 2):shell_ref.start()].endswith("%"):
+                    shell_append = bool(rhs[ref_end:].strip())
+            if op == "+=" or (in_loop and (jq_json_append or jq_input_append or shell_append)):
+                growing.add(name)
+            calls = re.findall(r'\$\(\s*([A-Za-z_][A-Za-z0-9_]*)\b', rhs)
+            if COLLECTION_COMMAND_RE.search(rhs) or PAGINATED_API_RE.search(rhs) \
+                    or re.search(r'\bgh_api\b', rhs) \
+                    or any(call in growable_functions for call in calls):
+                growing.add(name)
+        opens = len(re.findall(r'\b(?:while|for)\b.*?\bdo\b', line))
+        closes = len(re.findall(r'\bdone\b', line))
+        loop_depth = max(0, loop_depth + opens - closes)
+    return growing
+
+all_sources = {}
 for fn in files:
-    with open(fn, encoding="utf-8") as f:
-        lines = f.readlines()
+    try:
+        with open(fn, encoding="utf-8") as f:
+            all_sources[fn] = f.readlines()
+    except OSError:
+        continue
+growable_functions = set()
+for lines in all_sources.values():
+    for name, start, end in function_blocks(lines):
+        if not name.startswith("<top-level-") and COLLECTION_COMMAND_RE.search("".join(map(code_only, lines[start:end]))):
+            growable_functions.add(name)
+
+for fn, lines in all_sources.items():
+    blocks = function_blocks(lines)
+    by_line = {}
+    line_to_function = {}
+    for function, start, end in blocks:
+        growth = growing_variables(lines[start:end], growable_functions)
+        for var in growth:
+            by_line.setdefault(function, set()).add(var)
+        for i in range(start, end):
+            line_to_function[i] = function
     for lineno, line in enumerate(lines, 1):
         # Skip comment lines: this file's own docstrings (jq_arg_file() in
         # lib.sh, the historical-pattern callout in state_merge()'s comment)
@@ -112,11 +200,10 @@ for fn in files:
         # what NOT to do -- a scanner that can't tell a worked example from a
         # live call site would need every comment rewritten to dodge its own
         # guard, which is backwards.
-        if line.lstrip().startswith("#"):
-            continue
-        for m in ARG_RE.finditer(line):
+        for m in ARG_RE.finditer(code_only(line)):
             name = m.group(1)
-            if is_banned(name):
+            function = line_to_function.get(lineno - 1, "<top-level>")
+            if is_banned(name) or name in by_line.get(function, set()):
                 print(f"{fn}:{lineno}: BAD {name} {m.group(0)}")
 PYEOF
 }
@@ -213,10 +300,31 @@ cache_rows() {
 }
 EOF
 BAD_ROWS_HITS="$(scan_file "$BAD_ROWS_FIXTURE")"
+BAD_LOOP_FIXTURE="$TMP_DIR/bad_loop_growth.sh"
+cat > "$BAD_LOOP_FIXTURE" <<'EOF'
+intake_footprint_snapshot() {
+  local owners unit
+  owners='[]'
+  while IFS= read -r unit; do
+    owners="$(jqf -cn --argjson owners "$owners" --argjson entry "$unit" '$owners + [$entry]')"
+  done < units.json
+}
+tick_prs() {
+  gh pr list --state open --json number,body
+}
+ci_slot_starve_watch() {
+  local prs
+  prs="$(tick_prs)"
+  while IFS= read -r id; do :; done < <(jqf -r --argjson prs "$prs" '.units[]' units.json)
+}
+EOF
+BAD_LOOP_HITS="$(scan_file "$BAD_LOOP_FIXTURE")"
 assert_eq "meta-test: both unbounded fastlane census snapshots are caught" \
   "2" "$(printf '%s\n' "$BAD_CENSUS_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: an unbounded rows value passed through --arg is caught" \
   "1" "$(printf '%s\n' "$BAD_ROWS_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+assert_eq "meta-test: loop-grown owners and GitHub census values are caught with file:line" \
+  "2" "$(printf '%s\n' "$BAD_LOOP_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: all closed-tracker dependency payloads are caught" \
   "3" "$(printf '%s\n' "$BAD_CHILDREN_HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 assert_eq "meta-test: --arg binding a known-unbounded exact name (new_brief) is caught" \
@@ -230,8 +338,8 @@ assert_eq "meta-test: --argjson binding of unbounded verdict material is caught"
 assert_eq "meta-test: the FIXED pattern (jq_arg_file()/--rawfile on the same source variable) plus a comment quoting the banned shape in prose are NOT flagged" \
   "0" "$([ -n "$CLEAN_HITS" ] && echo 1 || echo 0)"
 
-# --- the real regression guard. With no arguments, scan top-level scripts;
-# preflight passes changed paths so nested scripts are checked too.
+# --- the real regression guard. With no arguments, scan engine shell sources
+# recursively; preflight passes changed paths so nested scripts are checked too.
 REAL_SCRIPTS=()
 if (($#)); then
   REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
@@ -242,17 +350,16 @@ if (($#)); then
     [[ -f "$f" ]] && REAL_SCRIPTS+=("$f")
   done
 else
-  for f in "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib.d/*.sh; do
-    [[ "$f" == *.test.sh ]] || REAL_SCRIPTS+=("$f")
-  done
+  while IFS= read -r -d '' f; do REAL_SCRIPTS+=("$f"); done \
+    < <(find "$SCRIPT_DIR" -type f -name '*.sh' ! -name '*.test.sh' ! -path "$SCRIPT_DIR/vendor/*" -print0)
 fi
 REAL_HITS="$(scan_files "${REAL_SCRIPTS[@]}")"
 if [ -n "$REAL_HITS" ]; then
-  echo "not ok - engine shell files pass known-unbounded variables to jq via --arg/--argjson:"
+  echo "not ok - engine shell files pass known-unbounded or loop-grown variables to jq via --arg/--argjson:"
   echo "$REAL_HITS" | sed 's/^/    /'
   FAILED=1
 else
-  echo "ok - no jq call site in scanned engine shell files passes a known-unbounded variable through --arg/--argjson"
+  echo "ok - no engine shell jq call passes a known-unbounded or loop-grown variable through --arg/--argjson"
 fi
 
 if [ "$FAILED" -ne 0 ]; then

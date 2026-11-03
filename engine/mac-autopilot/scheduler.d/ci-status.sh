@@ -207,23 +207,33 @@ ci_compare_cached() { # base head file：SHA 对不可变，已落盘就不再�
   if gh api "repos/{owner}/{repo}/compare/$1...$2" > "$3.tmp" 2>/dev/null; then mv "$3.tmp" "$3"; else rm -f "$3.tmp"; return 1; fi
 }
 ci_triage() { # head facts → verdict
-  local suites cmp mb prf mainf behind complete=false cache="$A/triage-cache" k
-  suites="$(jq -sc '[.[] | ((.pipelineSuites // [])[], ((.suites // [])[] | .file))] | unique' <<<"$2" 2>/dev/null)" || { echo unknown; return 0; }
-  [[ -n "$suites" && "$suites" != "[]" && -n "$MAIN_HEAD" ]] || { echo unknown; return 0; }
+  local cmp mb behind complete=false cache="$A/triage-cache" k tmpdir suites_file pr_files main_files result
+  tmpdir="$(mktemp -d)" || { echo unknown; return 0; }
+  suites_file="$tmpdir/suites.json"
+  pr_files="$tmpdir/pr-files.json"
+  main_files="$tmpdir/main-files.json"
+  jq -sc '[.[] | ((.pipelineSuites // [])[], ((.suites // [])[] | .file))] | unique' <<<"$2" 2>/dev/null > "$suites_file" \
+    || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
+  [[ -n "$MAIN_HEAD" ]] && jq -e 'length > 0' "$suites_file" >/dev/null 2>&1 \
+    || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
   mkdir -p "$cache"
   k="$cache/$MAIN_HEAD...$1.json"
-  ci_compare_cached "$MAIN_HEAD" "$1" "$k" || { echo unknown; return 0; }
+  ci_compare_cached "$MAIN_HEAD" "$1" "$k" || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
   mb="$(jqf -r '.merge_base_commit.sha // empty' "$k")"; behind="$(jqf -r '.behind_by // 0' "$k")"
-  [[ "$mb" =~ $SHA_RE ]] || { echo unknown; return 0; }
-  prf="$(jqf -c '[.files[]?.filename]' "$k")"
+  [[ "$mb" =~ $SHA_RE ]] || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
+  jqf -c '[.files[]?.filename]' "$k" > "$pr_files" || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
   k="$cache/$mb...$MAIN_HEAD.json"
-  ci_compare_cached "$mb" "$MAIN_HEAD" "$k" || { echo unknown; return 0; }
-  mainf="$(jqf -c '[.files[]?.filename]' "$k")"
+  ci_compare_cached "$mb" "$MAIN_HEAD" "$k" || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
+  jqf -c '[.files[]?.filename]' "$k" > "$main_files" || { rm -rf -- "$tmpdir"; echo unknown; return 0; }
   # compare 最多返回 300 个文件；达到上限就不完整，按 unknown 处理
-  jq -e -n --argjson a "$prf" --argjson b "$mainf" '($a | length) < 300 and ($b | length) < 300' >/dev/null 2>&1 && complete=true
-  jq -nc --argjson s "$suites" --argjson a "$prf" --argjson b "$mainf" --argjson n "${behind:-0}" --argjson c "$complete" \
-    '{suites: $s, prFiles: $a, mainFiles: $b, behind: $n, complete: $c}' \
-    | node "${ZF_ENGINE_DIR:-$ROOT/engine}/failure-triage.mjs" 2>/dev/null || echo unknown
+  jq -e -n --slurpfile a "$pr_files" --slurpfile b "$main_files" \
+    '($a[0] | length) < 300 and ($b[0] | length) < 300' >/dev/null 2>&1 && complete=true
+  result="$(jq -nc --slurpfile s "$suites_file" --slurpfile a "$pr_files" --slurpfile b "$main_files" \
+    --argjson n "${behind:-0}" --argjson c "$complete" \
+    '{suites: $s[0], prFiles: $a[0], mainFiles: $b[0], behind: $n, complete: $c}' \
+    | node "${ZF_ENGINE_DIR:-$ROOT/engine}/failure-triage.mjs" 2>/dev/null || echo unknown)"
+  rm -rf -- "$tmpdir"
+  printf '%s\n' "$result"
 }
 
 # 早期 stale-base 路由：开关开、判定 stale-base、非热修/非关键单元、同一 unit 同一套件还没走过这一跳时，
@@ -434,8 +444,8 @@ gated_ready_exempt() { # 热修（含关联 issue 分类）与非产品 PR 不�
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
     gated_ready "$id" "$br" "$head"
-  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
-      and ((.hotpatch // false) == true or .product_paths == false or ((.branch // "") as $br | $hotfix | index($br) != null))
+  done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
+      and ((.hotpatch // false) == true or .product_paths == false or ((.branch // "") as $br | $hotfix[0] | index($br) != null))
       and (.branch // "") != "" and (.approved_sha // "") != "") | [.id, .branch, .approved_sha] | @tsv' "$UNITS")
 }
 ci_ready_hotfix_gated() { # 先触发门控热修的 ready 事件，让它先进入 runner 队列
@@ -445,8 +455,8 @@ ci_ready_hotfix_gated() { # 先触发门控热修的 ready 事件，让它先进
   while IFS=$'\t' read -r id br head; do
     [[ -n "$id" ]] || continue
     gated_ready "$id" "$br" "$head"
-  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null
-      and (.lane // "") != "direct-main" and ((.branch // "") as $br | $hotfix | index($br) != null)
+  done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.pr // null) != null
+      and (.lane // "") != "direct-main" and ((.branch // "") as $br | $hotfix[0] | index($br) != null)
       and (.branch // "") != "" and (.approved_sha // "") != "") | [.id, .branch, .approved_sha] | @tsv' "$UNITS")
 }
 gated_demote_unapproved() { # 门控 PR 已 ready 但单元不在 ready-to-merge/合并中（评审、返工、阻塞）：批准已失效，退回 draft
@@ -458,8 +468,8 @@ gated_demote_unapproved() { # 门控 PR 已 ready 但单元不在 ready-to-merge
     if gated_demote_pr "$pr" "$br" "ci deferred; head is in $stage without an approval"; then
       say "gated unit=$id PR#$pr demoted: approval gone ($stage)"
     fi
-  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select((.hold_handoff_waiting // false) == false and (.pr // null) != null and (.hotpatch // false) != true
-      and ((.branch // "") as $br | $hotfix | index($br) == null) and (.branch // "") != ""
+  done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select((.hold_handoff_waiting // false) == false and (.pr // null) != null and (.hotpatch // false) != true
+      and ((.branch // "") as $br | $hotfix[0] | index($br) == null) and (.branch // "") != ""
       and (.stage | IN("review-pending", "review", "rereview-pending", "rereview", "repair-pending", "repair", "blocked-external"))) | [.id, .branch, .stage] | @tsv' "$UNITS")
 }
 tick_prs() {
@@ -523,16 +533,20 @@ mark_supervisor_owned_units() {
     TICK_SUPERVISOR_MARKING_DEFERRED=true
     return 0
   fi
-  ids="$(jqf -r --argjson hot "$branches" '[.units[] | select((.supervisor_owned // false) != true
-      and ((.hotpatch // false) == true or ((.branch // "") as $br | $hot | index($br) != null))) | .id] | join(" ")' "$UNITS")"
+  ids="$(jqf -r --slurpfile hot <(printf '%s' "$branches") '[.units[] | select((.supervisor_owned // false) != true
+      and ((.hotpatch // false) == true or ((.branch // "") as $br | $hot[0] | index($br) != null))) | .id] | join(" ")' "$UNITS")"
   mark_supervisor_owned_ids $ids || :
 }
 mark_supervisor_owned_ids() { # id…：补标 supervisor_owned（只增不减）；台账写失败下一拍重试
   (( $# > 0 )) || return 0
-  local id
-  units_update --argjson ids "$(jqf -Rsc 'gsub("\\s+";" ") | split(" ") | map(select(length > 0))' <<<"$*")" \
-    '.units |= map(if (.id as $id | $ids | index($id)) != null then .supervisor_owned = true else . end)' \
-    || { say "supervisor-owned marking: ledger write failed; retried next tick"; return 1; }
+  local id ids_file
+  ids_file="$(mktemp)" || return 1
+  printf '%s\n' "$@" | jqf -Rsc 'gsub("\\s+";" ") | split(" ") | map(select(length > 0))' > "$ids_file" \
+    || { rm -f -- "$ids_file"; return 1; }
+  units_update --slurpfile ids "$ids_file" \
+    '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .supervisor_owned = true else . end)' \
+    || { rm -f -- "$ids_file"; say "supervisor-owned marking: ledger write failed; retried next tick"; return 1; }
+  rm -f -- "$ids_file"
   for id in "$@"; do say "unit=$id supervisor-owned: counted for census only; review and merge stay with the hotfix supervisor"; done
   return 0
 }
@@ -555,9 +569,18 @@ hotfix_issue_numbers() {
 # PR 已在 GitHub 合并/关闭（如 10-27 手工批量落地），台账却还在工作环节：派活前先收掉。
 # 10-28 #4039/#4040 已合并，仍各被派了两轮 repair 与两次裁决。只查不在本拍 open 列表里的单元，每拍有上限。
 retire_landed_pr_units() {
-  local prs open id pr state n=0
-  prs="$(tick_prs)" || return 0
-  open="$(jqf -c '[.[].number]' <<<"$prs")"
+  local tmpdir open_file rows_file id pr state n=0
+  tmpdir="$(mktemp -d)" || return 0
+  open_file="$tmpdir/open-pr-numbers.json"
+  rows_file="$tmpdir/retired-units.tsv"
+  tick_prs | jqf -c '[.[].number]' > "$open_file" \
+    || { rm -rf -- "$tmpdir"; return 0; }
+  jqf -r --slurpfile open "$open_file" '.units[]
+    | select((.pr | type) == "number" and (.stage | test("^(closed|landed|merged|done|needs-human)$") | not)
+      and (.hold_handoff_waiting // false) == false
+      and (.pr as $p | $open[0] | index($p)) == null)
+    | [.id, (.pr | tostring)] | @tsv' "$UNITS" > "$rows_file" \
+    || { rm -rf -- "$tmpdir"; return 0; }
   while IFS=$'\t' read -r id pr; do
     [[ -n "$id" ]] || continue
     (( n < ${RETIRE_PR_CHECK_MAX:-10} )) || break
@@ -568,11 +591,8 @@ retire_landed_pr_units() {
     [[ "$state" == MERGED ]] && state=merged || state=closed
     set_unit "$id" "$(hist pr-"$state" "PR $state outside the pipeline") | .stage=\"$state\""
     say "unit=$id PR#$pr already $state on GitHub; retired before dispatch"
-  done < <(jqf -r --argjson open "$open" '.units[]
-    | select((.pr | type) == "number" and (.stage | test("^(closed|landed|merged|done|needs-human)$") | not)
-      and (.hold_handoff_waiting // false) == false
-      and (.pr as $p | $open | index($p)) == null)
-    | [.id, (.pr | tostring)] | @tsv' "$UNITS")
+  done < "$rows_file"
+  rm -rf -- "$tmpdir"
 }
 
 # CI 只花在会合并的 head 上（约束理论：瓶颈不做无用功）。CI 是交付瓶颈（10-21 一天批准 110、合并 17），而评审
@@ -592,8 +612,8 @@ ci_defer_unapproved() {
   local -a jobs_to_load=()
   local -A unit_of=()
   while IFS=$'\t' read -r id br; do [[ -n "$br" ]] && unit_of["$br"]="$id"; done \
-    < <(jqf -r --argjson hot "${CI_HOTFIX_BRANCHES:-[]}" '.units[] | select((.hold_handoff_waiting // false) == false and (.hotpatch // false) != true
-      and ((.branch // "") as $br | $hot | index($br) == null)
+    < <(jqf -r --slurpfile hot <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '.units[] | select((.hold_handoff_waiting // false) == false and (.hotpatch // false) != true
+      and ((.branch // "") as $br | $hot[0] | index($br) == null)
       and (.stage | IN("review","review-pending","rereview","rereview-pending")) and (.branch // "") != "") | [.id, .branch] | @tsv' "$UNITS")
   (( ${#unit_of[@]} > 0 )) || return 0
   while IFS=$'\t' read -r r sha st br; do

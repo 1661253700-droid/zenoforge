@@ -21,8 +21,8 @@ mark_product_paths() { # 就绪单元第一次见到时查一次 PR 文件，记
     updates="$(jqf --arg id "$id" --argjson product "$product" '. + {($id):$product}' <<<"$updates")"
   done
   rm -rf -- "$query_dir"
-  [[ "$updates" == '{}' ]] || units_update --argjson paths "$updates" \
-    '.units |= map(.id as $id | if .stage == "ready-to-merge" and .product_paths == null and $paths[$id] != null then .product_paths=$paths[$id] else . end)'
+  [[ "$updates" == '{}' ]] || units_update --slurpfile paths <(printf '%s' "$updates") \
+    '.units |= map(.id as $id | if .stage == "ready-to-merge" and .product_paths == null and $paths[0][$id] != null then .product_paths=$paths[0][$id] else . end)'
 }
 # 本机预检（precheck.sh）：等名额的单元先在本机跑 PR 自己改动的测试，PASS/SKIP 才给 CI 名额，FAIL 直接返工。
 # 10-22：批准后 CI 红 14/14 是 PR 自己改动的测试文件；12 小时 CI 判红 69 次、合并 12 次，每次红白等名额 + 45–60 分钟。
@@ -168,10 +168,10 @@ ci_assign_wip() {
       fi
     fi
   # 同一优先级按 ready_since 先后；critical 与可解锁依赖只在 readiness 相同时作 tie-break。
-  done < <(jqf -r --argjson hotfix "${CI_HOTFIX_BRANCHES:-[]}" '[.units[] | select(.stage == "blocked-external") | .blocked_on | numbers] as $deps
+  done < <(jqf -r --slurpfile hotfix <(printf '%s' "${CI_HOTFIX_BRANCHES:-[]}") '[.units[] | select(.stage == "blocked-external") | .blocked_on | numbers] as $deps
       | [.units[] | select(.stage == "ready-to-merge" and (.hold_handoff_waiting // false) == false and (.pr // null) != null and (.lane // "") != "direct-main"
       and (.hotpatch // false) != true and (.branch // "") != ""
-      and ((.branch as $br | $hotfix | index($br)) == null)
+      and ((.branch as $br | $hotfix[0] | index($br)) == null)
       and .product_paths != false)]
       | sort_by([(if .main_red == true then 0 elif .ci_priority == true then 1 else 2 end),
                  (.ready_since // 0), (if .critical == true then 0 else 1 end),
@@ -215,12 +215,20 @@ ci_assign_wip() {
 # （默认 3）个有空闲名额的慢拍仍未翻转 → 每拍 say 一行，并按单元一次性写 alerts/slo.md。
 # 名额为 0 属于正常排队，不计时也不告警。
 ci_slot_starve_watch() {
-  local wip prs id pr since ticks threshold
+  local wip prs_file rows_file tmpdir id pr since ticks threshold
   threshold="${CI_SLOT_STARVE_SLOW_TICKS:-3}"
   [[ "$threshold" =~ ^[1-9][0-9]*$ ]] || threshold=3
   wip="$(ci_pr_free_slots)" || return 0
   (( wip > 0 )) || return 0
-  prs="$(tick_prs)" || return 0
+  tmpdir="$(mktemp -d)" || return 0
+  prs_file="$tmpdir/prs.json"
+  rows_file="$tmpdir/starved-drafts.tsv"
+  tick_prs > "$prs_file" || { rm -rf -- "$tmpdir"; return 0; }
+  jqf -r --slurpfile prs "$prs_file" '.units[]
+      | select(.stage == "ready-to-merge" and (.pr // null) != null and (.hold_handoff_waiting // false) == false
+          and (.lane // "") != "direct-main" and (.approved_sha // "") != "")
+      | . as $u | ($prs[0][] | select(.number == $u.pr) | select(.isDraft == true)) | [$u.id, ($u.pr | tostring), ($u.ci_slot_wait_since // "")] | @tsv' "$UNITS" > "$rows_file" \
+    || { rm -rf -- "$tmpdir"; return 0; }
   while IFS=$'\t' read -r id pr since; do
     [[ -n "$id" ]] || continue
     if [[ -z "$since" ]]; then
@@ -238,10 +246,8 @@ ci_slot_starve_watch() {
       echo "[$STAMP] CI-SLOT-STARVE unit=$id PR#$pr free_slots=$wip waited_ticks=$ticks" >> "$A/alerts/slo.md" \
         && set_unit "$id" '.ci_slot_starve_alerted=true' || :
     fi
-  done < <(jqf -r --argjson prs "$prs" '.units[]
-      | select(.stage == "ready-to-merge" and (.pr // null) != null and (.hold_handoff_waiting // false) == false
-          and (.lane // "") != "direct-main" and (.approved_sha // "") != "")
-      | . as $u | ($prs[] | select(.number == $u.pr) | select(.isDraft == true)) | [$u.id, ($u.pr | tostring), ($u.ci_slot_wait_since // "")] | @tsv' "$UNITS")
+  done < "$rows_file"
+  rm -rf -- "$tmpdir"
   return 0
 }
 
