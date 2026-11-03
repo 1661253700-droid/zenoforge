@@ -3,15 +3,21 @@
 alive() { ps -p "$1" -o args= 2>/dev/null | grep -Eq 'codex|claude|land-pr\.sh|precheck\.sh|cdp-browser-lease\.sh|decision-gate\.mjs'; }
 
 set_unit() { # id jq_update_expression（.stage=... 等，可用 | 连接）
-  local own_lock=false rc=0 started=$SECONDS elapsed
+  local own_lock=false rc=0 started=$SECONDS elapsed old_stage="" new_stage=""
   if [[ "${SCHED_LOCK_HELD:-false}" != true ]]; then
     acquire_scheduler_lock_wait || return 1
     own_lock=true
   fi
+  [[ "$2" == *".stage"* ]] && old_stage="$(unit_field "$1" '.stage')"
   jqf --arg id "$1" "(.units[] |= (if .id==\$id then ($2) else . end))" "$UNITS" | write_state "$UNITS" || rc=$?
   if [[ "$own_lock" == true ]]; then release_scheduler_lock; fi
   elapsed=$((SECONDS - started))
   [[ "${TICK_DISPATCH_PENDING_ACTIVE:-false}" != true ]] || (( elapsed < 2 )) || say "dispatch detail ledger_write unit=$1 secs=${elapsed}s"
+  if (( rc == 0 )) && [[ -n "$old_stage" ]] && declare -F footprint_owner_transition >/dev/null; then
+    new_stage="$(unit_field "$1" '.stage')" || new_stage=""
+    footprint_owner_transition "$1" "$old_stage" "$new_stage" \
+      || say "footprint wait cleanup failed owner=$1 stage=$new_stage"
+  fi
   return "$rc"
 }
 units_update() { # jq args; transactionally update the unit ledger under the shared scheduler lock

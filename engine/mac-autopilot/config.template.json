@@ -59,6 +59,8 @@
     "pilot_label": "stack-pilot"
   },
   "footprint_mutex": {
+    "convoy_min_waiters": 4,
+    "convoy_wait_minutes": 15,
     "shared_append": [
       "packages/example-pack/src/db/schema.ts",
       "packages/example-pack/src/db/runtime-permissions.ts",

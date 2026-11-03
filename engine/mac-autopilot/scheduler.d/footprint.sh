@@ -15,6 +15,66 @@ FOOTPRINT_LIVE_WRITER_STAGES='["implement","repair"]'
 FOOTPRINT_QUEUED_WRITER_STAGES='["implement-pending","repair-pending","landing"]'
 FOOTPRINT_RELEASED_STAGES='["supervisor-review","parked","needs-human","blocked-external","review","rereview","review-pending","rereview-pending","ready-to-merge","merged","landed","closed","awaiting-live-event","done","wontfix","duplicate"]'
 
+footprint_owner_stage_active() { # stage -> unit reserves write scope in the shared holder model
+  jqf -e --arg stage "$1" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" \
+    --argjson queued "$FOOTPRINT_QUEUED_WRITER_STAGES" '($live + $queued | index($stage)) != null' \
+    <<< '{}' >/dev/null
+}
+footprint_owner_stage_live() { # stage -> an implementation/repair worker can be writing now
+  jqf -e --arg stage "$1" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" \
+    '($live | index($stage)) != null' <<< '{}' >/dev/null
+}
+footprint_wait_owner_active() { # owner id -> 0 iff its ledger stage still holds footprint scope
+  local stage
+  stage="$(jqf -r --arg id "$1" '[.units[] | select(.id==$id) | .stage][0] // empty' "$UNITS")" || return $?
+  [[ -n "$stage" ]] || return 1
+  footprint_owner_stage_live "$stage" || return $?
+  jqf -e --arg id "$1" \
+    'any(.workers[]; .unit==$id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair")))' \
+    "$WORKERS" >/dev/null
+}
+footprint_waiters_revalidate() { # clear missing/released owners before any gate counts the marker as a wait
+  local rows row id owner since since_epoch owner_status
+  rows="$(jqf -c '[.units[] | select((.footprint_wait_owner // "") != "")
+    | {id,owner:.footprint_wait_owner,since:(.footprint_wait_since // "")}]' "$UNITS")" || return 1
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    id="$(jqf -r .id <<<"$row")"
+    owner="$(jqf -r .owner <<<"$row")"
+    since="$(jqf -r .since <<<"$row")"
+    if footprint_wait_owner_active "$owner"; then
+      since_epoch="$(ap_iso_epoch "$since")"
+      [[ "$since_epoch" =~ ^[0-9]+$ ]] && continue
+      set_unit "$id" ".footprint_wait_since=$(js "$STAMP")" || return 1
+      continue
+    else
+      owner_status=$?
+    fi
+    (( owner_status == 1 )) || return "$owner_status"
+    set_unit "$id" 'del(.footprint_wait_owner,.footprint_wait_since)' || return 1
+    say "footprint wait cleared unit=$id stale_owner=$owner"
+  done < <(jqf -c '.[]' <<<"$rows")
+}
+footprint_owner_transition() { # id old_stage new_stage -> release its waiters when it leaves writer stages
+  local owner="$1" old_stage="$2" new_stage="$3" current_stage waiters left_active=false
+  current_stage="$(unit_field "$owner" '.stage')" || return 1
+  [[ "$current_stage" == "$new_stage" ]] || return 0
+  if footprint_owner_stage_live "$old_stage"; then
+    footprint_owner_stage_live "$new_stage" || left_active=true
+  elif footprint_owner_stage_active "$old_stage"; then
+    footprint_owner_stage_active "$new_stage" || left_active=true
+  else
+    return 0
+  fi
+  [[ "$left_active" == true ]] || return 0
+  waiters="$(jqf -r --arg owner "$owner" '[.units[] | select(.footprint_wait_owner==$owner) | .id] | join(",")' "$UNITS")" || return 1
+  [[ -n "$waiters" ]] || return 0
+  units_update --arg owner "$owner" \
+    '.units |= map(if .footprint_wait_owner==$owner then del(.footprint_wait_owner,.footprint_wait_since) else . end)' \
+    || return 1
+  say "footprint wait release owner=$owner waiters=$waiters"
+}
+
 # #4488: 预测足迹挡不住在跑 worker 越界写共享文件（collisions_per_day=97，全是真实并发写）。
 # 派发检查把在跑 unit 的 worktree 里已发生的改动（已提交 + 未提交 + 未跟踪）并进它的足迹。
 live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；workdir 不可读时退回预测
@@ -275,9 +335,13 @@ footprint_strip_shared_append() { # scope_json -> 去掉 shared-append 精确路
   [[ "$shared" != '[]' ]] || { printf '%s\n' "$scope"; return; }
   jqf -c --argjson sa "$shared" 'map(select(. as $x | any($sa[]; . == $x) | not))' <<<"$scope"
 }
-footprint_wait_mark() { # unit owner unit_json：记等待方到 unit（值没变不写 units.json），intake 据此不把它算作占用产能
+footprint_wait_mark() { # unit owner unit_json：记等待方与起始时间，intake 不把它算作占用产能
   say "footprint wait unit=$1 owner=$2"
-  [[ "$(jqf -r '.footprint_wait_owner // empty' <<<"$3")" == "$2" ]] || set_unit "$1" ".footprint_wait_owner=\"$2\""
+  local marked_owner marked_since
+  marked_owner="$(jqf -r '.footprint_wait_owner // empty' <<<"$3")"
+  marked_since="$(jqf -r '.footprint_wait_since // empty' <<<"$3")"
+  if [[ "$marked_owner" == "$2" && "$(ap_iso_epoch "$marked_since")" =~ ^[0-9]+$ ]]; then return 0; fi
+  set_unit "$1" ".footprint_wait_owner=$(js "$2") | .footprint_wait_since=$(js "$STAMP")"
 }
 _footprint_room() {
   local id="$1" u="${2:-}" scope active conflict check_scope refreshed=false require_fresh="${3:-true}" stage
@@ -346,11 +410,74 @@ footprint_room() { # unit type; report checks that materially delay dispatch
   _footprint_room "$@" || rc=$?
   # 放行后清掉等待记录；只在字段真有值时写 units.json
   if (( rc == 0 )) && [[ -n "$(jqf -r '.footprint_wait_owner // empty' <<<"${2:-null}")" ]]; then
-    set_unit "$1" 'del(.footprint_wait_owner)'
+    set_unit "$1" 'del(.footprint_wait_owner,.footprint_wait_since)'
   fi
   elapsed=$((SECONDS - started))
   (( elapsed >= 2 )) && say "dispatch detail footprint_check unit=$1 secs=${elapsed}s"
   return "$rc"
+}
+# Old wait-age markers are released only after their owner leaves the writer set. Do not weaken
+# the footprint lock: this alert asks the supervisor to recut a convoy rather than admit conflicts.
+footprint_convoy_alert() {
+  local min_waiters wait_minutes owners owner waiters row id since since_epoch age waited_seconds aged_count aged_ids ids
+  local max_age episode_epoch line key
+  min_waiters="$(jqf -r '.footprint_mutex.convoy_min_waiters // 4' <<<"$CFG")"
+  [[ "$min_waiters" =~ ^[1-9][0-9]*$ ]] || min_waiters=4
+  wait_minutes="$(jqf -r '.footprint_mutex.convoy_wait_minutes // 15' <<<"$CFG")"
+  [[ "$wait_minutes" =~ ^[1-9][0-9]*$ ]] || wait_minutes=15
+  footprint_waiters_revalidate || return 1
+  owners="$(jqf -r '[.units[] | select((.stage // "") | test("-pending$"))
+    | select((.footprint_wait_owner // "") != "") | .footprint_wait_owner] | unique | .[]' "$UNITS")" || return 1
+  while IFS= read -r owner; do
+    [[ -n "$owner" ]] || continue
+    waiters="$(jqf -c --arg owner "$owner" '[.units[] | select((.stage // "") | test("-pending$"))
+      | select(.footprint_wait_owner==$owner) | {id,since:(.footprint_wait_since // "")}]' "$UNITS")" || return 1
+    aged_ids='[]'; aged_count=0; max_age=0; episode_epoch=0
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      id="$(jqf -r .id <<<"$row")"
+      since="$(jqf -r .since <<<"$row")"
+      since_epoch="$(ap_iso_epoch "$since")"
+      [[ "$since_epoch" =~ ^[0-9]+$ ]] || continue
+      waited_seconds=$(( NOW_EPOCH - since_epoch ))
+      (( waited_seconds > wait_minutes * 60 )) || continue
+      age=$(( waited_seconds / 60 ))
+      aged_count=$((aged_count + 1))
+      (( age <= max_age )) || max_age=$age
+      if (( episode_epoch == 0 || since_epoch < episode_epoch )); then episode_epoch=$since_epoch; fi
+      aged_ids="$(jqf -cn --argjson ids "$aged_ids" --arg id "$id" '$ids + [$id]')" || return 1
+    done < <(jqf -c '.[]' <<<"$waiters")
+    (( aged_count >= min_waiters )) || continue
+    ids="$(jqf -r 'join(",")' <<<"$aged_ids")"
+    line="footprint-convoy owner=$owner waiters=$ids oldest_wait_min=$max_age min_waiters=$min_waiters wait_minutes=$wait_minutes action=recut-overlapping-scopes"
+    key="footprint-convoy:$owner:$episode_epoch"
+    say "$line"
+    (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "$key" "$line") \
+      || say "footprint-convoy alert not delivered owner=$owner"
+  done <<<"$owners"
+}
+refill_dispatch_metrics() { # log byte offset live count -> one-line refill state and skip totals
+  local log_offset="$1" live="$2" free pending footprint handoff memory log_end log_bytes
+  footprint_waiters_revalidate || return 1
+  [[ "$live" =~ ^[0-9]+$ ]] || live=0
+  free=$(( MAX - live )); (( free >= 0 )) || free=0
+  pending="$(jqf '[.units[] | select((.stage // "") | test("^(implement|repair|review|rereview)-pending$"))] | length' "$UNITS")" || return 1
+  footprint="$(jqf '[.units[] | select((.stage // "") | test("-pending$")) | select((.footprint_wait_owner // "") != "")] | length' "$UNITS")" || return 1
+  handoff="$(jqf '[.units[] | select((.stage // "") | test("-pending$")) | select(.hold_handoff_waiting == true)] | length' "$UNITS")" || return 1
+  memory=0
+  if [[ "$log_offset" =~ ^[0-9]+$ && -f "$LOG" ]]; then
+    log_end="$(wc -c < "$LOG")"
+    if (( log_end < log_offset )); then log_offset=0; fi
+    log_bytes=$((log_end - log_offset))
+    if (( log_bytes > 0 )); then
+      memory="$(tail -c +$((log_offset + 1)) "$LOG" 2>/dev/null | head -c "$log_bytes" \
+        | awk '/execution admission decision mode=run-unit outcome=defer/ && /reason=resource-floor$/ { n++ } END { print n+0 }')"
+    fi
+    printf '%s\n' "$log_end" > "$A/.refill-dispatch-log-offset.tmp" \
+      && mv -f -- "$A/.refill-dispatch-log-offset.tmp" "$A/.refill-dispatch-log-offset" || return 1
+  fi
+  printf 'free_slots=%s pending=%s skips=footprint:%s,handoff:%s,memory:%s\n' \
+    "$free" "$pending" "$footprint" "$handoff" "$memory"
 }
 # 每 tick：活 worker 跑超 hog_alert_minutes 且挡住 >hog_alert_blocked 个 *-pending 单元时只告警，不停 worker（2026-10-30 issue-3015/4280）
 footprint_hog_alert() {

@@ -3888,15 +3888,19 @@ sched_case_intake_cache_large_rows() {
 sched_run_case intake_cache_large_rows
 
 sched_case_refill_intake_footprint_wait() {
-# A footprint waiter is not startable pending work, so it cannot suppress refill intake.
+# A waiter on a live footprint owner is not startable pending work, so it cannot suppress refill intake.
   new_tick_fixture refill-intake-footprint-wait
   mkdir -p "$TF/agent-home/state"
   command jq '.max_workers=1 | .implement_cap=0 | .hotfix_lane.supervisor_owned=false
     | .issue_intake={enabled:true,max_upstream:8,max_ready:30,labels:[],product_labels:["ready-for-agent"],ready_buffer:0,refill_max:2}' \
     "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
   mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
-  command jq -n '{units:[{id:"footprint-waiter",stage:"implement-pending",task:"waiting fixture",
-    footprint:[],footprint_wait_owner:"issue-9299",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  command jq -n '{units:[
+    {id:"issue-9299",stage:"implement",footprint:[],history:[]},
+    {id:"footprint-waiter",stage:"implement-pending",task:"waiting fixture",
+      footprint:[],footprint_wait_owner:"issue-9299",history:[]}]}' > "$TF/supervisor/autopi/units.json"
+  printf '%s\n' '{"workers":[{"pid":999999,"unit":"issue-9299","type":"implement"}]}' \
+    > "$TF/supervisor/autopi/workers.json"
   command jq -n '{number:9301,title:"independent refill candidate",body:"Implement an independent fixture.",state:"OPEN",labels:[{name:"ready-for-agent"}]}' \
     > "$TF/intake-issue.json"
   command jq -n '{expected_paths:[]}' > "$TF/agent-home/state/9301.json"

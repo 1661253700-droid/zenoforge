@@ -409,8 +409,12 @@ VIEWS_LOCK="$A/.views.lock"
 # 缓存失效时最多查询一个标签；实现派发只读本地台账，PR 修复、评审或复审按需读取一次共享 PR census。
 # 报告收割与 PR 注册仍由慢 tick 处理。
 refill_tick() {
-  local TICK_LOCAL_REFILL=true
+  local TICK_LOCAL_REFILL=true refill_log_offset=0 live metrics
   cd "$ROOT" || { echo "scheduler: root $ROOT unavailable" >&2; return 1; }
+  refill_log_offset="$(cat "$A/.refill-dispatch-log-offset" 2>/dev/null || true)"
+  if [[ ! "$refill_log_offset" =~ ^[0-9]+$ ]]; then
+    [[ -f "$LOG" ]] && refill_log_offset="$(wc -c < "$LOG")"
+  fi
   acquire_scheduler_lock || return 75
   if ! state_schema_ok; then
     say "state schema invalid; refill stopped before external actions"
@@ -445,7 +449,10 @@ refill_tick() {
   local gh_calls; gh_calls="$(tick_gh_calls_count)"
   rm -f -- "$GH_TICK_CALLS_FILE" 2>/dev/null || :
   GH_TICK_CALLS_FILE=""
-  say "refill done live=$(live_workers) secs=$SECONDS gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
+  live="$(live_workers)"
+  metrics="$(refill_dispatch_metrics "$refill_log_offset" "$live")" \
+    || metrics='free_slots=unknown pending=unknown skips=footprint:unknown,handoff:unknown,memory:unknown'
+  say "refill done live=$live $metrics secs=$SECONDS gh_calls=$gh_calls${TICK_PHASES:+ slow:$TICK_PHASES}"
 }
 
 main() {
