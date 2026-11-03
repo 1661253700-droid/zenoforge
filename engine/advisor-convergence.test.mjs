@@ -330,13 +330,25 @@ test('a finished job with a malformed answer charges an attempt via the shared a
   } finally { f.close(); }
 });
 
+// PR #191 made a complete plan part of a valid non-close answer: the
+// dispatch block now runs advisor_plan_action() on every polled or resumed
+// RESULT, so fixtures standing in for "the advisor answered validly" carry
+// the minimal complete plan shape (prompts/advisor.schema.json) or they
+// take the reask path instead of resolving a verdict.
+const fixturePlan = {
+  changes: [{ file: 'engine/lib.sh', symbol: 'route_to_advisor', change: 'fixture-only change' }],
+  tests_fail_first: ['node --test engine/advisor-convergence.test.mjs'],
+  non_goals: ['fixture-only non-goal'],
+};
+const fixtureAdvisedResult = JSON.stringify({ verdict: 'advised', plan: fixturePlan });
+
 test('a finished job with a valid answer produces RESULT without charging an attempt', () => {
   const f = fixture();
   try {
     const priorState = JSON.stringify({ attempts: 2, web_advisor_provider_job_id: 'advisor-90042-1' });
-    const r = runDispatch(f, { priorState, POLL_STATUS: '0', POLL_OUTPUT: '{"is_error":false,"structured_output":{"verdict":"advised"}}' });
+    const r = runDispatch(f, { priorState, POLL_STATUS: '0', POLL_OUTPUT: `{"is_error":false,"structured_output":${fixtureAdvisedResult}}` });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /RESULT=\{"verdict":"advised"\} DEGRADED=0/);
+    assert.ok(r.stdout.includes(`RESULT=${fixtureAdvisedResult} DEGRADED=0`), r.stdout);
     const state = JSON.parse(text(f, 'agent/state/90042.json'));
     assert.equal(state.web_advisor_provider_job_id, undefined);
     assert.equal(state.attempts, 2);
@@ -350,7 +362,7 @@ test('resuming an existing pending verdict skips dispatch entirely and reuses th
     const priorState = JSON.stringify({
       attempts: 2,
       pending_advisor_verdict: {
-        result: { verdict: 'advised' },
+        result: JSON.parse(fixtureAdvisedResult),
         input: { title: 't', body: 'b', comments: [] },
         computed_at: 'an earlier tick',
         episode_seq: 0,
@@ -359,7 +371,7 @@ test('resuming an existing pending verdict skips dispatch entirely and reuses th
     });
     const r = runDispatch(f, { issueJson, priorState });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /RESULT=\{"verdict":"advised"\} DEGRADED=0/);
+    assert.ok(r.stdout.includes(`RESULT=${fixtureAdvisedResult} DEGRADED=0`), r.stdout);
     assert.equal(text(f, 'calls'), '', 'a resumed verdict must never touch usable()/poll()/dispatch_async()');
     assert.equal(JSON.parse(text(f, 'agent/state/90042.json')).attempts, 2);
   } finally { f.close(); }

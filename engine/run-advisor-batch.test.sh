@@ -37,12 +37,24 @@ ZF_CONFIG_ROOT="$target" ZF_PACK_DIR="$pack" bash -c '
   ! grep -Fq "pack batch prompt" "$(advisor_prompt_file batch)"
 ' _ "$script_dir"
 
+# PR #189 made every poll persist provider incident diagnostics before the
+# status handling, so advisor_batch_poll_provider_job() now calls
+# advisor_batch_capture_provider_diagnostics(); extract both real functions
+# and give the capture step the tick globals production sets.
+eval "$(sed -n '/^advisor_batch_capture_provider_diagnostics() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
 eval "$(sed -n '/^advisor_batch_poll_provider_job() {/,/^}/p' "$script_dir/run-advisor-batch.sh")"
+LOG_DIR="$tmp/logs"
+ADVISOR_TICK_ID="fixture-tick"
+WEB_ADVISOR_PROVIDER_JOB_DIR="$tmp/jobs"
+BATCH_JOB_ID="fixture-job"
+mkdir -p "$LOG_DIR" "$WEB_ADVISOR_PROVIDER_JOB_DIR"
 web_advisor_provider_poll() {
   [[ "$1" == fixture-job ]]
   printf '%s\n' '{"is_error":false,"structured_output":"{\"kind\":\"advisor_batch_result\"}"}'
 }
 [[ "$(advisor_batch_poll_provider_job fixture-job)" == '{"kind":"advisor_batch_result"}' ]]
+[[ -f "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json" ]]
+[[ "$(jq -c '.error_codes' "$LOG_DIR/$ADVISOR_TICK_ID.advisor-diagnostics.json")" == '[]' ]]
 web_advisor_provider_poll() { return 2; }
 set +e
 advisor_batch_poll_provider_job fixture-job >/dev/null 2>&1
