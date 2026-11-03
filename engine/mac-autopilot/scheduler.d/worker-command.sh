@@ -60,7 +60,7 @@ build_codex_command() { # type model effort unit cold-prompt [new-failure] [work
     # 用户级 PreToolUse hook（rtk）把 git log/diff 改写成 rtk git …，白名单不匹配，dontAsk 全拒：评审 worker 不加载 hook。
     CODEX_COMMAND=(claude -p "$prompt_arg
 （本次运行无写文件权限：把完整报告正文作为最终回答输出，调度器会原样落盘到上述报告路径。
-当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」（这些形式不匹配白名单会被拒）。可用命令（白名单外一律被拒）：git diff/log/show/fetch/rev-parse/merge-base/ls-files、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort；优先用 Read/Grep 工具读代码。当前目录已是评审目录，直接执行单条命令即可。一条命令被拒只说明其中某一段不在白名单，不代表 Bash 不可用：拆成单条白名单命令重试，不要据此判定 INPUT_INCOMPLETE。）" \
+当前目录就是评审目录：git 命令直接写「git diff ...」，不要加「-C <dir>」「--no-pager」，也不要「cd ... &&」（这些形式不匹配白名单会被拒）。可用命令（白名单外一律被拒）：git diff/log/show/fetch/rev-parse/merge-base/ls-files、gh pr view/diff/checks、gh issue view、head/tail/wc/cat/ls/grep/rg/jq/sort、pnpm <script>、npx vitest <file>、node --test <file>、bash <file>.test.sh；优先用 Read/Grep 工具读代码并先跑聚焦测试。当前目录已是评审目录，直接执行单条命令即可。一条命令被拒只说明其中某一段不在白名单，不代表 Bash 不可用：拆成单条白名单命令重试，不要据此判定 INPUT_INCOMPLETE。）" \
       --settings '{"disableAllHooks":true}' --add-dir "$ENGINE_ROOT/.agents/skills" --add-dir "$ENGINE_ROOT/engine/prompts" \
       --model "$model" --effort "$effort" --permission-mode dontAsk --strict-mcp-config \
       --tools "Read,Grep,Glob,Bash" --allowedTools "$CLAUDE_REVIEW_TOOLS")
