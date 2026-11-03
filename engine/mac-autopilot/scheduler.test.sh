@@ -2640,11 +2640,13 @@ sched_run_case gate_network
 sched_case_gate_suite_timeout() {
 new_tick_fixture gate-suite-timeout
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+command jq -cn '{units:[{id:"pr-gate-timeout",pr:9002,lane:"pr",stage:"ready-to-merge",history:[]}]}' \
+  > "$TF/supervisor/autopi/units.json"
 echo '[pipeline suites] FAILED suite=engine/land-queue.test.sh exit_code=137 first_error=suite engine/land-queue.test.sh timed out after 492s' > "$TF/failed.log"
 tick; tick
 [[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
 [[ ! -s "$TF/reverted" ]]
-command jq -e '.units | length==0' "$TF/supervisor/autopi/units.json" >/dev/null
+command jq -e '.units | length==1 and .[0].stage=="rereview-pending"' "$TF/supervisor/autopi/units.json" >/dev/null
 }
 sched_run_case gate_suite_timeout
 

@@ -11,7 +11,7 @@
 # LIB_TEST_RELEASE_CLOSE_ONLY, LIB_TEST_OPS_TRANSITION_ONLY, and
 # LIB_TEST_MODEL_POLICY_ONLY; each stops after its section, so preceding
 # sections still run.
-set -euo pipefail
+set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/." && pwd -P)/test-env.sh"
 LIB_TEST_AGENT_HOME="$AGENT_HOME"
 INBOX_HELPER_HOME="$(mktemp -d)"
@@ -58,6 +58,7 @@ ok() { ASSERTIONS=$((ASSERTIONS + 1)); }
 # tests are unaffected.
 LIB_TEST_STDERR_LOG="$(mktemp)"
 exec 3>&1 4>&2 >/dev/null 2>"$LIB_TEST_STDERR_LOG"
+trap 'lib_err_status=$?; printf "engine/lib.test.sh: unhandled command failed at line %s (status %s): %s\\n" "${BASH_LINENO[0]:-$LINENO}" "$lib_err_status" "$BASH_COMMAND" >&4' ERR
 
 # Single-case switches exit through here so they print the same one-line summary.
 lib_case_exit() {
