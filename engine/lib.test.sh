@@ -4501,6 +4501,8 @@ assert_contains "timeout log states its classification and empty transcript" \
 
 RCI_SIGNAL_HOME="$(mktemp -d)"; RCI_SIGNAL_LOG="$(mktemp)"
 TMP_DIRS+=("$RCI_SIGNAL_HOME" "$RCI_SIGNAL_LOG")
+# Force admission telemetry to fail while the model itself writes nothing.
+: > "$RCI_SIGNAL_HOME/metrics"
 RCI_SIGNAL_OUT="$(run_rci_failure_case signal 700113 "$RCI_SIGNAL_HOME" "$RCI_SIGNAL_LOG")"
 assert_contains "controlled child really terminates model process with SIGTERM" "$RCI_SIGNAL_OUT" 'CALL-STATUS=143'
 assert_contains "signal exit is structured and never quota-shaped" \
@@ -4508,6 +4510,7 @@ assert_contains "signal exit is structured and never quota-shaped" \
 assert_contains "empty signal transcript leaves nonempty log diagnostic" \
   "$RCI_SIGNAL_OUT" 'model_call_exit_status=143 termination_class=signal_termination signal=SIGTERM'
 assert_contains "empty signal transcript is marked explicitly" "$RCI_SIGNAL_OUT" 'transcript_empty=true'
+assert_contains "admission telemetry errors remain in the model log" "$RCI_SIGNAL_OUT" 'execution metrics: append failed'
 assert_eq "signal state records transcript emptiness" "true" \
   "$(jq -r '.last_model_call_failure.transcript_empty' "$RCI_SIGNAL_HOME/state/700113.json")"
 assert_contains "signal evidence query targets issue owning implement unit" \
