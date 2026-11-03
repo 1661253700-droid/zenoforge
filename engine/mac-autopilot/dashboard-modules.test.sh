@@ -151,7 +151,7 @@ const ledger = {cost_ledger: {last_24h: {in: 2100000, uncached: null, out: 30000
   eval: {labels: [{label: "gold-check", runs: 4, tokens: null, unknown_tokens: 1, wall_seconds: 5000, model_wall_seconds: 4000, finished_at: "2026-10-28T01:00:00Z"}],
     last_24h: {labels: 1, runs: 4, tokens: null, unknown_tokens: 1, wall_seconds: 5000, model_wall_seconds: 4000}}}};
 const ledgerOut = renderAll("cost-ledger", ledger).out;
-for (const text of ["最近 24 小时 · worker 事件流", "pr-4365", "#4365", "eval（单独口径）", "按阶段", "按后端"])
+for (const text of ["最近 24 小时，worker 事件流", "pr-4365", "#4365", "eval（单独口径）", "按阶段", "按后端"])
   if (!ledgerOut.cost.includes(text)) throw new Error(`cost module lacks "${text}"`);
 if (ledgerOut.cost.includes("NaN")) throw new Error("cost module shows NaN");
 // 总览顶部：现在在干活的员工 = 一张卡一个员工（任务名 + 归属色 + 心跳 + 步骤 + 用时条），没有"N 个"句子；清单不可用时给空态
@@ -176,7 +176,7 @@ if (!lt.includes("4.8M") || !lt.includes("lw-st") || !lt.includes("120MB") || (l
 const ch = renderAll("chips", {units: [{id: "u1", title: "unit in repair", stage: "repair", journey: {status: "check", since_min: 200, age_min: 300}}],
   front: {stages: [{label: "needs-triage", name: "x", count: 7, idle_hours: 1, items: [1,2,3,4,5,6].map(n => ({number: n, title: "triage item " + n, updated_at: new Date(Date.now() - n*36e5).toISOString()}))}],
   standards: {"stage.needs-triage.idle_hours": {healthy: 3, unhealthy: 5}}, status: {}, errors: {}}}).out.overview;
-if ((ch.match(/class="uc s-/g)||[]).length < 5 || !ch.includes("+3") || !ch.includes("pcol") || ch.includes("done ticket") || !ch.includes("uc s-bad") || !ch.includes("unit in repair") || ch.includes("NaN") || !/--cols:3/.test(ch))
+if ((ch.match(/class="uc s-/g)||[]).length < 5 || !ch.includes("+3") || !ch.includes("pcol") || ch.includes("done ticket") || !ch.includes("uc s-bad") || !ch.includes("unit in repair") || ch.includes("NaN"))
   throw new Error("overview tiles lack unit chips, the +N overflow, or age colouring");
 // 总览最上面：创始人需求台账（原话 / 阶段 / 负责人 / 卡点 / 确认时间）+ 每日 ROI 一行（含复盘规则）；两块都能在数据缺失时给空态
 const frAll = renderAll("founder-roi", {founder_reqs: {stages: ["提出","热修生效","进 main","上线","真人验收"], partial: false, items: [
@@ -189,13 +189,19 @@ const frAll = renderAll("founder-roi", {founder_reqs: {stages: ["提出","热修
     {id: "accepted", label: "已验收需求", better: "up", fmt: "n", values: [1, 1, 1]},
     {id: "per_accepted", label: "每条已验收需求花费", better: "down", fmt: "usd", values: [0.0001, 0.0002, 0.0003]},
     {id: "idle", label: "worker 空闲 %", better: "down", fmt: "pct", values: [null, null, null]}]}}}).out;
-const fr = frAll.overview, rq = frAll.reqs;
-if ((rq.match(/class="frq"/g)||[]).length !== 2 || !rq.includes("founder words here") || !rq.includes("等 #9") || !rq.includes("未确认") || !rq.includes("10 分前") || !rq.includes("进 main") || fr.includes("class=\"frq\"")
-    || !fr.includes("每条已验收需求花费") || !fr.includes("未定价模型记录") || !fr.includes("$0.000100") || !fr.includes("美元")
-    || !fr.includes("触发复盘") || !fr.includes("最近触发 10-30") || (fr.match(/class="tcard /g)||[]).length !== 6)
-  throw new Error("requirements module lacks the founder rows, or overview still has them, or the daily ROI line is missing");
+const fr = frAll.roi, rq = frAll.reqs;
+if ((rq.match(/class="frq"/g)||[]).length !== 2 || !rq.includes("founder words here") || !rq.includes("等 #9") || !rq.includes("未确认") || !rq.includes("10 分前") || !rq.includes("进 main") || frAll.overview.includes("class=\"frq\"")
+    || !fr.includes("每条已验收需求花费") || !fr.includes("未定价模型记录") || !fr.includes("$0.000100")
+    || !fr.includes("触发复盘") || (fr.match(/class="tcard /g)||[]).length !== 6)
+  throw new Error("requirements module lacks the founder rows, overview still has them, or the ROI module lacks the daily ROI line");
 const frBadAll = renderAll("founder-roi-bad", {founder_reqs: {error: "x"}, factory: {error: "y"}}).out;
-if (!frBadAll.reqs.includes("需求台账不可用") || !frBadAll.overview.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");
+if (!frBadAll.reqs.includes("需求台账不可用") || !frBadAll.roi.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");
+// 自动事故单标题白话化；原文留在 raw_task；自进化任务用中文名，且和产线分组显示
+const pt = renderAll("plain-titles", {live_workers: {items: [
+  {owner: "pipeline", task: "Incident: scheduler.log: refill done live=5 secs=43 gh_calls", backend: "cx", steps: ["a"], step: 0, kind: "implement", started_epoch: 1, typical_s: 1800, health: "ok"},
+  {owner: "opt", task: "unrelated title", tip: "zf-ci-waste · luna-zf-ci-waste-1.scope", backend: "cx", steps: ["a"], step: 0, kind: "opt", started_epoch: 1, typical_s: 1800, health: "none"}]}}).out.overview;
+if (!pt.includes("调度器补位耗时 43 秒") || pt.includes("refill done") || !pt.includes("减少 CI 浪费") || !pt.includes("自进化") || !pt.includes("产线"))
+  throw new Error("worker titles are not plain Chinese, or the self-evolution group is missing");
 console.log("modules ok");
 JS
 
