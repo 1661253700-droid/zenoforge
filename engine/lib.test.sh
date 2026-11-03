@@ -2063,6 +2063,10 @@ flock -u 7
 exec 7>&-
 rm -f "$MERGE_LOCK_BOUND_TEST_FILE"
 
+# Keep the library reset that followed the GitNexus fixtures before their
+# extraction; later cases must start with the original functions restored.
+source "$SCRIPT_DIR/lib.sh"
+
 # --- resolve_recipients (notify.sh): email recipient resolution -----------
 # Pure function -- no gh call, no network, no email sent (lib.sh sources
 # notify.sh, so it's already in scope here). Uses a throwaway roster file,
