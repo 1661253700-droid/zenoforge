@@ -13,6 +13,8 @@ mkdir -p "$t/base/engine/state"
 echo '{"label":"stable"}' > "$t/base/engine/state/item.json"
 echo '{"value":1}' > "$t/base/engine/state/same.json"
 echo 'initial prompt' > "$t/base/engine/prompts/guide.md"
+engine_sha=0123456789abcdef0123456789abcdef01234567
+printf 'zenoforge_sha=%s\n' "$engine_sha" > "$t/new/BUILD-INFO"
 git -C "$t" init -q repo && git -C "$t/repo" config user.email test && git -C "$t/repo" config user.name test
 mkdir -p "$t/repo/.zenoforge"; touch "$t/repo/.zenoforge/.keep"
 git -C "$t/repo" add -A && git -C "$t/repo" commit -qm base && base=$(git -C "$t/repo" rev-parse HEAD)
@@ -26,9 +28,17 @@ run() { python3 -I "$here/resolved-config-check.py" "$t/base" "$t/repo" "$base" 
 out=$(run 2>&1) && { echo "FAIL: expected non-zero"; exit 1; }
 grep -q 'CHANGED state/item.json' <<<"$out" && grep -q 'CHANGED prompts/guide.md' <<<"$out" || { echo "FAIL: $out"; exit 1; }
 grep -q 'same.json' <<<"$out" && { echo "FAIL: byte-equal move flagged: $out"; exit 1; }
-printf 'prompts/guide.md\tprompt update\n' > "$t/intended.tsv"
+printf 'prompts/guide.md\tprompt update\t%s\n' "$engine_sha" > "$t/intended.tsv"
 out=$(run "$t/intended.tsv" 2>&1) && { echo "FAIL: unlisted config change should fail"; exit 1; }
 grep -q 'changed as intended prompts/guide.md' <<<"$out" || { echo "FAIL: $out"; exit 1; }
+printf 'prompts/guide.md\tstale prompt update\t%s\n' "${engine_sha%?}f" > "$t/stale.tsv"
+out=$(run "$t/stale.tsv" 2>&1) && { echo "FAIL: stale intended row approved a change"; exit 1; }
+grep -Fq "intended-changes: ignoring stale row prompts/guide.md (sha ${engine_sha%?}f, new engine $engine_sha)" <<<"$out" \
+  && grep -q 'CHANGED prompts/guide.md' <<<"$out" || { echo "FAIL: stale row was not warned and ignored: $out"; exit 1; }
+printf 'prompts/guide.md\tlegacy prompt update\n' > "$t/legacy.tsv"
+out=$(run "$t/legacy.tsv" 2>&1) && { echo "FAIL: legacy intended row approved a change"; exit 1; }
+grep -Fq "intended-changes: ignoring stale row prompts/guide.md (sha missing, new engine $engine_sha)" <<<"$out" \
+  && grep -q 'CHANGED prompts/guide.md' <<<"$out" || { echo "FAIL: legacy row was not warned and ignored: $out"; exit 1; }
 cp "$t/base/engine/state/item.json" "$t/repo/.zenoforge/state/item.json" && git -C "$t/repo" commit -qam fix
 run "$t/intended.tsv" >/dev/null || { echo "FAIL: fixed tree flagged"; exit 1; }
 printf 'prompts/guide.md\t\n' > "$t/bad.tsv"

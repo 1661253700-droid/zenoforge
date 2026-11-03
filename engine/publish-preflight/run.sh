@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset ZF_INTENDED_WARNINGS_SUPPRESSED
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 if [[ $# -lt 5 || $# -gt 6 || ( $# -eq 6 && -z "$6" ) ]]; then
   echo "usage: run.sh <live version dir> <new version dir> <target repo> <live ref> <new ref> [intended-change list]" >&2
@@ -13,37 +14,49 @@ new_ref=$5
 intended=()
 [[ $# -eq 5 ]] || intended=("$6")
 
-echo "publish-preflight: checking unit paths"
-if ! bash "$here/unit-paths-check.sh" "$live_version" "$new_version"; then
-  echo "publish-preflight: unit-paths check failed" >&2
-  exit 1
-fi
+run_gate() {
+  local gate="$1"
+  case "$gate" in
+    unit-paths)
+      echo "publish-preflight: checking unit paths"
+      if ! bash "$here/unit-paths-check.sh" "$live_version" "$new_version"; then
+        echo "publish-preflight: unit-paths check failed" >&2; return 1
+      fi
+      ;;
+    resolved-config)
+      echo "publish-preflight: checking resolved config"
+      if [[ "${ZF_PREFLIGHT_PREVIOUSLY_LIVE:-0}" == 1 ]]; then
+        echo "publish-preflight: skipping resolved-config comparison for previously live version"
+      elif ! python3 -I "$here/resolved-config-check.py" \
+        "$live_version" "$target_repo" "$live_ref" "$new_version" "$target_repo" "$new_ref" "${intended[@]}"; then
+        echo "publish-preflight: resolved-config check failed" >&2; return 1
+      fi
+      # Both config and dropped-file checks consume the same row format. Emit each stale-row
+      # warning once per preflight, from the first comparison that reads the list.
+      export ZF_INTENDED_WARNINGS_SUPPRESSED=1
+      ;;
+    suite-set)
+      echo "publish-preflight: checking suite set"
+      if ! python3 -I "$here/suite-set-check.py" "$live_version" "$new_version" "$target_repo" "$new_ref"; then
+        echo "publish-preflight: suite-set check failed" >&2; return 1
+      fi
+      ;;
+    dropped-file-refs)
+      echo "publish-preflight: checking dropped file references"
+      if [[ "${ZF_PREFLIGHT_PREVIOUSLY_LIVE:-0}" == 1 ]]; then
+        echo "publish-preflight: skipping dropped-file-refs comparison for previously live version"
+      elif ! python3 -I "$here/dropped-file-refs-check.py" "$live_version" "$new_version" "${intended[@]}"; then
+        echo "publish-preflight: dropped-file-refs check failed" >&2; return 1
+      fi
+      export ZF_INTENDED_WARNINGS_SUPPRESSED=1
+      ;;
+    *) echo "publish-preflight: unknown gate in gates.tsv: $gate" >&2; return 2 ;;
+  esac
+}
 
-echo "publish-preflight: checking resolved config"
-if [[ "${ZF_PREFLIGHT_PREVIOUSLY_LIVE:-0}" == 1 ]]; then
-  echo "publish-preflight: skipping resolved-config comparison for previously live version"
-else
-  if ! python3 -I "$here/resolved-config-check.py" \
-    "$live_version" "$target_repo" "$live_ref" "$new_version" "$target_repo" "$new_ref" "${intended[@]}"; then
-    echo "publish-preflight: resolved-config check failed" >&2
-    exit 1
-  fi
-fi
-
-echo "publish-preflight: checking suite set"
-if ! python3 -I "$here/suite-set-check.py" "$live_version" "$new_version" "$target_repo" "$new_ref"; then
-  echo "publish-preflight: suite-set check failed" >&2
-  exit 1
-fi
-
-echo "publish-preflight: checking dropped file references"
-if [[ "${ZF_PREFLIGHT_PREVIOUSLY_LIVE:-0}" == 1 ]]; then
-  echo "publish-preflight: skipping dropped-file-refs comparison for previously live version"
-else
-  if ! python3 -I "$here/dropped-file-refs-check.py" "$live_version" "$new_version" "${intended[@]}"; then
-    echo "publish-preflight: dropped-file-refs check failed" >&2
-    exit 1
-  fi
-fi
+while IFS= read -r gate; do
+  [[ -n "$gate" && "$gate" != \#* ]] || continue
+  run_gate "$gate" || exit $?
+done < "$here/gates.tsv"
 
 echo "publish-preflight: OK"

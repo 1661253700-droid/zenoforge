@@ -5,6 +5,8 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 trap 'rm -rf -- "$test_env_root"' EXIT
 t="$test_env_root/publish-preflight"
 mkdir -p "$t/live/engine/state" "$t/new/engine/state" "$t/repo/.zenoforge/state"
+engine_sha=0123456789abcdef0123456789abcdef01234567
+printf 'zenoforge_sha=%s\n' "$engine_sha" > "$t/new/BUILD-INFO"
 printf '%s\n' 'value="$(zf_config_file state/value.json)"' > "$t/live/engine/reader.sh"
 cp "$t/live/engine/reader.sh" "$t/new/engine/reader.sh"
 echo '{"value":"same"}' > "$t/live/engine/state/value.json"
@@ -34,7 +36,7 @@ new_ref=$(git -C "$t/repo" rev-parse HEAD)
 out=$(bash "$here/run.sh" "$t/live" "$t/new" "$t/repo" "$base_ref" "$new_ref" 2>&1) && { echo "FAIL: unlisted config change passed"; exit 1; }
 grep -q 'CHANGED state/value.json' <<<"$out" && grep -q 'publish-preflight: resolved-config check failed' <<<"$out" \
   && ! grep -q 'suite-set-check: OK' <<<"$out" || { echo "FAIL: did not stop at config failure: $out"; exit 1; }
-printf 'state/value.json\tplanned update\n' > "$t/intended.tsv"
+printf 'state/value.json\tplanned update\t%s\n' "$engine_sha" > "$t/intended.tsv"
 out=$(bash "$here/run.sh" "$t/live" "$t/new" "$t/repo" "$base_ref" "$new_ref" "$t/intended.tsv" 2>&1) \
   || { echo "FAIL: intended config change: $out"; exit 1; }
 grep -q 'changed as intended state/value.json' <<<"$out" && grep -q 'suite-set-check: OK' <<<"$out" \

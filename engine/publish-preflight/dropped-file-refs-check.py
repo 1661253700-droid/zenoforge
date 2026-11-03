@@ -11,6 +11,8 @@ import importlib.util, os, sys
 
 spec = importlib.util.spec_from_file_location('suite_set', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'suite-set-check.py'))
 suite_set = importlib.util.module_from_spec(spec); spec.loader.exec_module(suite_set)
+spec = importlib.util.spec_from_file_location('intended_changes', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'intended_changes.py'))
+intended_changes = importlib.util.module_from_spec(spec); spec.loader.exec_module(intended_changes)
 
 
 def files(version):
@@ -28,8 +30,12 @@ def main(argv):
         return 2
     bver, nver = argv[1:3]
     intended = set()
-    if len(argv) == 4:  # same format as resolved-config-check: rel<TAB>reason, # comments
-        intended = {l.partition('\t')[0] for l in open(argv[3], encoding='utf-8') if l.strip() and not l.startswith('#')}
+    if len(argv) == 4:
+        try:
+            intended = set(intended_changes.load(argv[3], nver))
+        except (OSError, ValueError) as err:
+            print(str(err), file=sys.stderr)
+            return 2
     base, new = files(bver), files(nver)
     isfile = lambda r: not suite_set.SELECTABLE.search(r) and '.test.' not in os.path.basename(r)
     dropped = sorted(r for r in base - new if isfile(r))

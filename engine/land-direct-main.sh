@@ -1307,12 +1307,13 @@ landed_range_changes_postsubmit_input() {
 # while the pinned engine had changed a file the product overrides (hotfix/hf-start.sh, engine #164);
 # the build hook's override guard ran only at converge, after the pin was live, and the only fix was a
 # manual re-override. Root cause: the lander verified the range against the engine's own checks but never
-# against the target's engine-build contract. This preflight runs that contract before the push --
-# hook --build into a scratch versions root, then --check -- only when the range touches the pin file or
-# the override table, so a pin that cannot converge is refused at landing time with the hook's own guard
-# lines. The pin file is the target config root's build.json (the same resolution engine-sync.sh uses;
-# today .zenoforge/build.json). The hook path comes from the pin file's hook field (repo-relative), and
-# the override table is the overrides.tsv beside that hook, the layout the build contract reads.
+# against the target's engine-build contract. This preflight runs the converge gates before the push --
+# hook --build into a scratch versions root, then --check, then the built engine's --preflight runner --
+# only when the range touches the pin file or the override table. Converge and landing both call that
+# built engine's engine-sync.sh --preflight, which reads the same publish-preflight/gates.tsv list.
+# The pin file is the target config root's build.json (the same resolution engine-sync.sh uses; today
+# .zenoforge/build.json). The hook path comes from the pin file's hook field (repo-relative), and the
+# override table is the overrides.tsv beside that hook, the layout the build contract reads.
 land_pin_preflight_verified_key=""
 land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes the pin file or override table
   local base="$1" head="$2"
@@ -1351,7 +1352,7 @@ land_engine_pin_preflight() { # <base> <head>; no-op unless the range changes th
     echo "land-direct-main: refusing push: engine build hook $hook (named by $pin_rel) is missing at $head" >&2
     return 1
   fi
-  local timeout_seconds="${ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS:-600}" out_root started_ms elapsed_ms status runner_cmd
+  local timeout_seconds="${ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS:-600}" out_root started_ms elapsed_ms status runner_cmd publish_failed=0
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
     echo "land-direct-main: ZF_LAND_PIN_PREFLIGHT_TIMEOUT_SECONDS must be a positive integer" >&2
     return 2
@@ -1368,6 +1369,7 @@ hook="$2"
 engine="$3"
 head="$4"
 out_root="$5"
+agent_home="$6"
 bash "$repo_root/$hook" --build "$engine" "$head" --out "$out_root" >&2
 listing="$(find "$out_root" -mindepth 1 -maxdepth 1 -type d ! -name ".*" | LC_ALL=C sort)"
 version_dirs=()
@@ -1376,22 +1378,41 @@ if ((${#version_dirs[@]} != 1)); then
   echo "land-direct-main: build hook $hook left ${#version_dirs[@]} version directories under the scratch root (expected exactly 1); cannot --check pin $engine" >&2
   exit 1
 fi
-bash "$repo_root/$hook" --check "${version_dirs[0]}" >&2
+version_dir="${version_dirs[0]}"
+bash "$repo_root/$hook" --check "$version_dir" >&2
+intended="$repo_root/.zenoforge/build/intended-changes.tsv"
+preflight_args=("$version_dir/engine/engine-sync.sh" --preflight "$version_dir")
+[[ ! -f "$intended" ]] || preflight_args+=("$intended")
+publish_started_ms="$(date +%s%3N)"
+if AGENT_HOME="$agent_home" ZF_REPO_DIR="$repo_root" VECTA_REPO_DIR="$repo_root" \
+    ZF_PREFLIGHT_LIVE_REF="$head" bash "${preflight_args[@]}" >&2; then
+  publish_elapsed_ms="$(($(date +%s%3N) - publish_started_ms))"
+  echo "land-direct-main: publish preflight passed pin=$engine duration_ms=$publish_elapsed_ms" >&2
+else
+  status=$?
+  echo "land-direct-main: publish preflight command failed status=$status" >&2
+  : > "$out_root/.publish-preflight-failed"
+  exit "$status"
+fi
 '
   status=0
   if with_preflight_slot timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" \
-      bash -c "$runner_cmd" pin-preflight "$repo_root" "$hook" "$engine" "$head" "$out_root" 1>&2; then
+      bash -c "$runner_cmd" pin-preflight "$repo_root" "$hook" "$engine" "$head" "$out_root" "$AGENT_HOME" 1>&2; then
     status=0
   else
     status=$?
   fi
   elapsed_ms="$(($(date +%s%3N) - started_ms))"
+  [[ ! -e "$out_root/.publish-preflight-failed" ]] || publish_failed=1
   # The hook marks built trees read-only; restore directory write permission before removal.
   find "$out_root" -depth -type d -exec chmod u+w -- {} + 2>/dev/null || true
   rm -rf -- "$out_root"
   if ((status != 0)); then
     if [[ "$status" == 124 || "$status" == 137 ]]; then
       echo "land-direct-main: engine pin preflight timed out pin=$engine duration_ms=$elapsed_ms deadline_seconds=$timeout_seconds; refusing push" >&2
+    elif ((publish_failed == 1)); then
+      echo "land-direct-main: publish preflight failed pin=$engine product=$head duration_ms=$elapsed_ms; refusing push (publish-preflight lines above)" >&2
+      echo "land-direct-main: next step: declare each engine-owned change in .zenoforge/build/intended-changes.tsv with a reason and matching engine SHA, or fix the engine-side change, then rerun the landing" >&2
     else
       echo "land-direct-main: engine pin preflight failed pin=$engine product=$head status=$status duration_ms=$elapsed_ms; refusing push (guard lines above)" >&2
       echo "land-direct-main: next step: adopt the engine version, re-override the changed file, or add a seam, then update the overrides.tsv row and rerun the landing" >&2
