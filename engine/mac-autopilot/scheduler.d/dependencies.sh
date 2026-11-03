@@ -44,7 +44,7 @@ dep_delivered_in_ledger() { # release_dependency_blocks 从台账建一次快照
 }
 # 正文依赖状态由 release_dependency_blocks 按 DEP_CHECK_SECONDS 批量缓存；派发门禁只读缓存，不逐单元调用 GitHub。
 dep_cache_info() { # predecessor issue → cached {state,labels} or {}
-  jqf -c --arg d "$1" '.states[$d] // {}' "$A/dep-check.cache.json" 2>/dev/null || echo '{}'
+  jqf_optional_file "$A/dep-check.cache.json" -c --arg d "$1" '.states[$d] // {}' 2>/dev/null || echo '{}'
 }
 unit_body_declares_dependency() { # unit predecessor-issue → true when the issue body explicitly names this prerequisite
   unit_body_blockers "$1" | grep -Fxq "$2"
@@ -187,7 +187,7 @@ release_dependency_blocks() {
     jqf -cn --argjson epoch "$NOW_EPOCH" --argjson states "$dep_states_json" \
       '{epoch:$epoch,states:$states}' > "$dep_cache_file.tmp" && mv "$dep_cache_file.tmp" "$dep_cache_file"
   fi
-  dep_cache="$(jqf -c 'if (.states|type)=="object" then .states else {} end' "$dep_cache_file" 2>/dev/null || echo '{}')"
+  dep_cache="$(jqf_optional_file "$dep_cache_file" -c 'if (.states|type)=="object" then .states else {} end' 2>/dev/null || echo '{}')"
   while IFS=$'\t' read -r id issue; do # 自己的 issue 已关或已交付：单元作废（2026-10-30 issue-3681 等 5 个）
     set_unit "$id" "$(hist issue-closed "issue #$issue already closed on GitHub") | .stage=\"closed\" | del(.blocked_on) | .note=null"
     say "unit=$id issue #$issue already closed on GitHub; retired"

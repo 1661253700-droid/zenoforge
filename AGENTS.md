@@ -38,3 +38,9 @@ The five canonical role names, unchanged. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 Single-context. See `docs/agents/domain.md`.
+
+## Enforced rules
+
+| Rule | Enforcer |
+|---|---|
+| Optional scheduler JSON reads go through `jqf_optional_file`; only a truly absent path is quiet, while an existing unreadable or malformed file still goes through `jqf`. | `engine/mac-autopilot/scheduler.d/core.sh`; `engine/mac-autopilot/intake-missing-state.test.sh` |

@@ -26,15 +26,20 @@ issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement �
   jqf -cn --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" '{task:$task,body_blocked_by:$body_blocked_by,labels:$labels}'
 }
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
-  local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 cache_file="$A/intake-candidates.json" cached_at now
+  local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status
   local -a query_files=() query_lanes=() query_pids=()
-  if [[ "$refill_mode" == true && -r "$cache_file" ]]; then
-    cached_at="$(jqf -r '.created_at // empty' "$cache_file" 2>/dev/null || true)"
+  if [[ "$refill_mode" == true ]]; then
+    cached_at="$(jqf_optional_file "$cache_file" -r '.created_at // empty' 2>/dev/null || true)"
     now="$(date +%s)"
     if [[ "$cached_at" =~ ^[0-9]+$ ]] && (( now >= cached_at && now - cached_at <= 600 )) \
-      && jqf -e '.rows | type == "string"' "$cache_file" >/dev/null 2>&1; then
-      jqf -r '.rows' "$cache_file"
-      return 0
+      && jqf_optional_file "$cache_file" -e '.rows | type == "string"' >/dev/null 2>&1; then
+      if cache_rows="$(jqf_optional_file "$cache_file" -r '.rows')"; then
+        printf '%s\n' "$cache_rows"
+        return 0
+      else
+        cache_read_status=$?
+        (( cache_read_status == 64 )) || return "$cache_read_status"
+      fi
     fi
   fi
   skip_labels="$(issue_skip_labels)"
@@ -117,14 +122,21 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
   done
 }
 existing_handoff_candidates() {
-  local state_dir="${AGENT_HOME:-${HOME:-}/.zenoforge}/state"
+  local state_dir="${AGENT_HOME:-${HOME:-}/.zenoforge}/state" file read_status
   local files=( "$state_dir"/*.json )
-  [[ -f "${files[0]}" ]] || return 0
-  jqf -r '
-    select(.state == "ready-for-agent" and (.scheduler_handoff.episode // "") != "")
-    | (input_filename | capture("(?<n>[0-9]+)\\.json$").n | tonumber) as $n
-    | [$n, "pr", "handoff", "[]"] | @tsv
-  ' "${files[@]}" 2>/dev/null
+  [[ -e "${files[0]}" || -L "${files[0]}" ]] || return 0
+  for file in "${files[@]}"; do
+    if jqf_optional_file "$file" -r '
+      select(.state == "ready-for-agent" and (.scheduler_handoff.episode // "") != "")
+      | (input_filename | capture("(?<n>[0-9]+)\\.json$").n | tonumber) as $n
+      | [$n, "pr", "handoff", "[]"] | @tsv
+    ' 2>/dev/null; then
+      :
+    else
+      read_status=$?
+      (( read_status == 64 )) || return "$read_status"
+    fi
+  done
 }
 handoff_open_pr() { # issue → matching PR rows from this tick's single census
   local n="$1"
@@ -185,7 +197,7 @@ register_new_issues() {
   local episode existing_id existing_pr prior_pr pr_changed pr_state lane_policy handoff_all handoff_pr handoff_branch recovery_sha
   local cached_prs busy_prs issue64
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
-  local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_conflict intake_entry
+  local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_conflict intake_entry state_read_status state_read_value
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
   if [[ "$refill_mode" == true ]]; then
     # Refill has no full handoff census; keep known-PR fallbacks partial and avoid another PR-list request.
@@ -277,8 +289,20 @@ register_new_issues() {
     issue_json=""
     [[ -n "$issue64" ]] && issue_json="$(printf '%s' "$issue64" | base64 -d 2>/dev/null)" || true
     state_file="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json"
-    episode="$(jqf -r 'select(.state == "ready-for-agent") | .scheduler_handoff.episode // empty' "$state_file" 2>/dev/null)"
-    handoff_all="$(jqf -c 'select(.state == "ready-for-agent") | .scheduler_handoff // {}' "$state_file" 2>/dev/null)"
+    episode=""
+    if state_read_value="$(jqf_optional_file "$state_file" -r 'select(.state == "ready-for-agent") | .scheduler_handoff.episode // empty' 2>/dev/null)"; then
+      episode="$state_read_value"
+    else
+      state_read_status=$?
+      (( state_read_status == 64 )) || return "$state_read_status"
+    fi
+    handoff_all='{}'
+    if state_read_value="$(jqf_optional_file "$state_file" -c 'select(.state == "ready-for-agent") | .scheduler_handoff // {}' 2>/dev/null)"; then
+      handoff_all="$state_read_value"
+    else
+      state_read_status=$?
+      (( state_read_status == 64 )) || return "$state_read_status"
+    fi
     [[ -n "$handoff_all" ]] || handoff_all='{}'
     handoff_pr="$(jqf -r '.open_pr // empty' <<<"$handoff_all")"
     handoff_branch="$(jqf -r '.open_branch // empty' <<<"$handoff_all")"
@@ -355,7 +379,13 @@ register_new_issues() {
         handoff_branch="$(jqf -r '.[0].headRefName' <<<"$lookup")"
       fi
     fi
-    handoff="$(jqf -c --arg n "$n" '(.scheduler_handoff // {}) | select((.start_ref // "") | test("^rescued/.*(issue-|hand-)" + $n + "([^0-9]|$)")) | select((.start_sha // "") | test("^[0-9a-f]{40}$"))' "$state_file" 2>/dev/null)"
+    handoff=''
+    if state_read_value="$(jqf_optional_file "$state_file" -c --arg n "$n" '(.scheduler_handoff // {}) | select((.start_ref // "") | test("^rescued/.*(issue-|hand-)" + $n + "([^0-9]|$)")) | select((.start_sha // "") | test("^[0-9a-f]{40}$"))' 2>/dev/null)"; then
+      handoff="$state_read_value"
+    else
+      state_read_status=$?
+      (( state_read_status == 64 )) || return "$state_read_status"
+    fi
     [[ -n "$handoff" ]] || handoff='{}'
     existing_id="$(jqf -r --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr))] | sort_by([if ($pr != "" and ((.pr // "") | tostring) == $pr) then 0 else 1 end, if (.stage | IN("parked","supervisor-review","blocked-external","done","closed","landed","merged","wontfix","duplicate")) then 1 else 0 end]) | .[0].id // empty' "$UNITS")"
     if [[ -n "$existing_id" ]]; then

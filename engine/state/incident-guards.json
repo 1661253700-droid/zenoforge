@@ -208,6 +208,40 @@
           "engine/publish-preflight/run.test.sh"
         ]
       }
+    },
+    {
+      "id": "scheduler-optional-state-read",
+      "date": "2026-11-02",
+      "class": "optional file reads confused with persistence loss",
+      "what_happened": "Intake parsed a missing per-issue JSON file while checking for an optional scheduler handoff. jqf captured jq stderr and logged the missing-file error on every candidate pass, even though the caller redirected stderr and no handoff was expected.",
+      "root_cause_evidence": "engine/mac-autopilot/scheduler.d/intake.sh read the candidate state path through jqf without an existence-aware optional-file reader; the runtime scheduler log shows repeated missing-file diagnostics for open ready-for-agent issues. engine/lib.d/issue-state.sh creates per-issue JSON lazily through state_merge and issue_transition, and the repository has no general cleanup for those JSON files.",
+      "classic_pattern": "An optional input reaches a parser before absence is modeled, so normal absence is reported as an error and repeated at the call site.",
+      "research_sources": [
+        "https://jqlang.org/manual/",
+        "https://www.gnu.org/software/bash/manual/html_node/Bash-Conditional-Expressions.html"
+      ],
+      "options_considered": [
+        "Suppress jqf logging globally for missing paths; rejected because missing required inputs would lose their diagnostics.",
+        "Add existence checks only at intake call sites; rejected because the same optional-file pattern appears in shared scheduler caches and a check followed by a separate read can race.",
+        "Add jqf_optional_file in the shared scheduler core, return a distinct status for true absence, and keep existing paths on jqf; chosen because callers can model absence while malformed and unreadable files remain diagnostic."
+      ],
+      "best_known_solution": "Route optional scheduler file reads through jqf_optional_file. It returns status 64 without logging only when a path is absent; callers treat that status as an empty optional value, and existing paths still use jqf so parse and read failures are logged.",
+      "lesson_id": "scheduler-optional-file-reads",
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/intake-missing-state.test.sh"
+          ],
+          "test_file": "engine/mac-autopilot/intake-missing-state.test.sh"
+        }
+      ],
+      "enforcement": {
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.d/core.sh",
+          "engine/mac-autopilot/intake-missing-state.test.sh"
+        ]
+      }
     }
   ]
 }
