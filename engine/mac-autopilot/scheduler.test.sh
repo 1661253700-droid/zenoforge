@@ -2894,7 +2894,11 @@ printf 'NEEDS-PR: fixture touches a product path\n' > "$TF/supervisor/impl-8801.
 cat > "$TF/bin/codex" <<'SH'
 #!/usr/bin/env bash
 [[ -f "$TF/allow-dispatch" ]] || { echo 'unexpected worker dispatch' >&2; exit 97; }
-sleep 3
+# Hold the worker slot for the whole refill tick: a loaded host stretches the
+# tick past a short sleep, and the worker exiting early frees max_workers
+# capacity mid-tick (11-03 full local run). The case kills this process group
+# right after its tick assertions.
+sleep 300
 SH
 chmod +x "$TF/bin/codex"
 touch "$TF/allow-dispatch"
@@ -3285,7 +3289,9 @@ sched_case_pause_phases() {
   done
   eval "$(command sed -n '/^main() {/,/^}/p' "$scheduler")"
   main
-  [[ "$(command cat "$pause_dir/phases")" == $'harvest_workers\nreconcile_size_recuts\nself_check_harvest\nprecheck_harvest\nrecover_orphans\nrecover_orphan_landing\nlive_event_watch\nrun_release_train' ]] \
+  # #186 wraps the open-PR census prime in phase_yield_lock, so it records as a
+  # phase before the pause branch; the census itself predates that wrapping.
+  [[ "$(command cat "$pause_dir/phases")" == $'tick_prs_prime\nharvest_workers\nreconcile_size_recuts\nself_check_harvest\nprecheck_harvest\nrecover_orphans\nrecover_orphan_landing\nlive_event_watch\nrun_release_train' ]] \
     || { echo 'PAUSE must allow harvest and release train phases only' >&2; exit 1; }
 )
 }
@@ -4928,10 +4934,15 @@ sched_case_hold_handoff_delivery() {
   for mode in no-push delivered; do
     new_tick_fixture "hold-handoff-delivery-$mode"
     command jq '.max_workers=2 | .implement_cap=0 | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+    # #178 cross-family review: a GLM handoff author is reviewed by the codex work
+    # role, which this fixture's probed fake codex serves; the sandbox has no
+    # zcode/claude runtime, so a codex author would only wait for a reviewer.
+    mkdir -p "$TF/agent-home"; touch "$TF/agent-home/codex-probe-passed"
     sha="$(printf '%040x' 779)"; original="$sha"
     [[ "$mode" != delivered ]] || original="$(printf '%040x' 778)"
     command jq -n --arg sha "$sha" --arg original "$original" --arg integrated "$(printf '%040x' 100)" '{units:[{
       id:"issue-779",issue:779,pr:779,branch:"agent/issue-779",lane:"pr",stage:"rereview-pending",history:[],
+      implement_identity:"zcode:GLM-5.3:max",
       handoff_worktree_sha:$integrated,handoff_worktree_dirty:true,handoff_worktree_applied:true,
       handoff_integration_sha:$integrated,handoff_original_pr_head:$original,self_check_sha:$sha,self_check_status:"pass",self_check_lane:"pr",self_check_base:"main"}]}' > "$TF/supervisor/autopi/units.json"
     printf '%s\n' "$sha" > "$TF/fetched-head"
@@ -4981,11 +4992,19 @@ command jq '.max_workers=2 | .supervisor_arbiter.enabled=true | .supervisor_arbi
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 # This tick exercises supervisor label transitions; its issue is already a roadmap leaf.
 export ZF_ROADMAP_TREE_CACHE_FILE="$TF/roadmap-tree.json"
-command jq -cn '{roots:[502] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+command jq -cn '{roots:[{number:503,title:"fixture root",state:"open",labels:[],children:[
+  {number:501,title:"fixture issue 501",state:"open",labels:[],children:[]},
+  {number:502,title:"fixture issue 502",state:"open",labels:[],children:[]}]}]}' \
   > "$ZF_ROADMAP_TREE_CACHE_FILE"
 mkdir -p "$TF/repo/engine/prompts"
 cp "$repo_root/engine/prompts/supervisor-arbiter.md" "$TF/repo/engine/prompts/supervisor-arbiter.md"
 export ZF_EXECUTION_MODULE_DIR="$TF/repo/engine"
+# #188: an arbiter requeue first refreshes and transitions the issue, so the
+# fixture must serve that issue view and carry the leaf issue state its
+# transition guards verify (recut_children marks a non-parent leaf).
+command jq -n '{number:501,title:"arbiter fixture",body:"finish the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+mkdir -p "$TF/agent-home/state"
+command jq -n '{state:"needs-advisor",recut_children:[],recut_comment_scanned:true}' > "$TF/agent-home/state/501.json"
 printf 'VERDICT: REQUEST-CHANGES\nF1 缺回归测试\n' > "$TF/supervisor/review-501.md"
 command jq -n '{units:[
   {id:"pr-501",issue:501,pr:501,lane:"pr",branch:"agent/issue-501",stage:"supervisor-review",
