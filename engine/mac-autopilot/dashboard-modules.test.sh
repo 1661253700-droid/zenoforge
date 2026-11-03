@@ -151,7 +151,7 @@ const ledger = {cost_ledger: {last_24h: {in: 2100000, uncached: null, out: 30000
   eval: {labels: [{label: "gold-check", runs: 4, tokens: null, unknown_tokens: 1, wall_seconds: 5000, model_wall_seconds: 4000, finished_at: "2026-10-28T01:00:00Z"}],
     last_24h: {labels: 1, runs: 4, tokens: null, unknown_tokens: 1, wall_seconds: 5000, model_wall_seconds: 4000}}}};
 const ledgerOut = renderAll("cost-ledger", ledger).out;
-for (const text of ["最近 24 小时，worker 事件流", "pr-4365", "#4365", "eval（单独口径）", "按阶段", "按后端"])
+for (const text of ["近 24 小时用量", "pr-4365", "#4365", "评测用量", "按环节", "按模型来源"])
   if (!ledgerOut.cost.includes(text)) throw new Error(`cost module lacks "${text}"`);
 if (ledgerOut.cost.includes("NaN")) throw new Error("cost module shows NaN");
 // 总览顶部：现在在干活的员工 = 一张卡一个员工（任务名 + 归属色 + 心跳 + 步骤 + 用时条），没有"N 个"句子；清单不可用时给空态
