@@ -3,51 +3,141 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>the product 流水线看板</title>
+<title>Zenoforge</title>
 <style>
-  /* 设计令牌：取自 DESIGN.md（冷灰底、单一 navy 强调色、语义色只表状态）；深色是同一套角色的深色取值，不是自动反色。 */
+  /* 设计令牌：全部取自 Radix Colors 3.0。灰阶 slate；强调 indigo；状态 green、amber、red；类别 blue、orange、teal、amber、pink、grass、violet、tomato。
+     用法按 Radix：1 到 2 页面底色，3 到 5 组件底色，6 到 8 边框，9 实心色，11 到 12 文字。 */
   :root {
-    color-scheme: light;
-    --canvas:#f7f9fb; --surface:#ffffff; --soft:#f8fafc; --sunk:#f1f5f9;
-    --hairline:#e2e8f0; --hairline-soft:#eef2f6; --hairline-strong:#cbd5e1;
-    --ink:#0f172a; --charcoal:#1e293b; --body:#475569; --steel:#64748b; --stone:#94a3b8;
-    --primary:#1a237e; --primary-subtle:#e8eaf6; --on-primary:#ffffff;
-    --ok:#1aae39; --warn:#dd5b00; --bad:#e03131; --none:#94a3b8;
-    --ok-ink:#12802a; --warn-ink:#b34a00; --bad-ink:#c92a2a; --none-ink:#64748b;
-    --ok-bg:#d9f3e1; --warn-bg:#ffe8d4; --bad-bg:#fde0ec; --none-bg:#f1f5f9;
-    --ok-zone:rgba(26,174,57,.18); --warn-zone:rgba(221,91,0,.16); --bad-zone:rgba(224,49,49,.15);
-    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100; --c5:#e87ba4; --c6:#008300; --c7:#6250d6; --c8:#e34948;
-    --link:#0066cc;
     --font:"Manrope","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Noto Sans SC",system-ui,-apple-system,"Segoe UI",sans-serif;
     --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace;
   }
+  :root {
+    color-scheme:light;
+    --canvas:#f9f9fb;
+    --surface:#fcfcfd;
+    --soft:#f9f9fb;
+    --sunk:#f0f0f3;
+    --hairline:#d9d9e0;
+    --hairline-soft:#e8e8ec;
+    --hairline-strong:#cdced6;
+    --ink:#1c2024;
+    --charcoal:#1c2024;
+    --body:#60646c;
+    --steel:#60646c;
+    --stone:#8b8d98;
+    --primary:#3a5bc7;
+    --primary-subtle:#edf2fe;
+    --on-primary:#fdfdfe;
+    --ok:#30a46c;
+    --warn:#ffc53d;
+    --bad:#e5484d;
+    --none:#8b8d98;
+    --ok-ink:#218358;
+    --warn-ink:#ab6400;
+    --bad-ink:#ce2c31;
+    --none-ink:#60646c;
+    --ok-bg:#e6f6eb;
+    --warn-bg:#fff7c2;
+    --bad-bg:#feebec;
+    --none-bg:#f0f0f3;
+    --ok-zone:#00a83829;
+    --warn-zone:#ffd40063;
+    --bad-zone:#ff000824;
+    --c1:#0090ff;
+    --c2:#f76b15;
+    --c3:#12a594;
+    --c4:#ffc53d;
+    --c5:#d6409f;
+    --c6:#46a758;
+    --c7:#6e56cf;
+    --c8:#e54d2e;
+    --link:#0d74ce;
+  }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      color-scheme: dark;
-      --canvas:#0e121a; --surface:#151b26; --soft:#18202c; --sunk:#1f2836;
-      --hairline:#263142; --hairline-soft:#1e2734; --hairline-strong:#34415a;
-      --ink:#eef2f7; --charcoal:#dbe2ec; --body:#b3bfcf; --steel:#8d9ab0; --stone:#66748b;
-      --primary:#9fa8f0; --primary-subtle:#232a4f; --on-primary:#0e121a;
-      --ok:#3cc45e; --warn:#f08c3c; --bad:#f06464; --none:#66748b;
-      --ok-ink:#5fd67c; --warn-ink:#f5a15e; --bad-ink:#f78585; --none-ink:#8d9ab0;
-      --ok-bg:rgba(60,196,94,.16); --warn-bg:rgba(240,140,60,.16); --bad-bg:rgba(240,100,100,.16); --none-bg:#1f2836;
-      --ok-zone:rgba(60,196,94,.16); --warn-zone:rgba(240,140,60,.16); --bad-zone:rgba(240,100,100,.17);
-      --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#2f9a2f; --c7:#9085e9; --c8:#e66767;
-      --link:#7fb4ff;
+      color-scheme:dark;
+      --canvas:#111113;
+      --surface:#18191b;
+      --soft:#212225;
+      --sunk:#272a2d;
+      --hairline:#363a3f;
+      --hairline-soft:#272a2d;
+      --hairline-strong:#43484e;
+      --ink:#edeef0;
+      --charcoal:#edeef0;
+      --body:#b0b4ba;
+      --steel:#b0b4ba;
+      --stone:#696e77;
+      --primary:#9eb1ff;
+      --primary-subtle:#182449;
+      --on-primary:#11131f;
+      --ok:#30a46c;
+      --warn:#ffc53d;
+      --bad:#e5484d;
+      --none:#696e77;
+      --ok-ink:#3dd68c;
+      --warn-ink:#ffca16;
+      --bad-ink:#ff9592;
+      --none-ink:#b0b4ba;
+      --ok-bg:#132d21;
+      --warn-bg:#302008;
+      --bad-bg:#3b1219;
+      --none-bg:#212225;
+      --ok-zone:#11ff992d;
+      --warn-zone:#fc820032;
+      --bad-zone:#fe0a3b44;
+      --c1:#0090ff;
+      --c2:#f76b15;
+      --c3:#12a594;
+      --c4:#ffc53d;
+      --c5:#d6409f;
+      --c6:#46a758;
+      --c7:#6e56cf;
+      --c8:#e54d2e;
+      --link:#70b8ff;
     }
   }
   :root[data-theme="dark"] {
-    color-scheme: dark;
-    --canvas:#0e121a; --surface:#151b26; --soft:#18202c; --sunk:#1f2836;
-    --hairline:#263142; --hairline-soft:#1e2734; --hairline-strong:#34415a;
-    --ink:#eef2f7; --charcoal:#dbe2ec; --body:#b3bfcf; --steel:#8d9ab0; --stone:#66748b;
-    --primary:#9fa8f0; --primary-subtle:#232a4f; --on-primary:#0e121a;
-    --ok:#3cc45e; --warn:#f08c3c; --bad:#f06464; --none:#66748b;
-    --ok-ink:#5fd67c; --warn-ink:#f5a15e; --bad-ink:#f78585; --none-ink:#8d9ab0;
-    --ok-bg:rgba(60,196,94,.16); --warn-bg:rgba(240,140,60,.16); --bad-bg:rgba(240,100,100,.16); --none-bg:#1f2836;
-    --ok-zone:rgba(60,196,94,.16); --warn-zone:rgba(240,140,60,.16); --bad-zone:rgba(240,100,100,.17);
-    --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#2f9a2f; --c7:#9085e9; --c8:#e66767;
-    --link:#7fb4ff;
+    color-scheme:dark;
+    --canvas:#111113;
+    --surface:#18191b;
+    --soft:#212225;
+    --sunk:#272a2d;
+    --hairline:#363a3f;
+    --hairline-soft:#272a2d;
+    --hairline-strong:#43484e;
+    --ink:#edeef0;
+    --charcoal:#edeef0;
+    --body:#b0b4ba;
+    --steel:#b0b4ba;
+    --stone:#696e77;
+    --primary:#9eb1ff;
+    --primary-subtle:#182449;
+    --on-primary:#11131f;
+    --ok:#30a46c;
+    --warn:#ffc53d;
+    --bad:#e5484d;
+    --none:#696e77;
+    --ok-ink:#3dd68c;
+    --warn-ink:#ffca16;
+    --bad-ink:#ff9592;
+    --none-ink:#b0b4ba;
+    --ok-bg:#132d21;
+    --warn-bg:#302008;
+    --bad-bg:#3b1219;
+    --none-bg:#212225;
+    --ok-zone:#11ff992d;
+    --warn-zone:#fc820032;
+    --bad-zone:#fe0a3b44;
+    --c1:#0090ff;
+    --c2:#f76b15;
+    --c3:#12a594;
+    --c4:#ffc53d;
+    --c5:#d6409f;
+    --c6:#46a758;
+    --c7:#6e56cf;
+    --c8:#e54d2e;
+    --link:#70b8ff;
   }
   * { box-sizing:border-box; }
   html, body { margin:0; background:var(--canvas); color:var(--body); }
@@ -60,23 +150,23 @@
 
   /* ---- 外框：左侧模块栏 + 右侧视图 ---- */
   .app { display:grid; grid-template-columns:232px minmax(0,1fr); min-height:100vh; }
-  .side { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; gap:4px; padding:20px 12px; background:var(--surface); border-right:1px solid var(--hairline); }
-  .brand { display:flex; align-items:center; gap:10px; padding:0 8px 18px; color:var(--ink); font-weight:600; font-size:15px; letter-spacing:-.2px; }
+  .side { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; gap:4px; padding:20px 12px; background:var(--surface); border-right:0.5px solid var(--hairline); }
+  .brand { display:flex; align-items:center; gap:10px; padding:0 8px 18px; color:var(--ink); font-weight:600; font-size:14px; letter-spacing:-.2px; }
   .brand .mark { width:22px; height:22px; color:var(--primary); }
   .brand small { color:var(--stone); font-weight:500; font-size:12px; }
   .nav { display:flex; flex-direction:column; gap:2px; }
-  .nv { display:flex; align-items:center; gap:10px; width:100%; height:38px; padding:0 10px; border:0; border-radius:8px; background:transparent; color:var(--steel); cursor:pointer; text-align:left; }
+  .nv { display:flex; align-items:center; gap:10px; width:100%; height:38px; padding:0 10px; border:0; border-radius:6px; background:transparent; color:var(--steel); cursor:pointer; text-align:left; }
   .nv:hover { background:var(--soft); color:var(--charcoal); }
   .nv.on { background:var(--primary-subtle); color:var(--primary); }
   .nv.on .nv-t { font-weight:600; }
   .nv .ic { width:18px; height:18px; flex:none; }
-  .nv-t { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:13.5px; }
-  .nv-n { font-size:12px; color:var(--steel); font-variant-numeric:tabular-nums; }
-  .nv.on .nv-n { color:var(--primary); }
-  .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--none); }
+  .nv-t { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:14px; }
+  .nv-n { font-size:12px; padding:0 6px; border-radius:999px; font-variant-numeric:tabular-nums; }
+  .nv-n.s-bad { background:var(--bad-bg); color:var(--bad-ink); } .nv-n.s-warn { background:var(--warn-bg); color:var(--warn-ink); }
+    .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--none); }
   .dot.s-ok { background:var(--ok); } .dot.s-warn { background:var(--warn); } .dot.s-bad { background:var(--bad); }
-  .side-foot { margin-top:auto; padding:12px 8px 0; border-top:1px solid var(--hairline-soft); display:flex; align-items:center; gap:8px; color:var(--stone); font-size:12px; }
-  .ghost { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 10px; border:1px solid var(--hairline); border-radius:6px; background:transparent; color:var(--steel); cursor:pointer; font-size:12px; }
+  .side-foot { margin-top:auto; padding:12px 8px 0; border-top:0.5px solid var(--hairline-soft); display:flex; align-items:center; gap:8px; color:var(--stone); font-size:12px; }
+  .ghost { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 10px; border:0.5px solid var(--hairline); border-radius:4px; background:transparent; color:var(--steel); cursor:pointer; font-size:12px; }
   .ghost:hover { background:var(--soft); color:var(--charcoal); }
   .ghost.on { background:var(--primary); border-color:var(--primary); color:var(--on-primary); }
   .ghost[disabled] { opacity:.4; cursor:default; }
@@ -88,7 +178,7 @@
   .top { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:20px; }
   .top h1 { margin:0; color:var(--ink); font-size:24px; font-weight:600; letter-spacing:-.5px; line-height:1.2; display:flex; align-items:center; gap:10px; }
   .top h1 .ic { width:22px; height:22px; color:var(--primary); }
-  .top h1 small { font-size:13px; color:var(--stone); font-weight:500; letter-spacing:0; }
+  .top h1 small { font-size:14px; color:var(--stone); font-weight:500; letter-spacing:0; }
   .fresh { display:inline-flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; font-size:12px; color:var(--steel); }
 
   /* ---- 面板与网格 ---- */
@@ -97,12 +187,12 @@
   .g3 { grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); }
   .g4 { grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); }
   .stack16 > * + * { margin-top:16px; }
-  .panel { background:var(--surface); border:1px solid var(--hairline); border-radius:12px; padding:18px 20px; min-width:0; }
+  .panel { background:var(--surface); border:0.5px solid var(--hairline); border-radius:8px; padding:18px 20px; min-width:0; }
   .panel.span2 { grid-column:1 / -1; }
   .masonry { columns:2 420px; column-gap:16px; margin-bottom:-16px; }
   .masonry > .panel { break-inside:avoid; margin:0 0 16px; }
   .stack16 > .masonry + * { margin-top:16px; }
-  .ph { display:flex; align-items:center; gap:8px; margin:0 0 14px; color:var(--charcoal); font-size:13.5px; font-weight:600; }
+  .ph { display:flex; align-items:center; gap:8px; margin:0 0 14px; color:var(--charcoal); font-size:14px; font-weight:600; }
   .ph .ic { width:16px; height:16px; color:var(--steel); }
   .ph .aside { margin-left:auto; font-weight:400; font-size:12px; color:var(--stone); display:flex; align-items:center; gap:8px; }
   .sub { color:var(--stone); font-size:12px; }
@@ -115,56 +205,37 @@
   .si { color:var(--si); }
   .chip { display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 8px; border-radius:4px; background:var(--sb, var(--sunk)); color:var(--si, var(--steel)); font-size:12px; font-weight:500; white-space:nowrap; }
   .chip .ic { width:13px; height:13px; }
-  .tag { display:inline-flex; align-items:center; height:20px; padding:0 7px; border-radius:4px; background:var(--sunk); color:var(--steel); font-size:11.5px; white-space:nowrap; }
-  .empty { display:flex; align-items:center; gap:8px; color:var(--stone); font-size:13px; padding:6px 0; }
-  .unavail { display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:8px; background:var(--bad-bg); color:var(--bad-ink); font-size:13px; }
+  .tag { display:inline-flex; align-items:center; height:20px; padding:0 7px; border-radius:4px; background:var(--sunk); color:var(--steel); font-size:12px; white-space:nowrap; }
+  .empty { display:flex; align-items:center; gap:8px; color:var(--stone); font-size:14px; padding:6px 0; }
+  .unavail { display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:6px; background:var(--bad-bg); color:var(--bad-ink); font-size:14px; }
   .unavail .sub { color:inherit; opacity:.8; }
 
   /* ---- 子弹条：数值 + 健康区 / 警告区 / 不健康区 + 两条界线 ---- */
-  .buls { display:grid; gap:14px 28px; grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr)); }
-  .bul { min-width:0; cursor:default; }
-  .bul-h { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:6px; }
-  .bul-l { color:var(--body); font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .bul-v { display:inline-flex; align-items:center; gap:5px; color:var(--si); white-space:nowrap; }
-  .bul-v b { color:var(--si); font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
-  .bul-v small { color:var(--stone); font-size:11.5px; }
-  .bul-v .ic { width:14px; height:14px; }
-  .bul-t { position:relative; height:8px; border-radius:4px; background:var(--sunk); }
-  .bul-t .z { position:absolute; top:0; bottom:0; }
-  .bul-t .z-ok { background:var(--ok-zone); } .bul-t .z-warn { background:var(--warn-zone); } .bul-t .z-bad { background:var(--bad-zone); }
-  .bul-t .z:first-child { border-radius:4px 0 0 4px; } .bul-t .z:last-of-type { border-radius:0 4px 4px 0; }
-  .bul-t .f { position:absolute; left:0; top:2px; height:4px; border-radius:2px; background:var(--s); }
-  .bul-t .th { position:absolute; top:-3px; bottom:-3px; width:2px; margin-left:-1px; border-radius:1px; background:var(--ok); }
-  .bul-t .th.u { background:var(--bad); }
-  .bul-t .ov { position:absolute; right:-2px; top:-3px; width:0; height:0; border-top:7px solid transparent; border-bottom:7px solid transparent; border-left:7px solid var(--s); }
-  .bul-b { display:flex; gap:12px; margin-top:5px; font-size:11px; color:var(--stone); font-variant-numeric:tabular-nums; }
-  .bul-b i { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:4px; vertical-align:1px; }
 
   /* ---- 总览 ---- */
   .tiles { display:grid; gap:12px; grid-template-columns:repeat(var(--cols,4),minmax(0,1fr)); }
-  .tile { display:flex; flex-direction:column; gap:10px; padding:16px 16px 14px; border:1px solid var(--hairline); border-radius:12px; background:var(--surface); cursor:pointer; text-align:left; position:relative; overflow:hidden; }
-  .tile::before { content:""; position:absolute; left:0; right:0; top:0; height:3px; background:var(--s); }
-  .tile:hover { border-color:var(--hairline-strong); }
-  .tile-h { display:flex; align-items:center; gap:8px; color:var(--steel); font-size:13px; }
+  .tile { display:flex; flex-direction:column; gap:10px; padding:16px 16px 14px; border:0.5px solid var(--hairline); border-radius:8px; background:var(--surface); cursor:pointer; text-align:left; position:relative; overflow:hidden; }
+    .tile:hover { border-color:var(--hairline-strong); }
+  .tile-h { display:flex; align-items:center; gap:8px; color:var(--steel); font-size:14px; }
   .tile-h .ic { width:18px; height:18px; color:var(--charcoal); }
   .tile-h .si { margin-left:auto; } .tile-h .si .ic { color:var(--si); }
   .tile-v { display:flex; align-items:baseline; gap:6px; color:var(--ink); }
-  .tile-v b { font-size:30px; font-weight:600; letter-spacing:-.6px; color:var(--ink); line-height:1; font-variant-numeric:tabular-nums; }
-  .tile-v span { color:var(--stone); font-size:12.5px; }
+  .tile-v b { font-size:24px; font-weight:600; letter-spacing:-.6px; color:var(--ink); line-height:1; font-variant-numeric:tabular-nums; }
+  .tile-v span { color:var(--stone); font-size:12px; }
   .sidechips { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
   .alerts { display:flex; flex-direction:column; }
-  .al { display:grid; grid-template-columns:20px 72px minmax(0,1fr); gap:10px; align-items:start; padding:8px 0; border-top:1px solid var(--hairline-soft); font-size:12.5px; }
+  .al { display:grid; grid-template-columns:20px 72px minmax(0,1fr); gap:10px; align-items:start; padding:8px 0; border-top:0.5px solid var(--hairline-soft); font-size:12px; }
   .al:first-child { border-top:0; }
   .al .ic { width:16px; height:16px; margin-top:2px; }
   .al .t { color:var(--stone); font-variant-numeric:tabular-nums; }
   .al .x { color:var(--body); overflow-wrap:anywhere; }
 
   /* ---- 通用图表 ---- */
-  .hb { display:grid; grid-template-columns:minmax(80px,max-content) minmax(0,1fr) max-content; gap:8px 12px; align-items:center; font-size:12.5px; }
+  .hb { display:grid; grid-template-columns:minmax(80px,max-content) minmax(0,1fr) max-content; gap:8px 12px; align-items:center; font-size:12px; }
   .hb .l { color:var(--body); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px; }
   .hb .v { color:var(--charcoal); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
-  .hb .tr { position:relative; height:10px; background:var(--sunk); border-radius:3px; }
-  .hb .tr i { position:absolute; left:0; top:0; bottom:0; border-radius:3px; background:var(--bc, var(--primary)); }
+  .hb .tr { position:relative; height:10px; background:var(--sunk); border-radius:2px; }
+  .hb .tr i { position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--bc, var(--primary)); }
   .hb .tr .mk { left:auto; width:2px; margin-left:-1px; top:-3px; bottom:-3px; background:var(--bad); border-radius:1px; }
   .stk { display:flex; gap:2px; height:14px; border-radius:4px; overflow:hidden; background:var(--sunk); }
   .stk i { display:block; height:100%; min-width:3px; }
@@ -181,10 +252,10 @@
   .ring { display:block; }
   .ring .trk { stroke:var(--sunk); } .ring .arc { stroke:var(--s, var(--primary)); }
   .ringbox { display:flex; align-items:center; gap:16px; }
-  .rows > * + * { border-top:1px solid var(--hairline-soft); }
-  .srow { display:grid; grid-template-columns:minmax(120px,170px) minmax(0,1fr) minmax(0,1fr) 72px; gap:24px; align-items:center; padding:12px 0; }
-  .srow .nm { color:var(--charcoal); font-size:13px; font-weight:500; }
-  .srow .nm code { display:block; color:var(--stone); font-size:11px; font-weight:400; }
+  .rows > * + * { border-top:0.5px solid var(--hairline-soft); }
+  .srow { display:grid; grid-template-columns:minmax(110px,160px) minmax(0,1fr) minmax(0,1fr) 64px; gap:24px; align-items:center; padding:6px 0; border-top:0.5px solid var(--hairline); }
+  .srow .nm { color:var(--charcoal); font-size:14px; font-weight:500; }
+  .srow .nm code { display:block; color:var(--stone); font-size:12px; font-weight:400; }
   .srow .old { text-align:right; font-size:12px; }
   .srow-h { padding:0 0 4px; } .srow-h .ic { width:13px; height:13px; }
   .tally { display:flex; gap:12px; font-size:12px; color:var(--steel); font-variant-numeric:tabular-nums; }
@@ -194,16 +265,16 @@
   .area .fa { fill:var(--primary); opacity:.1; }
   .area .bg { stroke:var(--bad); stroke-width:1.5; stroke-dasharray:5 4; vector-effect:non-scaling-stroke; }
   .area .hit { fill:transparent; } .area .hit:hover { fill:var(--primary); opacity:.12; }
-  .axis { display:flex; justify-content:space-between; font-size:11px; color:var(--stone); margin-top:4px; font-variant-numeric:tabular-nums; }
+  .axis { display:flex; justify-content:space-between; font-size:12px; color:var(--stone); margin-top:4px; font-variant-numeric:tabular-nums; }
   .cols { display:flex; align-items:flex-end; gap:12px; height:150px; padding-top:8px; }
   .col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:6px; height:100%; }
   .col i { width:min(64px,90%); border-radius:4px 4px 0 0; background:var(--s, var(--primary)); min-height:3px; }
   .col .cn { font-size:14px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
-  .col .cl { font-size:11.5px; color:var(--steel); white-space:nowrap; }
+  .col .cl { font-size:12px; color:var(--steel); white-space:nowrap; }
   .squares { display:flex; flex-wrap:wrap; gap:4px; }
-  .sq { width:16px; height:16px; border-radius:3px; border:1.5px solid var(--primary); }
+  .sq { width:16px; height:16px; border-radius:2px; border:1.5px solid var(--primary); }
   .sq.busy { background:var(--primary); } .sq.off { border-style:dashed; border-color:var(--bad); }
-  .pool { display:grid; grid-template-columns:92px minmax(0,1fr) 56px; gap:12px; align-items:center; padding:7px 0; font-size:12.5px; }
+  .pool { display:grid; grid-template-columns:92px minmax(0,1fr) 56px; gap:12px; align-items:center; padding:7px 0; font-size:12px; }
   .pool .v { text-align:right; font-variant-numeric:tabular-nums; color:var(--charcoal); }
   .strip { position:relative; height:44px; border-radius:4px; background:linear-gradient(to right, var(--ok-zone) 0 var(--h), var(--warn-zone) var(--h) var(--u), var(--bad-zone) var(--u) 100%); }
   .strip .dt { position:absolute; width:7px; height:7px; margin:-3.5px 0 0 -3.5px; border-radius:50%; background:var(--s); opacity:.8; }
@@ -211,62 +282,62 @@
   .strip .ln.u { background:var(--bad); }
   .striprow { display:grid; grid-template-columns:150px minmax(0,1fr) 120px; gap:16px; align-items:center; padding:10px 0; }
   .striprow .v { text-align:right; }
-  .wk { display:grid; grid-template-columns:36px minmax(0,1.3fr) minmax(0,1fr) 132px; gap:14px; align-items:center; padding:12px 0; }
-  .av { width:36px; height:36px; border-radius:8px; display:flex; align-items:center; justify-content:center; background:var(--primary-subtle); color:var(--primary); }
+  .wk { display:grid; grid-template-columns:36px minmax(0,1fr) auto; gap:14px; align-items:center; padding:12px 0; }
+  .av { width:36px; height:36px; border-radius:6px; display:flex; align-items:center; justify-content:center; background:var(--primary-subtle); color:var(--primary); }
   .av .ic { width:18px; height:18px; }
-  .wk-t { color:var(--charcoal); font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .wk-t { color:var(--charcoal); font-size:14px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .wk-s { color:var(--steel); font-size:12px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-  .wk-c { font-family:var(--mono); font-size:11px; color:var(--stone); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .wk-c { font-family:var(--mono); font-size:12px; color:var(--stone); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .wk .r { text-align:right; font-size:12px; color:var(--steel); font-variant-numeric:tabular-nums; }
   .board { display:grid; grid-template-columns:repeat(auto-fit,minmax(78px,1fr)); gap:8px; }
-  .st { display:flex; flex-direction:column; align-items:center; gap:6px; padding:10px 4px; border-radius:8px; background:var(--soft); border:1px solid var(--hairline-soft); }
+  .st { display:flex; flex-direction:column; align-items:center; gap:6px; padding:10px 4px; border-radius:6px; background:var(--soft); border:0.5px solid var(--hairline-soft); }
   .st.hot { background:var(--primary-subtle); border-color:transparent; }
-  .st .n { font-size:20px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; line-height:1; }
+  .st .n { font-size:24px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; line-height:1; }
   .st .n.zero { color:var(--stone); font-weight:400; }
-  .st .l { font-size:11.5px; color:var(--steel); text-align:center; line-height:1.3; }
+  .st .l { font-size:12px; color:var(--steel); text-align:center; line-height:1.3; }
   .st .w { display:flex; gap:3px; min-height:8px; }
   .st .w i { width:8px; height:8px; border-radius:50%; background:var(--primary); }
   .sha { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  .sha .node { display:flex; flex-direction:column; gap:2px; padding:10px 14px; border-radius:8px; background:var(--soft); border:1px solid var(--hairline-soft); }
-  .sha .node span { font-size:11.5px; color:var(--stone); }
+  .sha .node { display:flex; flex-direction:column; gap:2px; padding:10px 14px; border-radius:6px; background:var(--soft); border:0.5px solid var(--hairline-soft); }
+  .sha .node span { font-size:12px; color:var(--stone); }
   .sha .gap { display:flex; flex-direction:column; align-items:center; color:var(--steel); font-size:12px; }
   .steps { display:flex; gap:2px; }
   .step { flex:1; min-width:0; padding:8px; background:var(--soft); text-align:center; font-size:12px; color:var(--steel); }
-  .step:first-child { border-radius:8px 0 0 8px; } .step:last-child { border-radius:0 8px 8px 0; }
+  .step:first-child { border-radius:6px 0 0 6px; } .step:last-child { border-radius:0 6px 6px 0; }
   .step.s-ok, .step.s-bad, .step.s-warn { background:var(--sb); color:var(--si); }
   .issue-chips { display:flex; flex-wrap:wrap; gap:6px; }
-  .knob { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; padding:8px 0; font-size:12.5px; }
+  .knob { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; padding:8px 0; font-size:12px; }
   .knob code { color:var(--charcoal); }
 
   /* ---- 工作单 ---- */
-  .tkstrip { display:flex; gap:2px; height:28px; border-radius:6px; overflow:hidden; margin-bottom:10px; }
+  .tkstrip { display:flex; gap:2px; height:28px; border-radius:4px; overflow:hidden; margin-bottom:10px; }
   .tkstrip button { border:0; color:#fff; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 6px; min-width:26px; font-variant-numeric:tabular-nums; }
   .tkstrip button.off { opacity:.3; }
   .bar-ctl { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:12px 0; }
-  .tk { display:grid; grid-template-columns:minmax(0,1fr) minmax(200px,280px) 96px; gap:20px; align-items:center; padding:14px 0; border-top:1px solid var(--hairline-soft); }
-  .tk-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13.5px; color:var(--charcoal); }
+  .tk { display:grid; grid-template-columns:minmax(0,1fr) minmax(200px,280px) 96px; gap:20px; align-items:center; padding:14px 0; border-top:0.5px solid var(--hairline-soft); }
+  .tk-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:14px; color:var(--charcoal); }
   .tk-title .sd { width:9px; height:9px; border-radius:50%; background:var(--c); flex:none; }
   .tk-title b { font-weight:600; }
   .tk-meta { font-size:12px; color:var(--stone); margin-top:2px; }
-  .track { display:flex; align-items:center; margin-top:8px; font-size:11.5px; flex-wrap:wrap; row-gap:4px; }
+  .track { display:flex; align-items:center; margin-top:8px; font-size:12px; flex-wrap:wrap; row-gap:4px; }
   .track .s { display:flex; align-items:center; gap:4px; color:var(--stone); white-space:nowrap; }
   .track .s i { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--hairline-strong); background:var(--surface); }
   .track .s.done { color:var(--body); } .track .s.done i { background:var(--ok); border-color:var(--ok); }
-  .track .s.cur { color:var(--c); font-weight:600; } .track .s.cur i { background:var(--c); border-color:var(--c); box-shadow:0 0 0 3px color-mix(in srgb, var(--c) 22%, transparent); }
+  .track .s.cur { color:var(--c); font-weight:600; } .track .s.cur i { background:var(--c); border-color:var(--c);  }
   .track .ln { width:16px; height:1.5px; background:var(--hairline-strong); margin:0 5px; } .track .ln.done { background:var(--ok); }
   .tbar { display:flex; gap:2px; height:8px; border-radius:4px; overflow:hidden; background:var(--sunk); }
   .tbar i { display:block; height:100%; }
   .tk-time .sm { font-size:12px; color:var(--steel); margin-top:5px; font-variant-numeric:tabular-nums; }
-  .tk-cost { text-align:right; font-size:13px; color:var(--charcoal); font-variant-numeric:tabular-nums; }
-  .tk-cost .sm { font-size:11.5px; color:var(--stone); }
+  .tk-cost { text-align:right; font-size:14px; color:var(--charcoal); font-variant-numeric:tabular-nums; }
+  .tk-cost .sm { font-size:12px; color:var(--stone); }
 
-  #tip { position:fixed; z-index:20; max-width:360px; padding:8px 10px; border-radius:6px; background:var(--ink); color:var(--canvas); font-size:12px; line-height:1.45; white-space:pre-line; pointer-events:none; opacity:0; transition:opacity .12s; box-shadow:0 8px 24px rgba(15,15,15,.18); }
+  #tip { position:fixed; z-index:20; max-width:360px; padding:8px 10px; border-radius:4px; background:var(--ink); color:var(--canvas); font-size:12px; line-height:1.45; white-space:pre-line; pointer-events:none; opacity:0; transition:opacity .12s;  }
   #tip.on { opacity:1; }
 
   /* 窄屏：模块栏变成顶部一排，图标为主 */
   @media (max-width: 900px) {
     .app { grid-template-columns:1fr; }
-    .side { position:static; height:auto; flex-direction:row; flex-wrap:wrap; align-items:center; padding:10px 12px; border-right:0; border-bottom:1px solid var(--hairline); }
+    .side { position:static; height:auto; flex-direction:row; flex-wrap:wrap; align-items:center; padding:10px 12px; border-right:0; border-bottom:0.5px solid var(--hairline); }
     .brand { padding:0 8px 0 4px; } .brand small { display:none; }
     .nav { flex-direction:row; flex-wrap:wrap; gap:4px; }
     .nv { width:auto; height:34px; } .nv-t, .nv-n { display:none; } .nv.on .nv-t { display:inline; }
@@ -274,7 +345,7 @@
     main { padding:18px 16px 40px; }
     .srow { grid-template-columns:1fr; gap:10px; } .srow .old { text-align:left; }
     .tk { grid-template-columns:1fr; gap:10px; } .tk-cost { text-align:left; }
-    .wk { grid-template-columns:36px minmax(0,1fr) 72px; } .wk > :nth-child(3) { display:none; }
+    .wk { grid-template-columns:36px minmax(0,1fr) auto; }
     .striprow { grid-template-columns:1fr; gap:6px; } .striprow .v { text-align:left; }
     .tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } .tile-v b { font-size:24px; }
   }
@@ -283,26 +354,26 @@
   .lwbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
   .lwlg, .lwgs { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .lwl { display:inline-flex; align-items:center; gap:5px; color:var(--steel); font-size:12px; }
-  .lwl i { width:10px; height:10px; border-radius:3px; background:var(--oc); }
+  .lwl i { width:10px; height:10px; border-radius:2px; background:var(--oc); }
   .lwg { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--steel); }
   .lwg em { font-style:normal; }
-  .lwg-t { width:56px; height:6px; border-radius:3px; background:var(--sunk); overflow:hidden; }
+  .lwg-t { width:56px; height:6px; border-radius:2px; background:var(--sunk); overflow:hidden; }
   .lwg-t i { display:block; height:100%; background:var(--s); }
   .lwg b { color:var(--si); font-variant-numeric:tabular-nums; font-weight:600; min-width:34px; }
   .lwgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:10px; }
-  .lwc { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:6px 8px; padding:10px 12px; background:var(--soft); border:1px solid var(--hairline); border-left:4px solid var(--oc); border-radius:8px; min-width:0; }
-  .lw-be { font-family:var(--mono); font-size:10.5px; font-weight:600; text-transform:uppercase; color:var(--steel); background:var(--sunk); border-radius:4px; padding:2px 4px; }
-  .lw-t { color:var(--ink); font-size:13px; font-weight:600; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; line-height:1.3; min-width:0; }
+  .lwc { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:6px 8px; padding:10px 12px; background:var(--soft); border:0.5px solid var(--hairline); border-radius:6px; min-width:0; }
+  .lw-be { font-family:var(--mono); font-size:12px; font-weight:600; text-transform:uppercase; color:var(--steel); background:var(--sunk); border-radius:4px; padding:2px 4px; }
+  .lw-t { color:var(--ink); font-size:14px; font-weight:600; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; line-height:1.3; min-width:0; }
   .lw-hb { width:10px; height:10px; border-radius:50%; background:var(--s); }
-  .lwc.s-bad .lw-hb { box-shadow:0 0 0 3px var(--bad-zone); }
+  .lwc.s-bad .lw-hb {  }
   .lw-tr { display:flex; align-items:center; gap:4px; grid-column:1 / 3; }
-  .lw-tr i { width:16px; height:5px; border-radius:3px; border:1px solid var(--hairline-strong); }
+  .lw-tr i { width:16px; height:5px; border-radius:2px; border:0.5px solid var(--hairline-strong); }
   .lw-tr i.d { background:var(--hairline-strong); }
   .lw-tr i.c { background:var(--sc,var(--oc)); border-color:var(--sc,var(--oc)); }
-  .lw-st { font-size:11px; font-weight:600; color:var(--sc); background:color-mix(in srgb, var(--sc) 14%, transparent); border-radius:4px; padding:1px 6px; white-space:nowrap; }
+  .lw-st { font-size:12px; font-weight:600; color:var(--sc); background:color-mix(in srgb, var(--sc) 14%, transparent); border-radius:4px; padding:1px 6px; white-space:nowrap; }
   .lw-ref { font-size:12px; text-align:right; }
-  .lw-bar { position:relative; grid-column:1 / 3; height:6px; border-radius:3px; background:var(--sunk); }
-  .lw-bar i { position:absolute; left:0; top:0; bottom:0; border-radius:3px; background:var(--s); }
+  .lw-bar { position:relative; grid-column:1 / 3; height:6px; border-radius:2px; background:var(--sunk); }
+  .lw-bar i { position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--s); }
   .lw-bar b { position:absolute; top:-2px; bottom:-2px; width:1px; background:var(--hairline-strong); }
   .lw-el { font-size:12px; font-weight:600; color:var(--si); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .lwa .lw-t { -webkit-line-clamp:1; }
@@ -311,57 +382,82 @@
   .lwa .lw-el { color:var(--body); font-weight:500; }
   .lw-bar2 i:last-child { opacity:.45; }
   .uc-l { display:flex; flex-direction:column; gap:3px; }
-  .uc { position:relative; display:flex; align-items:center; gap:6px; height:18px; padding:0 6px 0 8px; border-radius:4px; border:1px solid var(--hairline-strong); overflow:hidden; font-size:11.5px; color:var(--body); }
+  .uc { position:relative; display:flex; align-items:center; gap:6px; height:18px; padding:0 6px 0 8px; border-radius:4px; border:0.5px solid var(--hairline-strong); overflow:hidden; font-size:12px; color:var(--body); }
   .uc.run { background:var(--sunk); border-color:transparent; }
   .uc.run i { opacity:.4; }
   .uc.c { padding:0 4px 0 7px; gap:4px; }
-  .uc::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--s); }
-  .uc i { position:absolute; left:0; top:0; bottom:0; background:var(--s); opacity:.22; }
+    .uc i { position:absolute; left:0; top:0; bottom:0; background:var(--s); opacity:.22; }
   .uc span { position:relative; flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .uc b { position:relative; font-weight:600; color:var(--si); font-variant-numeric:tabular-nums; white-space:nowrap; }
   .uc em { position:relative; width:6px; height:6px; border-radius:50%; background:var(--primary); flex:none; }
   .pst { display:grid; grid-template-columns:repeat(10,minmax(88px,1fr)); gap:6px; overflow-x:auto; }
-  .pcol { display:flex; flex-direction:column; gap:6px; padding:10px 8px 8px; border:1px solid var(--hairline); border-radius:10px; background:var(--surface); cursor:pointer; text-align:left; position:relative; overflow:hidden; min-width:0; }
-  .pcol::before { content:""; position:absolute; left:0; right:0; top:0; height:3px; background:var(--s); }
-  .pcol:hover { border-color:var(--hairline-strong); }
+  .pcol { display:flex; flex-direction:column; gap:6px; padding:10px 8px 8px; border:0.5px solid var(--hairline); border-radius:6px; background:var(--surface); cursor:pointer; text-align:left; position:relative; overflow:hidden; min-width:0; }
+    .pcol:hover { border-color:var(--hairline-strong); }
   .pc-h { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--steel); white-space:nowrap; }
   .pc-h i { width:7px; height:7px; border-radius:2px; background:var(--pc); flex:none; }
   .pc-v { display:flex; align-items:baseline; gap:6px; color:var(--ink); min-height:24px; }
-  .pc-v b { font-size:22px; font-weight:600; line-height:1; font-variant-numeric:tabular-nums; }
+  .pc-v b { font-size:24px; font-weight:600; line-height:1; font-variant-numeric:tabular-nums; }
   .pc-v span { font-size:12px; font-weight:600; color:var(--primary); display:inline-flex; align-items:center; gap:3px; }
   .pc-v span::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--primary); }
-  .uc-m { font-size:11px; color:var(--stone); padding-left:8px; }
+  .uc-m { font-size:12px; color:var(--stone); padding-left:8px; }
   .lwgrid-s { grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
-  .frq-list { display:flex; flex-direction:column; gap:6px; max-height:420px; overflow:auto; }
-  .frq { display:grid; grid-template-columns:56px minmax(0,1fr) 210px 110px 140px 70px; gap:10px; align-items:center; padding:6px 10px; background:var(--soft); border:1px solid var(--hairline); border-left:3px solid var(--oc,var(--hairline-strong)); border-radius:8px; font-size:13px; min-width:0; }
+  .frq-list { display:flex; flex-direction:column; gap:6px; }
+  .frq { display:grid; grid-template-columns:10px 56px minmax(0,1fr) 210px 110px 140px 90px; gap:10px; align-items:center; padding:6px 10px; background:var(--soft); border:0.5px solid var(--hairline); border-radius:6px; font-size:14px; min-width:0; }
   .fq-w { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); }
   .fq-x { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--steel); font-size:12px; }
   .fq-trk { display:flex; align-items:center; gap:3px; color:var(--steel); font-size:12px; white-space:nowrap; }
-  .fq-trk i { width:14px; height:6px; border-radius:3px; background:var(--hairline-strong); flex:none; }
+  .fq-trk i { width:14px; height:6px; border-radius:2px; background:var(--hairline-strong); flex:none; }
   .fq-trk i.on { background:var(--ok); }
   @media (max-width:900px) { .frq { grid-template-columns:56px minmax(0,1fr); } .frq .fq-x, .frq .fq-trk { grid-column:2; } }
   .tgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; }
-  .tcard { background:var(--soft); border:1px solid var(--hairline); border-radius:8px; padding:10px 12px; min-width:0; }
+  .tcard { background:var(--soft); border:0.5px solid var(--hairline); border-radius:6px; padding:10px 12px; min-width:0; }
   .t-l { color:var(--steel); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .t-b { font-style:normal; margin-left:4px; color:var(--stone); }
   .t-r { display:flex; align-items:baseline; justify-content:space-between; gap:6px; margin:2px 0 4px; }
-  .t-v { color:var(--ink); font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .t-v { color:var(--ink); font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }
   .spark { width:100%; height:auto; display:block; overflow:visible; }
   .sp-l { fill:none; stroke:var(--steel); stroke-width:2; vector-effect:non-scaling-stroke; stroke-linejoin:round; }
   .sp-d { fill:var(--steel); stroke:var(--soft); stroke-width:2; vector-effect:non-scaling-stroke; }
   .sp-d.last { fill:var(--s); }
   .sp-m { stroke:var(--hairline-strong); stroke-width:1; vector-effect:non-scaling-stroke; stroke-dasharray:2 2; }
+  .vd { display:flex; align-items:center; gap:12px; padding:16px 20px; border:0.5px solid var(--s-line); border-radius:8px; background:var(--s-bg); }
+  .vd b { font-size:24px; } .vd .si { color:var(--s); } .vd .sub { margin-left:auto; text-align:right; }
+  .kcs { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; } .kc-h .ad { margin-left:auto; width:8px; height:8px; border-radius:50%; background:var(--s); }
+  .kc { display:flex; flex-direction:column; gap:8px; padding:16px; border:0.5px solid var(--hairline); border-radius:8px; background:var(--surface); }
+  .kc-h { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--steel); } .kc-h .ic { width:14px; height:14px; }
+  .kc-v { font-size:24px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .sgs { display:flex; flex-direction:column; gap:6px; } .sg { display:flex; align-items:center; gap:10px; font-size:12px; color:var(--steel); } .sg > span { min-width:64px; }
+  .slots { display:flex; gap:3px; align-items:center; } .slots i { width:10px; height:10px; border-radius:2px; border:0.5px solid var(--hairline-strong); } .slots i.on { background:var(--c1); border-color:var(--c1); } .slots i.alt { background:var(--c3); border-color:var(--c3); } .slots span { width:6px; }
+  .split, .pair { display:flex; gap:2px; height:6px; } .pair { flex-direction:column; height:auto; gap:3px; }
+  .split i { background:var(--c1); border-radius:2px; } .split i.b { background:var(--c4); }
+  .pair i { height:6px; border-radius:2px; background:var(--c1); } .pair i.y { background:var(--hairline-strong); }
+  .buls { display:grid; gap:2px 40px; grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr)); }
+  .zr { display:grid; grid-template-columns:8px minmax(96px,40%) minmax(48px,1fr) minmax(56px,auto); gap:10px; align-items:center; min-height:30px; cursor:default; }
+  .zr.nl { grid-template-columns:minmax(48px,1fr) minmax(56px,auto); }
+  .zr .ad { width:8px; height:8px; border-radius:50%; background:var(--s); }
+  .bul-l { color:var(--body); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bul-v { text-align:right; white-space:nowrap; color:var(--ink); }
+  .bul-v b { font-size:14px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .zr.s-bad .bul-v b { color:var(--bad-ink); } .zr.s-warn .bul-v b { color:var(--warn-ink); }
+  .bul-v small { color:var(--stone); font-size:12px; margin-left:3px; }
+  .okfold { margin-top:10px; } .okfold > summary { cursor:pointer; color:var(--steel); font-size:12px; }
+  details.panel > summary.ph::after { content:"展开"; margin-left:auto; font-size:12px; font-weight:400; color:var(--steel); } details.panel[open] > summary.ph::after { content:"收起"; } details.panel[open] > summary.ph { margin-bottom:14px; }
+  .anom { display:grid; grid-template-columns:10px 72px minmax(0,1fr) minmax(120px,32%) 84px; gap:12px; align-items:center; padding:10px 4px; border-top:0.5px solid var(--hairline); cursor:pointer; font-size:14px; }
+  .anom:hover { background:var(--sunk); } .anom.more { display:block; color:var(--steel); font-size:12px; }
+  .anom .ad { width:8px; height:8px; border-radius:50%; background:var(--s); } .ad.s-bad { --s:var(--bad); } .ad.s-warn { --s:var(--warn); } .ad.s-ok { --s:var(--ok); } .ad.s-none { --s:var(--hairline-strong); } .frq .ad { width:8px; height:8px; border-radius:50%; background:var(--s); }
+  .a-l small { display:block; font-size:12px; color:var(--steel); } .a-n { font-size:12px; color:var(--steel); } .a-v { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; color:var(--ink); }
+  .a-t { position:relative; height:8px; border-radius:2px; overflow:hidden; background:var(--sunk); } .a-t i { position:absolute; top:0; bottom:0; } .a-t i.z-ok { background:var(--ok-bg); } .a-t i.z-warn { background:var(--warn-bg); } .a-t i.z-bad { background:var(--bad-zone); } .a-t b { position:absolute; top:-1px; bottom:-1px; width:2px; background:var(--ink); }
 </style>
 </head>
 <body>
 <div class="app">
   <aside class="side">
-    <div class="brand"><svg class="ic mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5l8 14 8-14"/><path d="M8.5 5h7"/></svg>the product <small>流水线看板</small></div>
+    <div class="brand"><svg class="ic mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5l8 14 8-14"/><path d="M8.5 5h7"/></svg>Zenoforge</div>
     <nav class="nav" id="nav" aria-label="模块"></nav>
     <div class="side-foot"><button class="ghost" id="theme" type="button" title="主题：跟随系统 / 浅色 / 深色"></button></div>
   </aside>
   <main>
-    <div class="top"><h1 id="title">the product 流水线看板</h1><div class="fresh" id="fresh"></div></div>
+    <div class="top"><h1 id="title"></h1><div class="fresh" id="fresh"></div></div>
     <div id="view"><div class="empty">加载中…</div></div>
   </main>
 </div>
@@ -441,17 +537,14 @@ const judge = (v, sd) => v==null || !sd ? "NO-DATA" : (sd.higher_is_better ? v>=
 // 子弹条：value 落在 健康 / 警告 / 不健康 三段上，两条竖线是健康线（绿）与不健康线（红），超出刻度时右端有箭头。
 function bullet(o) {
   const s = sk(o.status), hib = !!o.hib, h = Number(o.healthy), u = Number(o.unhealthy);
-  const span = Math.max(Math.abs(h), Math.abs(u));
-  const top = (o.top || span * (hib ? 1.4 : 1.6)) || 1;
+  const top = (o.top || Math.max(Math.abs(h), Math.abs(u)) * (hib ? 1.4 : 1.6)) || 1;
   const pct = x => Math.max(0, Math.min(100, 100 * x / top));
   const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
-  const v = o.value==null ? null : Number(o.value);
-  const tip = [o.label, o.desc, o.meaning, o.source ? "来源："+o.source : "", o.id].filter(Boolean).join("\n");
-  return `<div class="bul s-${s}" data-tip="${esc(tip)}">
-    <div class="bul-h"><span class="bul-l">${esc(o.label)}</span><span class="bul-v">${ic(s)}<b>${o.shown ?? num(v)}</b><small>${esc(o.unit||"")}</small></span></div>
-    <div class="bul-t">${zones.filter(z=>pct(z[1])>pct(z[0])).map(z=>`<i class="z z-${z[2]}" style="left:${pct(z[0])}%;width:${pct(z[1])-pct(z[0])}%"></i>`).join("")}${v==null?"":`<i class="f" style="width:${Math.max(1.5,pct(v))}%"></i>`}${o.budget?"":`<i class="th" style="left:${pct(h)}%"></i>`}<i class="th u" style="left:${pct(u)}%"></i>${v!=null&&v>top?'<i class="ov"></i>':""}</div>
-    <div class="bul-b">${o.budget ? `<span><i style="background:var(--bad)"></i>预算 ${num(u)}</span>` : `<span><i style="background:var(--ok)"></i>${hib?"≥":"≤"} ${num(h)}</span><span><i style="background:var(--bad)"></i>${hib?"≤":"≥"} ${num(u)}</span>`}</div>
-  </div>`;
+  const v = o.value==null ? null : Number(o.value), nl = !String(o.label||"").trim();
+  const tip = [o.label, o.desc, o.meaning, o.budget ? "预算 "+num(u) : (hib?"健康 ≥ ":"健康 ≤ ")+num(h)+(hib?"，不健康 ≤ ":"，不健康 ≥ ")+num(u), o.id].filter(Boolean).join("\n");
+  return `<div class="bul zr s-${s}${nl?" nl":""}" data-tip="${esc(tip)}">${nl?"":`<i class="ad s-${s}"></i><span class="bul-l">${esc(o.label)}</span>`}
+    <span class="a-t">${zones.filter(z=>pct(z[1])>pct(z[0])).map(z=>`<i class="z-${z[2]}" style="left:${pct(z[0])}%;width:${pct(z[1])-pct(z[0])}%"></i>`).join("")}${v==null?"":`<b style="left:${Math.min(pct(v),99)}%"></b>`}</span>
+    <span class="bul-v"><b>${o.shown ?? num(v)}</b><small>${esc(o.unit||"")}</small></span></div>`;
 }
 // 环形量表：pct 0–100；marks 是界线位置（百分比）
 function ring(pct, s, size=84, center="", marks=[]) {
@@ -479,8 +572,9 @@ function stack(parts, fmt=num) {
 }
 const CAT = ["var(--c1)","var(--c2)","var(--c3)","var(--c4)","var(--c5)","var(--c6)","var(--c7)","var(--c8)"];
 const panel = (icon, title, body, aside="", cls="") => `<section class="panel ${cls}"><h2 class="ph">${ic(icon)}${esc(title)}${aside?`<span class="aside">${aside}</span>`:""}</h2>${body}</section>`;
-const unavailable = (what, err) => `<div class="unavail">${ic("bad")}<div><b style="color:inherit">数据不可用</b> · ${esc(what)}<div class="sub">${esc(err)}</div></div></div>`;
+const unavailable = (what, err) => `<div class="unavail" data-tip="${esc(String(err||""))}">${ic("bad")}<div><b style="color:inherit">数据不可用</b>，${esc(what)}</div></div>`;
 const emptyMsg = t => `<div class="empty">${ic("none")}${esc(t)}</div>`;
+const kcard = (icon, label, v, vis="", st="", tip="") => `<div class="kc"${tip?` data-tip="${esc(tip)}"`:""}><div class="kc-h">${ic(icon)}${esc(label)}${st?`<i class="ad s-${sk(st)}"></i>`:""}</div><div class="kc-v">${v}</div>${vis}</div>`;
 const kpi = (icon, v, unit, label, tip="") => `<div class="kpi" ${tip?`data-tip="${esc(tip)}"`:""}>${ic(icon)}<div><div class="kv">${v}<small>${esc(unit||"")}</small></div><div class="kl">${esc(label)}</div></div></div>`;
 
 /* ============ 标准取数 ============ */
@@ -524,9 +618,14 @@ const NODE_MOD = {implement:"workers", review:"workers", repair:"workers", "revi
   pipeline:"workers", "ci+merge":"ci", release:"release", delivery:"release", "work-orders":"orders", host:"host", scheduler:"host"};
 const nodeMetrics = D => ((D.standards||{}).metrics||[]);
 const modMetrics = (D, mod) => nodeMetrics(D).filter(m => (ID_MOD[m.id] || NODE_MOD[m.node]) === mod);
-const bNode = m => { const lb = LABELS[m.id] || [m.desc, ""];
+const bNode = m => { const lb = LABELS[m.id] || [/[\u4e00-\u9fff]/.test(m.desc || "") ? m.desc : ((PLAIN[m.id] || [])[0] || firstSentence(m.meaning) || m.desc), ""];
   return bullet({id:m.id, label:lb[0], unit:lb[1], value:m.value, healthy:m.healthy, unhealthy:m.unhealthy, hib:m.higher_is_better, status:m.status, desc:m.desc, meaning:m.meaning, source:m.source}); };
 const FR = D => D.front || {};
+// 指标行列表：异常、警告、无数据的行直接显示，正常的折成一行
+const isOk = h => /^<div class="bul zr s-(ok|none)/.test(h);
+const foldOk = list => { const rows = list.filter(Boolean), ok = rows.filter(isOk), rest = rows.filter(h => !isOk(h));
+  if (!rows.length) return emptyMsg("尚无评分");
+  return (rest.length ? `<div class="buls">${rest.join("")}</div>` : "") + (ok.length ? `<details class="okfold"><summary>${rest.length ? "其余 " : "全部 "}${ok.length} 项正常或暂无数据</summary><div class="buls">${ok.join("")}</div></details>` : ""); };
 const bFront = (D, id, label, shown) => { const F = FR(D), sd = (F.standards||{})[id];
   if (!sd) return "";
   return bullet({id, label: label || sd.desc, unit: sd.unit, value: (F.values||{})[id], shown, healthy: sd.healthy, unhealthy: sd.unhealthy, hib: sd.higher_is_better,
@@ -554,7 +653,7 @@ const scorecardFreshness = (D, STD) => {
 };
 
 /* ============ 模块 ============ */
-// 1. 入口 · 分诊（前段：收单 → triage → advisor → 实现队列 的收单与分诊部分）
+// 1. 入口与分诊（前段：收单 → triage → advisor → 实现队列 的收单与分诊部分）
 const INTAKE_STAGES = ["needs-triage","finish-first","needs-info","needs-recut","ready-for-agent"];
 function sumIntake(D) {
   const r = stageRow(D, "needs-triage");
@@ -566,26 +665,23 @@ function stageMatrix(D, labels) {
   if ((F.errors||{}).stages) return unavailable("GitHub 阶段计数", F.errors.stages);
   const rows = (F.stages||[]).filter(r => !labels || labels.includes(r.label));
   if (!rows.length) return emptyMsg("没有阶段计数");
-  return `<div class="srow srow-h sub"><span></span><span>${ic("layers")} 数量</span><span>${ic("clock")} 最久没动的票</span><span></span></div><div class="rows">${rows.map(r => `<div class="srow"><div class="nm">${esc(r.name)}<code>${esc(r.label)}</code></div>
+  return `<div class="rows">${rows.map(r => `<div class="srow"><div class="nm">${esc(r.name)}</div>
     ${bFront(D, `stage.${r.label}.count`, " ")}${bFront(D, `stage.${r.label}.idle_hours`, " ", r.count ? (r.idle_hours==null?"—":num(r.idle_hours)) : "—")}
     <div class="old">${r.oldest && r.oldest.number ? issueLink(r.oldest.number) : '<span class="sub">—</span>'}</div></div>`).join("")}</div>`;
 }
 function vIntake(D) {
   const F = FR(D), T = D.totals || {}, TR = F.triage, gh = F.github || {};
-  let triage;
-  if ((F.errors||{}).triage) triage = unavailable("分诊记录（流水线效率账）", F.errors.triage);
-  else if (!TR) triage = emptyMsg("没有分诊数据");
-  else triage = `<div class="buls">${bFront(D,"triage.last_done_age_min","上次分诊完成")}${bFront(D,"triage.done_today","今日分诊完成")}</div>
-    <div style="margin-top:18px" class="sub">今日去向</div><div style="margin-top:6px">${stack(Object.entries(TR.routed_today||{}).map(([k,v],i)=>({label:k, value:v, color:CAT[i%8]})))}</div>
-    <div class="lg" style="margin-top:14px">${TR.running===true ? stChip("ok","批处理在跑") : TR.running===false ? stChip("none","批处理未在跑") : stChip("warn","状态未知")}
-      <span data-tip="最近一次分诊批处理日志">${ic("clock")} 批处理 ${fAge(hoursAgo(TR.last_batch_at))}前</span></div>`;
-  const ghTxt = gh.cached ? `缓存 ${num(gh.age_s)} 秒${gh.stale ? " · GitHub 刷新失败" : ""}` : "GitHub 实时";
-  return `<div class="stack16">
-    <section class="panel"><div class="kpis">
-      ${kpi("intake", num(T.issues_open), "", "开放 issue")}${kpi("git", num(T.prs_open), "", "开放 PR")}
-      ${kpi("layers", num((stageRow(D,"needs-triage")||{}).count), "", "待分诊")}${kpi("arrow", num((stageRow(D,"ready-for-agent")||{}).count), "", "待实现队列")}</div></section>
-    ${panel("layers", "阶段积压与滞留", stageMatrix(D, INTAKE_STAGES), `${gh.stale?stChip("warn","GitHub 失败"):""}${esc(ghTxt)}`)}
-    ${panel("intake", "分诊（triage）", triage)}
+  const cnt = l => (stageRow(D, l) || {}).count, stS = id => (F.status||{})[id];
+  const funnel = (F.stages||[]).filter(r => INTAKE_STAGES.includes(r.label));
+  const triage = (F.errors||{}).triage ? unavailable("分诊记录", F.errors.triage) : !TR ? emptyMsg("没有分诊数据")
+    : `<div class="buls">${bFront(D,"triage.last_done_age_min","上次分诊完成")}${bFront(D,"triage.done_today","今日分诊完成")}</div>
+      ${Object.keys(TR.routed_today||{}).length ? `<div style="margin-top:14px">${stack(Object.entries(TR.routed_today).map(([k,v],i)=>({label:k, value:v, color:CAT[i%8]})))}</div>` : ""}`;
+  const run = TR && (TR.running===true ? stChip("ok","分诊在跑") : TR.running===false ? stChip("none","分诊未在跑") : stChip("warn","状态未知"));
+  return `<div class="stack16"><div class="kcs">
+      ${kcard("intake", "开放 issue", num(T.issues_open))}${kcard("git", "开放 PR", num(T.prs_open))}
+      ${kcard("layers", "待分诊", num(cnt("needs-triage")), "", stS("stage.needs-triage.count"))}${kcard("arrow", "待实现", num(cnt("ready-for-agent")), "", stS("stage.ready-for-agent.count"))}</div>
+    ${panel("layers", "各环节积压", (funnel.length ? `<div style="margin-bottom:14px">${stack(funnel.map((r,i)=>({label:r.name, value:r.count, color:CAT[i%8]})))}</div>` : "") + stageMatrix(D, INTAKE_STAGES), gh.stale ? stChip("warn","GitHub 数据较旧") : "")}
+    ${panel("intake", "分诊", triage, run || "")}
   </div>`;
 }
 
@@ -603,19 +699,20 @@ function vAdvisor(D) {
   else {
     const job = AD.job;
     const jobBox = job ? `<div class="lg" style="margin-top:0">${job.worker_active===true ? stChip("ok","工作进程在运行") : job.worker_active===false ? stChip("bad","工作进程已不在") : stChip("warn","进程状态未知")}
-        <span>${ic("timer")} ${fMin(job.age_min)}</span><span>${ic("orders")} ${(job.members||[]).length} 张</span>${job.input_bytes!=null?`<span class="sub">${Math.round(job.input_bytes/1024)} KB</span>`:""}</div>
+        <span>${ic("timer")} ${fMin(job.age_min)}</span><span>${ic("orders")} ${(job.members||[]).length} 张</span></div>
         <div class="issue-chips" style="margin-top:10px">${(job.members||[]).slice(0,24).map(n=>`<span class="tag">${issueLink(n)}</span>`).join("")}${(job.members||[]).length>24?`<span class="sub">… 共 ${job.members.length}</span>`:""}</div>`
       : `<div class="empty">${ic("none")}当前没有批处理任务</div>`;
     const oc = AD.outcomes_today || {};
     const OCOL = {completed:"var(--ok)", "job-failed":"var(--bad)", pending:"var(--c4)", dispatched:"var(--c1)", selected:"var(--c7)"};
+    const OCN = {completed:"完成", "job-failed":"失败", pending:"等待", dispatched:"已派出", selected:"已选中", idle:"空闲", skipped:"跳过"};
     batch = `<div class="buls">${bFront(D,"advisor.job_age_min","批处理任务已跑", num(job ? job.age_min : 0))}${bFront(D,"advisor.failures_today","今日失败")}
         ${bFront(D,"advisor.ruling_lag_hours","距上次落下裁决", AD.ruling_lag_is_lower_bound && (F.values||{})["advisor.ruling_lag_hours"]!=null ? "≥ "+num(F.values["advisor.ruling_lag_hours"]) : null)}</div>
       <div class="grid g2" style="margin-top:20px">
-        <div><div class="sub" style="margin-bottom:8px">今日 ${num(AD.ticks_today)} 拍的结果</div>${stack(Object.entries(oc).map(([k,v],i)=>({label:k, value:v, color:OCOL[k]||CAT[(i+2)%8]})))}</div>
-        <div><div class="sub" style="margin-bottom:8px">当前任务</div>${jobBox}</div></div>
-      <div class="lg" style="margin-top:16px;color:var(--steel)"><span>${ic("clock")} 最近一拍 ${fAge(hoursAgo(AD.last_tick_at))}前 · <code>${esc(AD.last_outcome||"—")}</code></span>
-        <span>${ic("ok")} 上次落下裁决 ${AD.last_ruling_at ? fAge(hoursAgo(AD.last_ruling_at))+"前 · "+num(AD.last_ruling_applied)+" 张" : "日志窗口内没有"}</span>
-        <span>今日落下 <b>${num(AD.applied_today)}</b> 张</span>${(AD.deferred||[]).length?`<span>${ic("warn")} 体积推迟 ${AD.deferred.length} 张</span>`:""}</div>`;
+        <div><div class="sub" style="margin-bottom:8px">今日结果</div>${stack(Object.entries(oc).map(([k,v],i)=>({label:OCN[k]||k, value:v, color:OCOL[k]||CAT[(i+2)%8]})))}</div>
+        <div><div class="sub" style="margin-bottom:8px">正在做</div>${jobBox}</div></div>
+      <div class="lg" style="margin-top:16px;color:var(--steel)"><span>${ic("clock")} 最近一次 ${fAge(hoursAgo(AD.last_tick_at))}前</span>
+        <span>${ic("ok")} 上次裁决 ${AD.last_ruling_at ? fAge(hoursAgo(AD.last_ruling_at))+"前，"+num(AD.last_ruling_applied)+" 张" : "近期没有"}</span>
+        <span>今日 <b>${num(AD.applied_today)}</b> 张</span>${(AD.deferred||[]).length?`<span>${ic("warn")} 体积推迟 ${AD.deferred.length} 张</span>`:""}</div>`;
   }
   // 队列深度来自 GitHub 标签，与批处理状态无关：批处理读取失败时也要画
   batch += `<div class="buls" style="margin-top:18px">${bFront(D,"stage.needs-advisor.count","等顾问的票")}${bFront(D,"stage.needs-advisor.idle_hours","最久滞留")}</div>`;
@@ -625,14 +722,14 @@ function vAdvisor(D) {
   else {
     const fp = (F.values||{})["advisor_loop.fail_pct_today"], fsd = (F.standards||{})["advisor_loop.fail_pct_today"] || {};
     loop = `<div class="ringbox">${ring(fp, (F.status||{})["advisor_loop.fail_pct_today"], 96, fp==null?"—":Math.round(fp)+"%", fsd.healthy!=null?[{at:fsd.healthy,c:"ok"},{at:fsd.unhealthy,c:"bad"}]:[])}
-        <div style="flex:1;min-width:0">${hbars([{label:"给出裁决", value:AL.rulings_today, color:"var(--ok)"},{label:"不可用", value:AL.unavailable_today, color:"var(--bad)"}])}
-        <div class="lg"><span>${ic("clock")} 上次裁决 ${fAge(hoursAgo(AL.last_ruling_at))}前</span><span>上次不可用 ${fAge(hoursAgo(AL.last_unavailable_at))}前</span><span>正在问 <b>${num(AL.asking_now)}</b></span></div></div></div>
-      <div class="buls" style="margin-top:18px">${bFront(D,"advisor_loop.fail_pct_today","今日顾问不可用")}${modMetrics(D,"advisor").map(bNode).join("")}</div>`;
+        <div style="flex:1;min-width:0">${hbars([{label:"给出裁决", value:AL.rulings_today, color:"var(--ok)"},{label:"没响应", value:AL.unavailable_today, color:"var(--bad)"}])}
+        <div class="lg"><span>${ic("clock")} 上次裁决 ${fAge(hoursAgo(AL.last_ruling_at))}前</span><span>正在问 <b>${num(AL.asking_now)}</b></span></div></div></div>
+      <div class="buls" style="margin-top:14px">${modMetrics(D,"advisor").map(bNode).join("")}</div>`;
   }
-  return `<div class="stack16">${panel("advisor","顾问批处理（拆票 / 定范围）", batch)}${panel("workers","评审循环里的顾问（第 2 次打回后）", loop)}</div>`;
+  return `<div class="stack16">${panel("advisor","批量处理", batch)}${panel("workers","评审中的顾问", loop)}</div>`;
 }
 
-// 3. 开发 · 评审
+// 3. 开发与评审
 const PIPE = [
   {key:["implement-pending","implement"], nm:"开发"},
   {key:["review-pending","review"],        nm:"质检"},
@@ -657,40 +754,38 @@ function vWorkers(D) {
   const byId = Object.fromEntries(units(D).map(u=>[u.id,u]));
   const slow = W.slow_worker_minutes || 60;
   const wk = live.length ? `<div class="rows">${live.map((w,i) => { const u = byId[w.unit] || {}, a = w.activity || {}, sec = liveSec(w.started), m = sec==null?null:sec/60;
-      return `<div class="wk"><div class="av" data-tip="${esc((ROLE[w.type]||w.type)+" · "+(w.model||""))}">${ic(ROLE_IC[w.type]||"workers")}</div>
-        <div style="min-width:0"><div class="wk-t">${esc((u.title||w.unit||"").slice(0,80))}</div><div class="sub">${esc(ROLE[w.type]||w.type||"")} · ${esc(w.unit)} ${ghLink(u)}</div></div>
-        <div style="min-width:0" data-tip="${esc((a.say||"")+(a.cmd?"\n$ "+a.cmd:""))}">${a.say?`<div class="wk-s">${esc(a.say)}</div>`:""}${a.cmd?`<div class="wk-c">$ ${esc(a.cmd)}</div>`:""}${!a.say&&!a.cmd?'<span class="sub">启动中</span>':""}</div>
-        <div data-tip="${esc(`已用时；超过 ${slow} 分钟算慢工，停工由进展指纹确认，不按运行时长回收`)}">${stChip(m==null?"none":m<=slow?"ok":"warn", fDur(sec))}<div class="sub">慢工阈值 ${slow} 分</div>${w.tokens?`<div class="r">${ft(w.tokens)} tok</div>`:""}</div></div>`; }).join("")}</div>`
+      return `<div class="wk" data-tip="${esc((a.say||"")+(a.cmd?"\n$ "+a.cmd:""))}"><div class="av" data-tip="${esc((ROLE[w.type]||w.type)+"，"+(w.model||""))}">${ic(ROLE_IC[w.type]||"workers")}</div>
+        <div style="min-width:0"><div class="wk-t">${esc((u.title||w.unit||"").slice(0,80))}</div><div class="sub">${esc(ROLE[w.type]||w.type||"")} ${ghLink(u)}</div></div>
+        <div data-tip="${esc(`已用时。慢工阈值 ${slow} 分，停工按进展确认，不按运行时长回收`)}">${stChip(m==null?"none":m<=slow?"ok":"warn", fDur(sec))}</div></div>`; }).join("")}</div>`
     : emptyMsg("当前没有在岗员工");
   const board = `<div class="board">${PIPE.map(p => { const us = unitsIn(D, p.key), ag = live.filter(w => us.some(u=>u.id===w.unit));
-      return `<div class="st ${ag.length?"hot":""}" data-tip="${esc(p.nm+"："+us.length+" 项\n"+us.slice(0,8).map(u=>"· "+(u.title||u.id).slice(0,40)).join("\n"))}"><div class="n ${us.length?"":"zero"}">${us.length}</div><div class="w">${ag.map(()=>"<i></i>").join("")}</div><div class="l">${esc(p.nm)}</div></div>`; }).join("")}</div>
-    <div class="lg"><span><i style="background:var(--primary);border-radius:50%"></i>在此站干活的员工</span></div>`;
+      return `<div class="st ${ag.length?"hot":""}" data-tip="${esc(p.nm+"："+us.length+" 项\n"+us.slice(0,8).map(u=>"， "+(u.title||u.id).slice(0,40)).join("\n"))}"><div class="n ${us.length?"":"zero"}">${us.length}</div><div class="w">${ag.map(()=>"<i></i>").join("")}</div><div class="l">${esc(p.nm)}</div></div>`; }).join("")}</div>
+`;
   const BS = (D.standards||{}).rework_by_size || [];
   const bsMax = Math.max(1, ...BS.map(r=>r.median_repairs||0));
   const bySize = BS.length ? `<div class="cols">${BS.map(r => { const s4 = r.share_4plus, st = s4==null?"none":s4>=35?"bad":s4>15?"warn":"ok";
-      return `<div class="col s-${st}" data-tip="${esc(`${r.band} 行：${r.units} 单\n返工中位 ${num(r.median_repairs)} 轮\n≥4 轮占 ${s4==null?"—":s4+"%"}（健康 ≤ 15% · 不健康 ≥ 35%）`)}"><span class="cn">${num(r.median_repairs)}</span><i style="height:${Math.max(3, 100*(r.median_repairs||0)/bsMax)}%"></i><span class="cl">${esc(r.band)}</span></div>`; }).join("")}</div>
-      <div class="lg"><span class="sub">柱高 = 返工轮数中位；颜色 = 返工 ≥4 轮的占比</span><span><i style="background:var(--ok)"></i>≤ 15%</span><span><i style="background:var(--warn)"></i>15–35%</span><span><i style="background:var(--bad)"></i>≥ 35%</span></div>`
+      return `<div class="col s-${st}" data-tip="${esc(`${r.band} 行：${r.units} 单\n返工中位 ${num(r.median_repairs)} 轮\n≥4 轮占 ${s4==null?"—":s4+"%"}（健康 ≤ 15%，不健康 ≥ 35%）`)}"><span class="cn">${num(r.median_repairs)}</span><i style="height:${Math.max(3, 100*(r.median_repairs||0)/bsMax)}%"></i><span class="cl">${esc(r.band)}</span></div>`; }).join("")}</div>
+      `
     : emptyMsg("尚无 PR 大小数据");
   const SKs = ((D.standards||{}).time_sinks||[]).filter(r => /^(repair|rereview|review|implement)/.test(r.id));
-  const models = Object.entries(c.models||{}).filter(([,v]) => Array.isArray(v)).map(([k,v]) => `<span class="tag" data-tip="${esc(k+"："+v.join(" · "))}">${esc(ROLE[k]||k)} · ${esc(v[0]||"—")} · ${esc(v[1]||"")}</span>`).join(" ");
   const e = D.efficiency || {};
   return `<div class="stack16">
     <div class="grid g2">
       ${panel("workers","在岗", `<div class="ringbox">${ring(100*(s.live_workers||0)/Math.max(1,s.max_workers||1), (s.live_workers||0)>0?"ok":"bad", 96, `${num(s.live_workers)}/${num(s.max_workers)}`)}
         <div class="kpis" style="flex:1">${kpi("orders", num(e.delivered_reports), "", "已交付报告")}${kpi("bad", num(e.wasted_workers), "", "白跑的员工")}</div></div>
-        <div class="issue-chips" style="margin-top:14px">${models}</div>`)}
-      ${panel("layers","每一站", board)}
+`)}
+      ${panel("layers","各环节", board)}
     </div>
-    ${panel("user","员工此刻在做什么", wk, `${ic("timer")} 慢工阈值 ${slow} 分 · 停工按进展确认`)}
-    ${panel("health","开发与评审的标准", `<div class="buls">${modMetrics(D,"workers").map(bNode).join("") || emptyMsg("尚无评分")}</div>`)}
+    ${panel("user","在做什么", wk)}
+    ${panel("health","开发与评审指标", foldOk(modMetrics(D,"workers").map(bNode)))}
     <div class="grid g2">
-      ${panel("orders","PR 越大，返工越多", bySize)}
-      ${panel("timer","返工与复检的时间", SKs.length ? `<div class="buls">${SKs.map(bSink).join("")}</div>` : emptyMsg("尚无数据"))}
+      ${panel("orders","改动越大，返工越多", bySize)}
+      ${panel("timer","返工与复检耗时", SKs.length ? `<div class="buls">${SKs.map(bSink).join("")}</div>` : emptyMsg("尚无数据"))}
     </div>
   </div>`;
 }
 const bSink = r => bullet({id:r.id, label:r.desc, unit:"分", value:r.value, healthy:r.healthy, unhealthy:r.unhealthy, status:r.status,
-  meaning:`${r.meaning}\n按 ${r.stat} 判 · 样本 ${r.n} · p50 ${num(r.p50)} · p90 ${num(r.p90)} · 合计 ${num(r.total_hours)} 时`, source:r.source});
+  meaning:`${r.meaning}\n按 ${r.stat} 判，样本 ${r.n}，p50 ${num(r.p50)}，p90 ${num(r.p90)}，合计 ${num(r.total_hours)} 时`, source:r.source});
 
 // 4. 工作单
 const ST = {
@@ -700,9 +795,9 @@ const ST = {
   waiting:   ["等主管处理", "var(--c8)"],
   parked:    ["已搁置", "var(--c4)"],
   blocked:   ["等前置 issue", "var(--c5)"],
-  "awaiting-release": ["已合并 · 待发布", "var(--c7)"],
-  released:  ["已上线 · 生产可测", "var(--c6)"],
-  live:      ["已生效（流水线脚本）", "var(--c3)"],
+  "awaiting-release": ["已合并，待发布", "var(--c7)"],
+  released:  ["已上线，生产可测", "var(--c6)"],
+  live:      ["已生效", "var(--c3)"],
   reverted:  ["合并后回退", "#a05a4c"],
   closed:    ["已关闭 / 转交", "var(--stone)"],
 };
@@ -713,14 +808,14 @@ const SORTS = {age:["存在最久", (a,b)=>b.journey.age_min-a.journey.age_min],
 const STEPS = ["开发","质检","返工","待合并","已合并","已上线"];
 const stepOf = j => ({develop:0, check:j.rounds?2:1, merge:3, waiting:-1, parked:-1, blocked:-1, "awaiting-release":4, reverted:4, released:5, live:5}[j.status]);
 const PAGE = 12;
-const UN = {tokens:["token",""], worker_minutes:["员工分钟","分"], rounds:["返工轮","轮"], age_hours:["年龄","时"]};
+const UN = {tokens:["用量",""], worker_minutes:["员工用时","分"], rounds:["返工轮数","轮"], age_hours:["存在时长","时"]};
 let view = {f:"active", p:0, s:"age"};
 try { view = Object.assign(view, JSON.parse(sessionStorage.getItem("unitsView2")||"{}")); } catch (e) {}
 const journeyOf = u => u.journey || {status:"closed", age_min:0, since_min:0, split_min:{}, rounds:0};
 function sumOrders(D) {
   const m = nodeMetrics(D).find(x => x.id==="workorders.over_standard");
   const inflight = (D.units||[]).filter(u=>["develop","check","merge","waiting","blocked"].includes((u.journey||{}).status)).length;
-  return {s: m ? m.status : "none", v: m ? num(m.value) : "—", l: `超标单 · 流转中 ${inflight}`, st: m ? [m.status] : []};
+  return {s: m ? m.status : "none", v: m ? num(m.value) : "—", l: `超标单，流转中 ${inflight}`, st: m ? [m.status] : []};
 }
 function costMap(D) { return Object.fromEntries(((D.cost||{}).per_unit||[]).map(x=>[x.unit,x])); }
 function unitCostText(CM, unit) {
@@ -734,11 +829,10 @@ function strips(D) {
   return `<div class="rows">${Object.entries(us).map(([k, sd]) => {
       const top = sd.bug * 1.6, pct = x => Math.max(0, Math.min(100, 100*x/top)), over = (STD.work_orders||[]).filter(o => (o.over||[]).includes(k)).length;
       const dots = wo.filter(o => o[k]!=null).map((o, i) => { const v = Number(o[k])||0, s = v>=sd.bug?"bad":v>sd.healthy?"warn":"ok";
-        return `<i class="dt s-${s}" style="left:${pct(v)}%;top:${8 + (i*37 % 28)}px" data-tip="${esc(o.id+" · "+o.stage+"\n"+(UN[k]||[k])[0]+" "+num(v))}"></i>`; }).join("");
-      return `<div class="striprow"><div><b>${esc((UN[k]||[k])[0])}</b><div class="sub">${esc(sd.desc)}</div></div>
+        return `<i class="dt s-${s}" style="left:${pct(v)}%;top:${8 + (i*37 % 28)}px" data-tip="${esc(o.id+"，"+o.stage+"\n"+(UN[k]||[k])[0]+" "+num(v))}"></i>`; }).join("");
+      return `<div class="striprow"><div><b>${esc((UN[k]||[k])[0])}</b></div>
         <div class="strip" style="--h:${pct(sd.healthy)}%;--u:${pct(sd.bug)}%"><i class="ln" style="left:${pct(sd.healthy)}%"></i><i class="ln u" style="left:${pct(sd.bug)}%"></i>${dots}</div>
-        <div class="v">${stChip(over?"bad":"ok", over ? `超标 ${over}` : "0")}<div class="sub num">≤ ${num(sd.healthy)} · ≥ ${num(sd.bug)}</div></div></div>`; }).join("")}</div>
-    <div class="lg"><span class="sub">每个点 = 一张在途工作单（超出刻度的贴在右端）</span><span><i style="background:var(--ok)"></i>健康线</span><span><i style="background:var(--bad)"></i>bug 线</span></div>`;
+        <div class="v">${stChip(over?"bad":"ok", over ? `超标 ${over}` : "0")}</div></div>`; }).join("")}</div>`;
 }
 function vOrders(D) {
   const CM = costMap(D), STD = D.standards || {};
@@ -767,18 +861,18 @@ function vOrders(D) {
     const seg = (k,c,nm) => sp[k] ? `<i style="flex:${sp[k]};background:${c}" data-tip="${esc(nm+" "+fMin(sp[k]))}"></i>` : "";
     const waitPct = Math.round(100*((sp.ready||0)+(sp.supervisor||0))/tot), o = OVER[u.id];
     return `<div class="tk" style="--c:${col}"><div style="min-width:0">
-        <div class="tk-title"><span class="sd" data-tip="${esc(lab)}"></span><b>${esc((u.title||u.id).slice(0,80))}</b>${u.lane==="direct-main"?'<span class="tag">直落</span>':""}${u.critical?stChip("bad","优先"):""}${o?`<span class="chip s-bad" data-tip="${esc(o.over.map(k=>(UN[k]||[k])[0]+" "+num(o[k])).join(" · "))}">${ic("bad")}超标</span>`:""}</div>
-        <div class="tk-meta">${esc(u.id)} · ${ghLink(u)||"—"}${ACTIVE.includes(j.status)?` · 本环节 <b>${fMin(j.since_min)}</b>`:""}</div>${track}</div>
+        <div class="tk-title"><span class="sd" data-tip="${esc(lab)}"></span><b>${esc((u.title||u.id).slice(0,80))}</b>${u.lane==="direct-main"?'<span class="tag">直落</span>':""}${u.critical?stChip("bad","优先"):""}${o?`<span class="chip s-bad" data-tip="${esc(o.over.map(k=>(UN[k]||[k])[0]+" "+num(o[k])).join("，"))}">${ic("bad")}超标</span>`:""}</div>
+        <div class="tk-meta">${ghLink(u)||"—"}${ACTIVE.includes(j.status)?`，本环节 <b>${fMin(j.since_min)}</b>`:""}</div>${track}</div>
       <div class="tk-time"><div style="width:${Math.max(8, Math.round(100*j.age_min/maxAge))}%"><div class="tbar">${seg("work","var(--c1)","开发/质检")}${seg("ready","var(--c2)","等合并")}${seg("supervisor","var(--c8)","等主管")}</div></div>
-        <div class="sm">${ic("clock")} ${fMin(j.age_min)}${tot>1?` · 等待 <b class="${waitPct>=50?"si s-bad":""}">${waitPct}%</b>`:""}</div></div>
+        <div class="sm">${ic("clock")} ${fMin(j.age_min)}${tot>1?`，等待 <b class="${waitPct>=50?"si s-bad":""}">${waitPct}%</b>`:""}</div></div>
       <div class="tk-cost">${unitCostText(CM, u.id)}<div class="sm">${ft(u.tokens)} tok</div></div></div>`;
   };
   const aggT = Math.max(1, agg.work+agg.ready+agg.supervisor);
   return `<div class="stack16">
     ${panel("orders","工作单状态", stripHtml)}
-    ${panel("health","单个工作单的花费标准", strips(D), (()=>{ const m = nodeMetrics(D).find(x=>x.id==="workorders.over_standard"); return m ? stChip(m.status, `超标 ${num(m.value)} 单`) : ""; })())}
+    ${panel("health","哪些工作单超标", strips(D), (()=>{ const m = nodeMetrics(D).find(x=>x.id==="workorders.over_standard"); return m ? stChip(m.status, `超标 ${num(m.value)} 单`) : ""; })())}
     ${panel("layers", `「${FILTERS[view.f][0]}」${list.length} 单`, `<div style="margin-bottom:6px">${stack([{label:"开发/质检", value:agg.work, color:"var(--c1)"},{label:"等合并", value:agg.ready, color:"var(--c2)"},{label:"等主管", value:agg.supervisor, color:"var(--c8)"}], fMin)}</div>
-      ${ctl}<div id="units">${list.slice(view.p*PAGE, view.p*PAGE+PAGE).map(card).join("") || emptyMsg("没有工作单")}</div>`, `${ic("clock")} 累计 ${fMin(aggT)}`)}
+      ${ctl}<div id="units">${list.slice(view.p*PAGE, view.p*PAGE+PAGE).map(card).join("") || emptyMsg("没有工作单")}</div>`)}
   </div>`;
 }
 
@@ -799,22 +893,22 @@ function vCi(D) {
   return `<div class="stack16">
     <div class="grid g2">
       ${panel("ci","Runner", poolHtml, `${num((CL.values||{}).runners_online)} 在线`)}
-      ${panel("git","main 分支", `<div class="kpis">
-          <div class="kpi" data-tip="Pipeline suites 红会挡流水线 PR 合并">${ic("layers")}<div><div style="margin-bottom:4px">${verdict(t.suites)}</div><div class="kl">Pipeline suites</div></div></div>
-          <div class="kpi" data-tip="发布只挑 Postsubmit 绿的 main">${ic("release")}<div><div style="margin-bottom:4px">${verdict(t.ci)}</div><div class="kl">Postsubmit</div></div></div>
-          ${kpi("arrow", `${num(CL.running_runs)}`, "", "在跑 run")}${kpi("orders", `${num(CL.ready)}`, "", "就绪单", `WIP 按在线 PR runner 空闲量动态放行；热修 ${CL.hotpatch_ready??0} 个不占常规名额`)}</div>`)}
+      ${panel("git","main 分支", `<div class="kcs">
+          ${kcard("layers","合并前检查", verdict(t.suites), "", "", "Pipeline suites 红会挡流水线 PR 合并")}
+          ${kcard("release","发布前检查", verdict(t.ci), "", "", "发布只挑 Postsubmit 绿的 main")}
+          ${kcard("arrow","在跑", num(CL.running_runs))}${kcard("orders","就绪", num(CL.ready), "", "", `热修 ${CL.hotpatch_ready??0} 个不占常规名额`)}</div>`)}
     </div>
-    ${panel("health","CI 现状对照标准", `<div class="buls">${["runners_online","pr_runner_busy_pct","queued_runs","wip_waiting","held_runs"].map(k=>bCi(D,k)).join("")}</div>`)}
+    ${panel("health","CI 现状", foldOk(["runners_online","pr_runner_busy_pct","queued_runs","wip_waiting","held_runs"].map(k=>bCi(D,k))))}
     <div class="grid g2">
-      ${panel("timer","浪费的 runner 时间", `<div class="ringbox">${ring(ws, wst, 96, ws==null?"—":ws+"%", [{at:20,c:"ok"},{at:35,c:"bad"}])}
-          <div style="flex:1;min-width:0">${stack([{label:"取消", value:br.cancelled, color:"var(--c2)"},{label:"未获批被取代", value:br.superseded_unapproved, color:"var(--c7)"},{label:"非产品 Postsubmit", value:br.nonproduct_postsubmit, color:"var(--c4)"}], v=>num(v)+" 分")}
-          <div class="sub" style="margin-top:8px">近 ${num(sp.window_hours??5)} 小时共 ${num(sp.total_min)} 分 · ${num(sp.runs)} 个 run · 健康 ≤ 20% · 不健康 ≥ 35%</div></div></div>`)}
-      ${panel("git","批准之后", `<div class="buls">${modMetrics(D,"ci").map(bNode).join("")}${sinks.map(bSink).join("")}</div>`)}
+      ${panel("timer","白白占用的 CI 时间", `<div class="ringbox">${ring(ws, wst, 96, ws==null?"—":ws+"%", [{at:20,c:"ok"},{at:35,c:"bad"}])}
+          <div style="flex:1;min-width:0">${stack([{label:"被取消", value:br.cancelled, color:"var(--c2)"},{label:"未批准就被替换", value:br.superseded_unapproved, color:"var(--c7)"},{label:"非产品发布检查", value:br.nonproduct_postsubmit, color:"var(--c4)"}], v=>num(v)+" 分")}
+          <div class="sub" style="margin-top:8px">近 ${num(sp.window_hours??5)} 小时，共 ${num(sp.total_min)} 分钟</div></div></div>`)}
+      ${panel("git","批准之后", foldOk([...modMetrics(D,"ci").map(bNode), ...sinks.map(bSink)]))}
     </div>
   </div>`;
 }
 
-// 6. 合并 · 发布
+// 6. 合并与发布
 const RT_NM = {released:["已发布","ok"], building:["构建中","none"], deploying:["部署中","none"], delegated:["已交主控发布","none"], held:["待主管发布（含迁移）","warn"],
   "deferred-busy":["fleet 忙，下一班","warn"], "blocked-credentials":["凭据失效","bad"], failed:["失败已回滚","bad"], "no-image-change":["无镜像变化","ok"]};
 function sumRelease(D) {
@@ -829,30 +923,30 @@ function vRelease(D) {
   let wait;
   if (E.release) wait = unavailable("发布等待（release-train.json / alerts / git）", E.release);
   else if (!RL) wait = emptyMsg("没有发布等待数据");
-  else wait = `<div class="sha"><div class="node"><span>生产</span><code>${esc(RL.prod_sha||"—")}</code></div>
+  else wait = `<div class="sha"><div class="node"><span>生产</span><code>${esc((RL.prod_sha||"—").slice(0,7))}</code></div>
         <div class="gap">${ic("arrow")}<span>${RL.main_ahead_commits==null?"—":"+"+RL.main_ahead_commits+" 提交"}</span></div>
-        <div class="node"><span>main</span><code>${esc(RL.main_sha||"—")}</code></div>
-        <div class="node"><span>候选</span><code>${esc((RL.candidate||"—").slice(0,9))}</code></div>
+        <div class="node"><span>main</span><code>${esc((RL.main_sha||"—").slice(0,7))}</code></div>
+        <div class="node"><span>候选</span><code>${esc((RL.candidate||"—").slice(0,7))}</code></div>
         ${RL.held ? stChip("warn","被挡住") : stChip("ok","未被挡")}</div>
-      <div class="buls" style="margin-top:18px">${bFront(D,"release.hold_hours","被挡时长")}${bFront(D,"release.main_ahead_hours","main 领先生产")}${modMetrics(D,"release").map(bNode).join("")}</div>
-      ${(RL.held_images||[]).length ? `<div class="sub" style="margin:16px 0 6px">${RL.held?"被挡的镜像":"上次被挡的镜像"}${RL.last_held_at?` · ${fAge(hoursAgo(RL.last_held_at))}前`:""}</div><div class="rows">${RL.held_images.map(h=>`<div class="knob"><span>${ic("release")} <code>${esc(h.image)}</code></span><span class="sub">${esc(h.reason)}</span></div>`).join("")}</div>` : ""}`;
+      <div style="margin-top:14px">${foldOk([bFront(D,"release.hold_hours","被挡时长"), bFront(D,"release.main_ahead_hours","main 领先生产"), ...modMetrics(D,"release").map(bNode)])}</div>
+      ${(RL.held_images||[]).length ? `<div class="sub" style="margin:16px 0 6px">${RL.held?"被挡的镜像":"上次被挡的镜像"}${RL.last_held_at?`，${fAge(hoursAgo(RL.last_held_at))}前`:""}</div><div class="rows">${RL.held_images.map(h=>`<div class="knob" data-tip="${esc(h.reason)}"><span>${ic("release")} <code>${esc(h.image)}</code></span></div>`).join("")}</div>` : ""}`;
   const steps = ((D.release||{}).steps||[]);
   const stI = {blocked:"bad", in_progress:"none", done:"ok", pending:"none"};
   const merged = t.merged_today || [];
   return `<div class="stack16">
-    ${panel("release","自动发布列车", `<div class="lg" style="margin-top:0">${stChip(rtn[1], rtn[0])}<span>候选 <code>${esc((rt.candidate||"—").slice(0,9))}</code></span>
-        ${rt.released_sha?`<span>${ic("ok")} 最近发布 <code>${esc(rt.released_sha.slice(0,9))}</code> · ${fAge(hoursAgo(rt.released_at))}前</span>`:""}
+    ${panel("release","自动发布列车", `<div class="lg" style="margin-top:0"><span data-tip="${esc(rt.reason||"")}">${stChip(rtn[1], rtn[0])}</span><span>候选 <code>${esc((rt.candidate||"—").slice(0,9))}</code></span>
+        ${rt.released_sha?`<span>${ic("ok")} 最近发布 <code>${esc(rt.released_sha.slice(0,9))}</code>，${fAge(hoursAgo(rt.released_at))}前</span>`:""}
         ${(rt.images||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join("")}${rt.consecutive_failures?stChip("bad","连续失败 "+rt.consecutive_failures):""}</div>
-      ${rt.reason?`<div class="sub" style="margin-top:10px">${esc(rt.reason)}</div>`:""}
+      
       ${steps.length?`<div class="steps" style="margin-top:14px">${steps.map(r=>`<div class="step s-${stI[r.status]||"none"}" data-tip="${esc(r.note||"")}">${ic(stI[r.status]==="ok"?"ok":stI[r.status]==="bad"?"bad":"clock")}<div>${esc(String(r.step||"").replace(/（.*）/,""))}</div></div>`).join("")}</div>`:""}`)}
     ${panel("git","main → 生产", wait)}
     <div class="grid g2">
       ${panel("layers","合并车道", `<div class="board">${PIPE.slice(4,7).map(p=>{ const n = unitsIn(D,p.key).length; return `<div class="st"><div class="n ${n?"":"zero"}">${n}</div><div class="l">${esc(p.nm)}</div></div>`; }).join("")}
-          <div class="st" data-tip="${esc(t.infra_latest?(t.infra_latest.displayTitle||"")+" · "+(t.infra_latest.createdAt||""):"无记录")}"><div class="n">${bigIcon(!t.infra_latest?"none":t.infra_latest.conclusion==="success"?"ok":"bad")}</div><div class="l">镜像构建</div></div>
+          <div class="st" data-tip="${esc(t.infra_latest?(t.infra_latest.displayTitle||"")+"，"+(t.infra_latest.createdAt||""):"无记录")}"><div class="n">${bigIcon(!t.infra_latest?"none":t.infra_latest.conclusion==="success"?"ok":"bad")}</div><div class="l">镜像构建</div></div>
           <div class="st" data-tip="${esc(t.deployed_through&&t.deployed_through.sha?"已上线到 "+t.deployed_through.sha+"（"+t.deployed_through.date+"）":"未知")}"><div class="n">${bigIcon(t.deployed_through&&t.deployed_through.sha?"ok":"warn")}</div><div class="l">已上线</div></div></div>
         <div class="sub" style="margin:14px 0 6px">今日合并 ${merged.length} 个 PR</div><div class="issue-chips">${merged.map(n=>`<span class="tag"><a href="${repoUrl()}/pull/${esc(n)}" target="_blank" rel="noopener">#${esc(n)}</a></span>`).join("")}</div>`)}
       ${panel("intake","等发布的 issue", (FR(D).errors||{}).stages ? unavailable("GitHub 阶段计数", FR(D).errors.stages) : `<div class="buls">${["awaiting-release","awaiting-pipeline-sync"].map(l => { const r = stageRow(D,l);
-          return r ? bFront(D, `stage.${l}.count`, r.name+" · 数量") + bFront(D, `stage.${l}.idle_hours`, r.name+" · 最久没动", r.count ? null : "—") : ""; }).join("") || emptyMsg("没有阶段计数")}</div>`)}
+          return r ? bFront(D, `stage.${l}.count`, r.name+"，数量") + bFront(D, `stage.${l}.idle_hours`, r.name+"，最久没动", r.count ? null : "—") : ""; }).join("") || emptyMsg("没有阶段计数")}</div>`)}
     </div>
   </div>`;
 }
@@ -865,7 +959,7 @@ function allStatuses(D) {
 }
 function sumHealth(D) {
   const a = allStatuses(D), bad = a.filter(s=>s==="bad").length, warn = a.filter(s=>s==="warn").length;
-  return {s: !a.length ? "none" : bad ? "bad" : warn ? "warn" : "ok", v: bad, l: `不健康 · 共 ${a.length} 项`, st: a};
+  return {s: !a.length ? "none" : bad ? "bad" : warn ? "warn" : "ok", v: bad, l: `不健康，共 ${a.length} 项`, st: a};
 }
 // 状态卡底部：本模块里不健康 / 警告 / 健康各几项
 const tally = st => { if (!st || !st.length) return ""; const c = k => st.map(sk).filter(x=>x===k).length;
@@ -882,26 +976,33 @@ function alertList(D, n) {
 // 机制心跳（M2 #4495/#4498）：登记表里每个机制的最近事件时间；沉默超限 = 机制落地了但没在跑
 const bMech = m => bullet({id:m.id, label:m.desc, unit:"", value:m.silent_hours, shown:m.silent_hours==null?"从未":fAge(m.silent_hours),
   healthy:0, unhealthy:m.bound_hours, hib:false, status:m.silent?"bad":m.silent_hours==null?"none":"ok",
-  meaning:`最近事件 ${m.last_event_at?utc(m.last_event_at):"从未"} · 负责人 ${m.supervisor}${m.expected_idle?" · 允许长期无事件（expected_idle，不报警）":""}\n沉默上限 ${num(m.bound_hours)} 时；事件模式见 engine/state/mechanism-registry.json`,
+  meaning:`最近事件 ${m.last_event_at?utc(m.last_event_at):"从未"}，负责人 ${m.supervisor}${m.expected_idle?"，允许长期无事件（expected_idle，不报警）":""}\n沉默上限 ${num(m.bound_hours)} 时；事件模式见 engine/state/mechanism-registry.json`,
   source:"机制登记表（state/mechanism-registry.json）的事件模式"});
 function vHealth(D) {
-  const STD = D.standards || {}, a = allStatuses(D);
+  const STD = D.standards || {}, a = allStatuses(D), ms = nodeMetrics(D);
   const cnt = s => a.filter(x=>x===s).length;
   const groups = {};
-  nodeMetrics(D).forEach(m => (groups[m.node] = groups[m.node] || []).push(m));
+  ms.forEach(m => (groups[m.node] = groups[m.node] || []).push(m));
   const SKs = STD.time_sinks || [], maxH = Math.max(1, ...SKs.map(r=>r.total_hours||0));
   const MK = STD.mechanisms || [];
   const COL = {ok:"var(--ok)", warn:"var(--warn)", bad:"var(--bad)", none:"var(--none)"};
   const cs = D.cost || {};
+  const abn = m => ["bad","warn"].includes(sk(m.status));
+  const order = m => sk(m.status)==="bad" ? 0 : 1;
+  const bad = Object.entries(groups).map(([node, g]) => [node, g.filter(abn).sort((x, y) => order(x) - order(y))]).filter(([, g]) => g.length);
+  const okNodes = Object.entries(groups).filter(([, g]) => !g.some(abn)).map(([node]) => node);
+  const abnPanels = bad.map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, g.map(anomRow).join(""), stChip(worst(g.map(m=>m.status))))).join("");
+  const okChips = okNodes.length ? panel("ok", "正常的环节", `<div class="lg">${okNodes.map(n => stChip("ok", PLAIN_NODE[n]||n)).join("")}</div>`) : "";
   return `<div class="stack16">
     ${panel("health","全部标准", `<div class="ringbox">${ring(a.length?100*cnt("ok")/a.length:0, cnt("bad")?"bad":cnt("warn")?"warn":"ok", 96, `${cnt("ok")}/${a.length}`)}
-        <div style="flex:1;min-width:0">${stack([{label:"健康",value:cnt("ok"),color:COL.ok},{label:"警告",value:cnt("warn"),color:COL.warn},{label:"不健康",value:cnt("bad"),color:COL.bad},{label:"无数据",value:cnt("none"),color:COL.none}])}
-        <div class="sub" style="margin-top:8px">窗口 ${num(STD.window_hours)} 小时 · 评分于 ${utc(STD.generated)} · 不健康持续 3 小时自动开 pipeline-system issue · 依据 NODE-HEALTH.md</div></div></div>`)}
-    ${STD.metrics ? Object.entries(groups).map(([node, ms]) => panel(NODE_ICON[node]||"health", NODE_NM[node]||node, `<div class="buls">${ms.map(bNode).join("")}</div>`, stChip(worst(ms.map(m=>m.status))))).join("").replace(/^/, '<div class="masonry">').replace(/$/, "</div>") : panel("health","节点评分", emptyMsg("尚无评分（node-health.json 由每拍调度生成）"))}
-    ${MK.length ? panel("layers","机制心跳（登记表）", `<div class="buls">${MK.map(bMech).join("")}</div>`, `${MK.filter(m=>m.silent).length}/${MK.length} 沉默`) : ""}
-    ${panel("timer","时间都花在哪（近 "+num(STD.time_sink_hours||24)+" 小时）", SKs.length ? `${hbars(SKs.map(r=>({label:r.desc, value:r.total_hours, shown:num(r.total_hours)+" 时", color:COL[sk(r.status)], tip:`${r.desc}：合计 ${num(r.total_hours)} 时\n${r.meaning}\n${r.stat} = ${num(r.value)} 分（健康 ≤ ${r.healthy} · 不健康 ≥ ${r.unhealthy}）`})), maxH)}
-        <div class="buls" style="margin-top:20px">${SKs.map(bSink).join("")}</div>` : emptyMsg("尚无数据"))}
+        <div style="flex:1;min-width:0">${stack([{label:"健康",value:cnt("ok"),color:COL.ok},{label:"警告",value:cnt("warn"),color:COL.warn},{label:"不健康",value:cnt("bad"),color:COL.bad},{label:"无数据",value:cnt("none"),color:COL.none}])}</div></div>`)}
+    ${STD.metrics ? abnPanels + okChips : panel("health","节点评分", emptyMsg("尚无评分"))}
     ${panel("bell","需要注意的事", alertList(D) + (cs.budget_tokens_match===false ? `<div class="al s-warn"><span class="si">${ic("warn")}</span><span class="t">今日</span><span class="x">token 对账不一致：sessions ${num(cs.today&&cs.today.tokens)}，budget.json ${num(cs.budget_tokens)}（${esc(cs.budget_date||"未知")}）</span></div>` : ""), `${(D.alerts_tail||[]).length} 条`)}
+    <details class="panel"><summary class="ph" style="cursor:pointer">指标明细、后台机制、时间分布</summary><div class="stack16" style="margin-top:14px">
+      ${STD.metrics ? `<div class="masonry">${Object.entries(groups).map(([node, g]) => panel(NODE_ICON[node]||"health", PLAIN_NODE[node]||node, `<div class="buls">${g.map(bNode).join("")}</div>`, stChip(worst(g.map(m=>m.status))))).join("")}</div>` : ""}
+      ${MK.length ? panel("layers","后台机制", `<div class="buls">${MK.map(bMech).join("")}</div>`, `${MK.filter(m=>m.silent).length}/${MK.length} 沉默`) : ""}
+      ${panel("timer","时间分布（近 "+num(STD.time_sink_hours||24)+" 小时）", SKs.length ? `${hbars(SKs.map(r=>({label:r.desc, value:r.total_hours, shown:num(r.total_hours)+" 时", color:COL[sk(r.status)], tip:`${r.desc}：合计 ${num(r.total_hours)} 时\n${r.meaning}\n${r.stat} = ${num(r.value)} 分（健康 ≤ ${r.healthy}，不健康 ≥ ${r.unhealthy}）`})), maxH)}
+        <div class="buls" style="margin-top:20px">${SKs.map(bSink).join("")}</div>` : emptyMsg("尚无数据"))}</div></details>
   </div>`;
 }
 const NODE_ICON = {implement:"workers", review:"ok", repair:"knob", "review-loop":"ci", workers:"user", "ci+merge":"git", supervisor:"user", scheduler:"clock", release:"release", delivery:"release", pipeline:"layers", "work-orders":"orders", host:"host", mechanisms:"layers"};
@@ -913,8 +1014,10 @@ function sumCost(D) {
   const s = D.summary || {}, b = budgetOf(D);
   // 唯一的界线是 config.daily_token_budget：超出预算即红
   const st = b.pct==null ? "none" : b.pct<=100 ? "ok" : "bad";
-  return {s: st, st: b.pct==null ? [] : [st], v: money(s.real_daily_cost, 0), l: b.pct==null ? "今日成本" : `今日 · 预算 ${Math.round(b.pct)}%`};
+  return {s: st, st: b.pct==null ? [] : [st], v: money(s.real_daily_cost, 0), l: b.pct==null ? "今日成本" : `今日，预算 ${Math.round(b.pct)}%`};
 }
+const PH_CN = {implement:"开发", review:"质检", repair:"返工", rereview:"复检", land:"落地", triage:"分诊", advisor:"顾问", unattributed:"未归属"};
+const unitCn = u => u === "unattributed" ? "未归属" : u;
 function vCost(D) {
   const s = D.summary || {}, cs = D.cost || {}, t = D.totals || {}, b = budgetOf(D), y = cs.yesterday || {}, td = cs.today || {};
   const pu = (cs.per_unit||[]).slice().sort((a,b)=>(b.dollars||0)-(a.dollars||0)).slice(0, 12);
@@ -924,60 +1027,57 @@ function vCost(D) {
   const byUnit = (cl.by_unit||[]).slice(0, 12), byTicket = (cl.by_ticket||[]).slice(0, 12);
   const incompleteSessions = Array.isArray(cs.budget_incomplete_sessions) ? cs.budget_incomplete_sessions : [];
   const coverageWarning = cs.budget_status === "partial"
-    ? `<div class="lg" data-tip="${esc(incompleteSessions.join(", "))}">${stChip("warn","日用量部分计量")}<span class="sub">只计已完成 turn；${num(incompleteSessions.length)} 个会话未完成</span></div>` : "";
+    ? `<div class="lg" data-tip="${esc("只计已完成 turn；"+num(incompleteSessions.length)+" 个会话未完成\n"+incompleteSessions.join(", "))}">${stChip("warn","日用量部分计量")}</div>` : "";
   const phases = Object.entries(cl.by_phase||{}), backends = Object.entries(cl.by_backend||{});
   const evLabels = ((cl.eval||{}).labels||[]).slice(0, 8);
-  const spendTip = r => `${r.unit!=null?"单元 "+r.unit:"#"+r.ticket}：输入 ${ft(r.in||0)} · 未命中缓存 ${r.uncached==null?"未知":ft(r.uncached)} · 输出 ${ft(r.out||0)}\n墙钟 ${fMin(Math.round(r.wall_min||0))} · 失败切换 ${num(r.failovers)} · ${num(r.runs)} 次运行${r.unknown_runs?` · ${r.unknown_runs} 次用量未知`:""}${r.ticket!=null?`\nticket #${r.ticket}`:""}`;
+  const spendTip = r => `${r.unit!=null?"单元 "+r.unit:"#"+r.ticket}：输入 ${ft(r.in||0)}，未命中缓存 ${r.uncached==null?"未知":ft(r.uncached)}，输出 ${ft(r.out||0)}\n墙钟 ${fMin(Math.round(r.wall_min||0))}，失败切换 ${num(r.failovers)}，${num(r.runs)} 次运行${r.unknown_runs?`，${r.unknown_runs} 次用量未知`:""}${r.ticket!=null?`\nticket #${r.ticket}`:""}`;
   return `<div class="stack16">
-    <section class="panel"><div class="kpis">
-      ${kpi("cost", money(s.real_daily_cost, 2), "", "今日成本（估）", cs.pricing_note||"按 config.pricing 估算")}
-      ${kpi("git", money(s.dollars_per_merged, 2), "", `每个合并 PR · 今日 ${(t.merged_today||[]).length} 个`)}
-      ${kpi("layers", num(td.sessions ?? s.sessions_today), "", "今日会话")}
-      ${kpi("workers", ft(b.billable), "", "今日计费 token", `不含缓存读；含缓存 ${ft(s.real_daily_tokens)}`)}</div></section>
+    <div class="kcs">
+      ${kcard("cost", "今日花费", money(s.real_daily_cost, 2), "", "", cs.pricing_note||"按价目表估算")}
+      ${kcard("git", "每个合入 PR 花费", money(s.dollars_per_merged, 2), "", "", `今日合入 ${(t.merged_today||[]).length} 个`)}
+      ${kcard("layers", "今日会话", num(td.sessions ?? s.sessions_today))}
+      ${kcard("workers", "今日计费 token", ft(b.billable), "", "", `不含缓存读；含缓存 ${ft(s.real_daily_tokens)}`)}</div>
     <div class="grid g2">
-      ${panel("timer","计费 token 对预算", `<div class="ringbox">${ring(Math.min(100, b.pct||0), b.pct==null?"none":b.pct<=100?"ok":"bad", 104, b.pct==null?"—":Math.round(b.pct)+"%")}
+      ${panel("timer","今日用量对预算", `<div class="ringbox">${ring(Math.min(100, b.pct||0), b.pct==null?"none":b.pct<=100?"ok":"bad", 104, b.pct==null?"—":Math.round(b.pct)+"%")}
           <div style="flex:1;min-width:0">${hbars([{label:"今日计费", value:b.billable, shown:ft(b.billable), color:b.pct>100?"var(--bad)":"var(--primary)", mark:b.budget||null},{label:"日预算", value:b.budget, shown:ft(b.budget), color:"var(--stone)"}])}
-          <div class="sub" style="margin-top:8px">红线 = config.daily_token_budget</div></div></div>${coverageWarning}`)}
-      ${panel("cost","今日 对 昨日", hbars([{label:"今日 $", value:td.dollars, shown:money(td.dollars), color:"var(--primary)"},{label:"昨日 $", value:y.dollars, shown:money(y.dollars), color:"var(--stone)"}]) +
+          </div></div>${coverageWarning}`)}
+      ${panel("cost","今日对昨日", hbars([{label:"今日花费", value:td.dollars, shown:money(td.dollars), color:"var(--primary)"},{label:"昨日花费", value:y.dollars, shown:money(y.dollars), color:"var(--stone)"}]) +
           `<div style="height:14px"></div>` + hbars([{label:"今日会话", value:td.sessions, color:"var(--primary)"},{label:"昨日会话", value:y.sessions, color:"var(--stone)"}]) +
-          ((cs.by_model||[]).length ? `<div class="sub" style="margin:16px 0 6px">按模型（昨日 + 今日）</div>` + hbars((cs.by_model||[]).map((r,i)=>({label:r.model, value:r.dollars||0, shown:money(r.dollars), color:CAT[i%8], tip:`${r.model}：${r.sessions} 个会话 · ${ft(r.tokens)} token`}))) : "") +
-          (cs.budget_tokens_match===false ? `<div class="lg">${stChip("warn","token 对账不一致")}<span class="sub">sessions ${num(td.tokens)} · budget.json ${num(cs.budget_tokens)}</span></div>` : ""))}
+          ((cs.by_model||[]).length ? `<div class="sub" style="margin:16px 0 6px">按模型</div>` + hbars((cs.by_model||[]).map((r,i)=>({label:r.model, value:r.dollars||0, shown:money(r.dollars), color:CAT[i%8], tip:`${r.model}：${r.sessions} 个会话，${ft(r.tokens)} token`}))) : "") +
+          (cs.budget_tokens_match===false ? `<div class="lg" data-tip="${esc("会话合计 "+num(td.tokens)+"，预算账 "+num(cs.budget_tokens))}">${stChip("warn","用量对账不一致")}</div>` : ""))}
     </div>
     <div class="grid g2">
-      ${panel("orders","花费最多的工作单", pu.length ? hbars(pu.map(r=>({label:r.unit, value:r.dollars||0, shown:r.dollars==null?"—":money(r.dollars), color:r.unit==="unattributed"?"var(--stone)":"var(--primary)", tip:`${r.unit}：${r.sessions} 个会话 · ${r.dollars==null?"无法估算":money(r.dollars,4)}`}))) : emptyMsg("暂无"))}
-      ${panel("layers","单会话 Top 10（按 token）", ts.length ? hbars(ts.map(x=>({label:x.unit+" · "+String(x.session_id||"").slice(0,8), value:x.tokens, shown:ft(x.tokens), tip:`${x.unit} · ${x.session_id}\n${x.mixed_model?"混合模型 "+(x.models||[]).join(", "):x.model}${x.unpriced_model&&!x.mixed_model?"（默认价）":""}\n${x.mixed_model?"成本无法估算":money(x.dollars,4)}`}))) : emptyMsg("昨日与今日暂无会话成本记录"),
-       `<span data-tip="${esc(cs.pricing_note||"")}">${ic("none")} 定价说明</span>`)}
-    </div>
-    <div class="grid g2">
-      ${panel("cost","最近 24 小时 · worker 事件流", `<div class="kpis" style="margin-bottom:12px">
+      ${panel("orders","花费最多的工作单", pu.length ? hbars(pu.map(r=>({label:unitCn(r.unit), value:r.dollars||0, shown:r.dollars==null?"—":money(r.dollars), color:r.unit==="unattributed"?"var(--stone)":"var(--primary)", tip:`${r.unit}：${r.sessions} 个会话，${r.dollars==null?"无法估算":money(r.dollars,4)}`}))) : emptyMsg("暂无"))}
+      ${panel("cost","近 24 小时用量", `<div class="kpis" style="margin-bottom:12px">
           ${kpi("layers", ft(L24.in||0), "", "输入 token")}
           ${kpi("workers", L24.uncached==null?"—":ft(L24.uncached), "", "未命中缓存")}
           ${kpi("git", ft(L24.out||0), "", "输出 token")}
-          ${kpi("clock", fMin(Math.round(L24.wall_min||0)), "", "墙钟", `${num(L24.runs||0)} 次运行 · 失败切换 ${num(L24.failovers||0)}${L24.unknown_runs?` · ${num(L24.unknown_runs)} 次用量未知`:""}`)}</div>` +
-        (phases.length ? `<div class="sub" style="margin:6px 0">按阶段（token = 输入+输出）</div>` + hbars(phases.map(([k,v],i)=>({label:k, value:v.raw||0, shown:ft(v.raw||0), color:CAT[i%8], tip:`${k}：${ft(v.in||0)} in · ${v.uncached==null?"?":ft(v.uncached)} 未命中 · ${ft(v.out||0)} out · ${fMin(Math.round(v.wall_min||0))}`}))) : emptyMsg("暂无 worker 日志")) +
-        (backends.length ? `<div class="sub" style="margin:16px 0 6px">按后端</div>` + hbars(backends.map(([k,v],i)=>({label:k, value:v.raw||0, shown:ft(v.raw||0), color:CAT[(i+3)%8], tip:`${k}：${ft(v.raw||0)} token · ${fMin(Math.round(v.wall_min||0))} · ${num(v.runs||0)} 次运行`}))) : ""),
-        `数据来源：*.worker.log`)}
-      ${panel("git","eval（单独口径）", `<div class="kpis" style="margin-bottom:12px">
-          ${kpi("layers", EV.tokens==null?"—":ft(EV.tokens), "", "eval token · 24h", `${num(EV.labels||0)} 个标签 · ${num(EV.runs||0)} 轮${EV.unknown_tokens?` · ${num(EV.unknown_tokens)} 轮用量未知`:""}`)}
-          ${kpi("clock", fDur(Math.round(EV.model_wall_seconds||0)), "", "eval 模型墙钟 · 24h", `含等待 ${fDur(Math.round(EV.wall_seconds||0))}`)}</div>` +
-        (evLabels.length ? hbars(evLabels.map(l=>({label:l.label, value:l.tokens==null?0:l.tokens, shown:l.tokens==null?"未知":ft(l.tokens), color:"var(--primary)", tip:`${l.label}：${l.tokens==null?"含未知用量轮":ft(l.tokens)+" token"} · 模型墙钟 ${fDur(Math.round(l.model_wall_seconds||0))} · ${num(l.runs)} 轮`}))) : emptyMsg("24 小时内没有 eval 结果")),
-        "来源：eval/<label>/results.json")}
+          ${kpi("clock", fMin(Math.round(L24.wall_min||0)), "", "墙钟", `${num(L24.runs||0)} 次运行，失败切换 ${num(L24.failovers||0)}${L24.unknown_runs?`，${num(L24.unknown_runs)} 次用量未知`:""}`)}</div>` +
+        (phases.length ? `<div class="sub" style="margin:6px 0">按环节</div>` + hbars(phases.map(([k,v],i)=>({label:PH_CN[k]||k, value:v.raw||0, shown:ft(v.raw||0), color:CAT[i%8], tip:`${k}：${ft(v.in||0)} in，${v.uncached==null?"?":ft(v.uncached)} 未命中，${ft(v.out||0)} out，${fMin(Math.round(v.wall_min||0))}`}))) : emptyMsg("暂无 worker 日志")) +
+        (backends.length ? `<div class="sub" style="margin:16px 0 6px">按模型来源</div>` + hbars(backends.map(([k,v],i)=>({label:PH_CN[k]||k, value:v.raw||0, shown:ft(v.raw||0), color:CAT[(i+3)%8], tip:`${k}：${ft(v.raw||0)} token，${fMin(Math.round(v.wall_min||0))}，${num(v.runs||0)} 次运行`}))) : ""))}
+    </div>
+    <details class="panel"><summary class="ph" style="cursor:pointer">更多明细</summary><div class="stack16" style="margin-top:14px">
+    <div class="grid g2">
+      ${panel("layers","单次会话用量最高", ts.length ? hbars(ts.map(x=>({label:unitCn(x.unit)+"，"+String(x.session_id||"").slice(0,6), value:x.tokens, shown:ft(x.tokens), tip:`${x.unit}，${x.session_id}\n${x.mixed_model?"混合模型 "+(x.models||[]).join(", "):x.model}${x.unpriced_model&&!x.mixed_model?"（默认价）":""}\n${x.mixed_model?"成本无法估算":money(x.dollars,4)}`}))) : emptyMsg("昨日与今日暂无会话成本记录"))}
+      ${panel("git","评测用量", `<div class="kpis" style="margin-bottom:12px">
+          ${kpi("layers", EV.tokens==null?"—":ft(EV.tokens), "", "eval token，24h", `${num(EV.labels||0)} 个标签，${num(EV.runs||0)} 轮${EV.unknown_tokens?`，${num(EV.unknown_tokens)} 轮用量未知`:""}`)}
+          ${kpi("clock", fDur(Math.round(EV.model_wall_seconds||0)), "", "eval 模型墙钟，24h", `含等待 ${fDur(Math.round(EV.wall_seconds||0))}`)}</div>` +
+        (evLabels.length ? hbars(evLabels.map(l=>({label:l.label, value:l.tokens==null?0:l.tokens, shown:l.tokens==null?"未知":ft(l.tokens), color:"var(--primary)", tip:`${l.label}：${l.tokens==null?"含未知用量轮":ft(l.tokens)+" token"}，模型墙钟 ${fDur(Math.round(l.model_wall_seconds||0))}，${num(l.runs)} 轮`}))) : emptyMsg("24 小时内没有 eval 结果")))}
     </div>
     <div class="grid g2">
-      ${panel("orders","每个单元的花费（事件流口径）", byUnit.length ? hbars(byUnit.map(r=>({label:r.unit, value:r.raw||0, shown:ft(r.raw||0), color:r.ticket==null?"var(--stone)":"var(--primary)", tip:spendTip({...r, ticket:r.ticket})}))) : emptyMsg("暂无 worker 日志"),
-        `累计 · ${num((cl.by_unit||[]).length)} 个单元`)}
-      ${panel("ticket","每张 ticket 的花费（累计）", byTicket.length ? hbars(byTicket.map(r=>({label:"#"+r.ticket, value:r.raw||0, shown:ft(r.raw||0), color:"var(--primary)", tip:spendTip({...r, unit:null})}))) : emptyMsg("worker 日志还没有归到任何 ticket"),
-        `累计 · ${num((cl.by_ticket||[]).length)} 张票`)}
+      ${panel("orders","各单元用量", byUnit.length ? hbars(byUnit.map(r=>({label:r.unit, value:r.raw||0, shown:ft(r.raw||0), color:r.ticket==null?"var(--stone)":"var(--primary)", tip:spendTip({...r, ticket:r.ticket})}))) : emptyMsg("暂无 worker 日志"))}
+      ${panel("ticket","各 issue 用量", byTicket.length ? hbars(byTicket.map(r=>({label:"#"+r.ticket, value:r.raw||0, shown:ft(r.raw||0), color:"var(--primary)", tip:spendTip({...r, unit:null})}))) : emptyMsg("worker 日志还没有归到任何 ticket"))}
     </div>
+    </div></details>
   </div>`;
 }
 
-// 9. 主机 · 运行（网络流量、主机依赖、调度、旋钮）
+// 9. 主机与运行（网络流量、主机依赖、调度、旋钮）
 const NET = {OK:["正常","ok"], BROKEN:["超预算","bad"], UNKNOWN:["覆盖不全","warn"], STALE:["采样中断","bad"], STARTING:["启动中","warn"], "NOT-INSTALLED":["未安装","bad"]};
 function sumHost(D) {
   const tr = D.traffic || {}, n = NET[tr.status] || ["未知","none"];
   const st = [n[1], ...modMetrics(D,"host").map(m=>m.status), ...((((D.standards||{}).host_missing)||[]).length ? ["bad"] : [])];
-  return {st, s: worst(st), v: tr.gb_per_hour==null ? "—" : tr.gb_per_hour.toFixed(1), u:"GB/时", l: "网络 · " + n[0]};
+  return {st, s: worst(st), v: tr.gb_per_hour==null ? "—" : tr.gb_per_hour.toFixed(1), u:"GB/时", l: "网络，" + n[0]};
 }
 function area(pts, budget) {
   if (pts.length < 2) return emptyMsg("采样累积中");
@@ -985,9 +1085,9 @@ function area(pts, budget) {
   const x = i => i*W/(pts.length-1), y = v => H - (v/top)*(H-4);
   const line = pts.map((p,i)=>`${i?"L":"M"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
   const bw = W/pts.length;
-  return `<svg class="area" viewBox="0 0 ${W} ${H}" aria-hidden="true"><path class="fa" d="${line}L${W},${H}L0,${H}Z"/><path class="ln" d="${line}"/>
+  return `<svg class="area" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path class="fa" d="${line}L${W},${H}L0,${H}Z"/><path class="ln" d="${line}"/>
     ${budget?`<line class="bg" x1="0" x2="${W}" y1="${y(budget).toFixed(1)}" y2="${y(budget).toFixed(1)}"/>`:""}
-    ${pts.map((p,i)=>`<rect class="hit" x="${(x(i)-bw/2).toFixed(1)}" y="0" width="${bw.toFixed(2)}" height="${H}" data-tip="${esc(hm(p.t*1000, true)+" · "+p.v.toFixed(2)+" GB/时")}"/>`).join("")}</svg>
+    ${pts.map((p,i)=>`<rect class="hit" x="${(x(i)-bw/2).toFixed(1)}" y="0" width="${bw.toFixed(2)}" height="${H}" data-tip="${esc(hm(p.t*1000, true)+"，"+p.v.toFixed(2)+" GB/时")}"/>`).join("")}</svg>
     <div class="axis"><span>${hm(pts[0].t*1000)}</span>${budget?`<span style="color:var(--bad-ink)">--- 预算 ${budget} GB/时</span>`:""}<span>${hm(pts[pts.length-1].t*1000)}</span></div>`;
 }
 function vHost(D) {
@@ -998,17 +1098,14 @@ function vHost(D) {
   const hostM = modMetrics(D, "host").sort((a,b) => (a.id==="host.github_net_failures_per_hour"?-1:0) - (b.id==="host.github_net_failures_per_hour"?-1:0));
   const missing = ((D.standards||{}).host_missing)||[];
   return `<div class="stack16">
-    ${panel("health","主机与调度的标准", `<div class="buls">${hostM.map(bNode).join("") || emptyMsg("尚无评分")}</div>${missing.length?`<div class="lg">${stChip("bad","未响应")}${missing.map(x=>`<code>${esc(x)}</code>`).join(" ")}</div>`:""}`)}
-    ${panel("globe","WSL 出口流量", `<div class="lg" style="margin:0 0 12px">${stChip(n[1], n[0])}<span class="sub">${tr.sampled_epoch?"采样于 "+hm(tr.sampled_epoch*1000, true):"尚无采样"}</span></div>
+    ${panel("health","主机与调度", `${foldOk(hostM.map(bNode))}${missing.length?`<div class="lg">${stChip("bad","未响应")}${missing.map(x=>`<code>${esc(x)}</code>`).join(" ")}</div>`:""}`)}
+    ${panel("globe","网络流量", `<div class="lg" style="margin:0 0 12px">${stChip(n[1], n[0])}</div>
         ${area(hist.slice(-180), bud.gb_per_hour)}
         <div class="buls" style="margin-top:18px">${budBul("当前速率", tr.gb_per_hour, bud.gb_per_hour, "GB/时", "预算 "+bud.gb_per_hour+" GB/时")}${budBul("今日累计（UTC 日）", tr.today_gb, bud.gb_per_day, "GB", "预算 "+bud.gb_per_day+" GB/天")}</div>
-        ${tr.detail?`<div class="sub" style="margin-top:12px;overflow-wrap:anywhere" data-tip="${esc(tr.detail)}">${esc(String(tr.detail).slice(0,160))}${String(tr.detail).length>160?"…":""}</div>`:""}`)}
-    ${cats.length ? panel("layers","按类别（今日 对 日预算）", `<div class="buls">${cats.map(k=>budBul(k, (tr.today_category_gb||{})[k], (bud.category_gb_per_day||{})[k], "GB", `当前 ${((tr.category_gb_per_hour||{})[k]??0).toFixed(3)} GB/时 · 日预算 ${(bud.category_gb_per_day||{})[k]??"—"} GB`) || `<div class="bul"><div class="bul-h"><span class="bul-l">${esc(k)}</span><span class="bul-v s-none"><b>${num((tr.today_category_gb||{})[k])}</b><small>GB · 无预算</small></span></div></div>`).join("")}</div>`) : ""}
-    <div class="grid g2">
-      ${panel("knob","控制旋钮", `<div class="rows">${(D.knobs||[]).map(k=>`<div class="knob" data-tip="${esc(k.meaning)}"><code>${esc(k.key)}</code><b>${esc(typeof k.value==="object"?JSON.stringify(k.value):k.value)}</b></div>`).join("")}</div>`, "改法：让 CTO 通过 PR 修改 config.template.json")}
-      ${panel("clock","调度", `<div class="kpis">${kpi("clock", num(Math.round((c.tick_seconds||600)/60)), "分", "每拍间隔（配置）")}${kpi("workers", num(c.max_workers), "人", "同时在岗上限")}
-          ${kpi("layers", esc(c.focus_mode||"all"), "", "派发焦点")}<div class="kpi">${ic("git")}<div><div style="margin-bottom:4px">${stChip(c.auto_merge?"ok":"warn", c.auto_merge?"开":"关")}</div><div class="kl">自动合并</div></div></div></div>`)}
-    </div>
+`)}
+    ${cats.length ? panel("layers","各类流量对日预算", `<div class="buls">${cats.map(k=>budBul(k, (tr.today_category_gb||{})[k], (bud.category_gb_per_day||{})[k], "GB", `当前 ${((tr.category_gb_per_hour||{})[k]??0).toFixed(3)} GB/时，日预算 ${(bud.category_gb_per_day||{})[k]??"—"} GB`) || `<div class="bul zr s-none"><i class="ad s-none"></i><span class="bul-l">${esc(k)}</span><span></span><span class="bul-v"><b>${num((tr.today_category_gb||{})[k])}</b><small>GB</small></span></div>`).join("")}</div>`) : ""}
+${panel("clock","调度", `<div class="kcs">${kcard("clock","每拍间隔",num(Math.round((c.tick_seconds||600)/60))+"<small> 分</small>")}${kcard("workers","同时在岗上限",num(c.max_workers))}${kcard("git","自动合并",stChip(c.auto_merge?"ok":"warn", c.auto_merge?"开":"关"))}</div>`)}
+    <details class="panel"><summary class="ph" style="cursor:pointer">${ic("knob")}配置参数</summary><div class="rows">${(D.knobs||[]).map(k=>`<div class="knob" data-tip="${esc(k.meaning)}"><code>${esc(k.key)}</code><b>${esc(typeof k.value==="object"?JSON.stringify(k.value):k.value)}</b></div>`).join("")}</div></details>
   </div>`;
 }
 
@@ -1020,20 +1117,20 @@ const rowSt = r => r.age <= r.ok ? "ok" : r.age < r.bad ? "warn" : "bad";
 function ucList(rows, total, cap = 5, compact = false) {
   if (!rows || !rows.length) return "";
   const shown = rows.slice(0, cap), more = total - shown.length;
-  return `<div class="uc-l">${shown.map(r => `<div class="uc s-${rowSt(r)}${r.live?" run":""}${compact?" c":""}" data-tip="${esc(r.t+" · "+(r.live?"在跑 · ":"在等 · ")+"已 "+fAge(r.age)+"（健康 ≤ "+fAge(r.ok)+" · 不健康 ≥ "+fAge(r.bad)+"）")}"><i style="width:${Math.max(4, Math.min(100, 100*r.age/r.bad))}%"></i>${r.live?"<em></em>":""}<span>${esc(r.t)}</span>${compact?"":`<b>${fAge(r.age)}</b>`}</div>`).join("")}
+  return `<div class="uc-l">${shown.map(r => `<div class="uc s-${rowSt(r)}${r.live?" run":""}${compact?" c":""}" data-tip="${esc(r.t+"，"+(r.live?"在跑，":"在等，")+"已 "+fAge(r.age)+"（健康 ≤ "+fAge(r.ok)+"，不健康 ≥ "+fAge(r.bad)+"）")}"><i style="width:${Math.max(4, Math.min(100, 100*r.age/r.bad))}%"></i>${r.live?"<em></em>":""}<span>${esc(r.t)}</span>${compact?"":`<b>${fAge(r.age)}</b>`}</div>`).join("")}
     ${more > 0 ? `<div class="uc-m">+${more}</div>` : ""}</div>`;
 }
 const STEPN = {implement:"实施", review:"评审", repair:"重修", rereview:"复审", land:"合并", triage:"分拣", supervise:"督导", advisor:"顾问", release:"发布", run:"运行", ask:"提问", answer:"答复"};
 const STEPC = {implement:"var(--c1)", review:"var(--c3)", repair:"var(--c4)", rereview:"var(--c2)", land:"var(--c6)", triage:"var(--c5)", supervise:"var(--steel)", advisor:"var(--c7)", release:"var(--c6)"};
 // 台账站内停留的健康线（小时，初值）：典型用时与 3 倍以内，取自员工卡同一量级
 const STAGE_H = {implement:[.75,1.5], review:[.25,.5], repair:[.42,.83], rereview:[.17,.33], land:[.5,2]};
-// 流水线真实步骤（台账阶段 / GitHub 标签）：分拣 → 顾问 → 拆票 → 待实施 → 实施 → 评审 → 重修 ⇄ 复审 → CI·合并 → 发布
+// 流水线真实步骤（台账阶段 / GitHub 标签）：分拣 → 顾问 → 拆票 → 待实施 → 实施 → 评审 → 重修 ⇄ 复审 → CI 与合并 → 发布
 const PCOLS = [
   {k:"triage", nm:"分拣", gh:"needs-triage", mod:"intake"}, {k:"advisor", nm:"顾问", gh:"needs-advisor", mod:"advisor"},
   {k:"split", nm:"拆票", gh:"needs-recut", mod:"intake"}, {k:"queue", nm:"待实施", gh:"ready-for-agent", mod:"intake"},
   {k:"implement", nm:"实施", st:["implement-pending","implement"], mod:"workers"}, {k:"review", nm:"评审", st:["review-pending","review"], mod:"workers"},
   {k:"repair", nm:"重修", st:["repair-pending","repair"], mod:"workers"}, {k:"rereview", nm:"复审", st:["rereview-pending","rereview"], mod:"workers"},
-  {k:"land", nm:"CI·合并", st:["ready-to-merge","landing"], mod:"ci"}, {k:"release", nm:"发布", gh:"awaiting-release", mod:"release"}];
+  {k:"land", nm:"CI 与合并", st:["ready-to-merge","landing"], mod:"ci"}, {k:"release", nm:"发布", gh:"awaiting-release", mod:"release"}];
 function pipeCol(D, c) {
   const F = FR(D), now = Date.now(), L = (D.live_workers||{}).items || [];
   const runN = liveWorkers(D).filter(w => w.type === c.k).length + L.filter(w => w.kind === c.k && (w.owner === "advisor" || w.owner === "release")).length;
@@ -1050,17 +1147,16 @@ function pipeCol(D, c) {
 function pipeStrip(D) {
   const F = FR(D), n = (l, k) => `<b class="num" style="color:inherit">${k}</b>`;
   return `<div class="pst">${PCOLS.map(c => pipeCol(D, c)).join("")}</div>
-    <div class="sidechips">${["finish-first","needs-info","awaiting-pipeline-sync"].map(l => { const r = stageRow(D,l); return r ? `<span class="chip s-${sk((F.status||{})[`stage.${l}.count`])}" data-tip="${esc(r.name+" · 最久滞留 "+fAge(r.idle_hours))}">${esc(r.name)} ${n(0,r.count)}</span>` : ""; }).join("")}
+    <div class="sidechips">${["finish-first","needs-info","awaiting-pipeline-sync"].map(l => { const r = stageRow(D,l); return r ? `<span class="chip s-${sk((F.status||{})[`stage.${l}.count`])}" data-tip="${esc(r.name+"，最久滞留 "+fAge(r.idle_hours))}">${esc(r.name)} ${n(0,r.count)}</span>` : ""; }).join("")}
       ${(()=>{ const b = unitsIn(D,["blocked-external"]).length, sv = unitsIn(D,["supervisor-review"]).length, h = unitsIn(D,["needs-human"]).length;
-        return `<span class="chip s-none">等外部条件 ${n(0,b)}</span><span class="chip s-none">督导 ${n(0,sv)}</span><span class="chip s-${h?"bad":"none"}">需人决策 ${n(0,h)}</span>`; })()}</div>
-    <div class="lg"><span><i style="background:var(--sunk);border:1px solid var(--hairline-strong)"></i>实心 = 员工在跑</span><span><i style="border:1px solid var(--hairline-strong)"></i>空心 = 在等</span><span><i style="background:var(--ok)"></i><i style="background:var(--warn)"></i><i style="background:var(--bad)"></i>对该步健康线</span><span class="sub">数字 = 在等，蓝点 = 在跑</span></div>`;
+        return `<span class="chip s-none">等外部条件 ${n(0,b)}</span><span class="chip s-none">督导 ${n(0,sv)}</span><span class="chip s-${h?"bad":"none"}">需人决策 ${n(0,h)}</span>`; })()}</div>`;
 }
 const maxUse = rows => ({tok: Math.max(1, ...rows.map(a => a.tokens || 0)), b: Math.max(1, ...rows.map(a => (a.rx||0)+(a.tx||0)))});
 // token 条 + 流量条（左段 ↓ 收、右段淡色 ↑ 发）；没有数据显示 —，不估
 function usageRows(a, mx) {
   const has = a.rx != null || a.tx != null, rx = 100*(a.rx||0)/mx.b, tx = 100*(a.tx||0)/mx.b;
   return (a.tokens == null ? "" : `<div class="lw-bar" style="--s:var(--c7)"><i style="width:${Math.max(2,100*a.tokens/mx.tok)}%"></i></div><span class="lw-el">${FMT.tok(a.tokens)}</span>`)
-    + (!has ? "" : `<div class="lw-bar lw-bar2" style="--s:var(--c5)"><i style="width:${Math.max(1,rx)}%"></i><i style="left:${rx}%;width:${Math.max(1,tx)}%"></i></div><span class="lw-el" title="${esc("↓ "+fB(a.rx)+" · ↑ "+fB(a.tx)+"（工单累计，采样下限）")}">${fB((a.rx||0)+(a.tx||0))}</span>`);
+    + (!has ? "" : `<div class="lw-bar lw-bar2" style="--s:var(--c5)"><i style="width:${Math.max(1,rx)}%"></i><i style="left:${rx}%;width:${Math.max(1,tx)}%"></i></div><span class="lw-el" title="${esc("↓ "+fB(a.rx)+"，↑ "+fB(a.tx)+"（工单累计，采样下限）")}">${fB((a.rx||0)+(a.tx||0))}</span>`);
 }
 function lwCard(w, nowS, mx) {
   const [on, oc] = OWN[w.owner] || [w.owner, "var(--none)"];
@@ -1070,7 +1166,7 @@ function lwCard(w, nowS, mx) {
   const steps = `<span class="lw-st">${esc(STEPN[cur]||cur||"")}</span>` + (w.steps||[]).map((s,i) => `<i class="${i<w.step?"d":i===w.step?"c":""}" title="${esc(STEPN[s]||s)}"></i>`).join("");
   const ref = w.pr ? `<a href="${repoUrl()}/pull/${esc(w.pr)}" target="_blank" rel="noopener">PR ${esc(w.pr)}</a>` : w.issue ? `<a href="${repoUrl()}/issues/${esc(w.issue)}" target="_blank" rel="noopener">#${esc(w.issue)}</a>` : "";
   const hs = {ok:"最近 5 分钟内有输出", warn:"5–30 分钟没有输出", bad:"超过 30 分钟没有输出，可能卡住", none:"无日志可判断"}[w.health] || "";
-  return `<div class="lwc s-${sk(w.health)}" style="--oc:${oc}" title="${esc(on+" · "+(w.tip||"")+(el==null?"":" · 已用 "+fDur(el)))}">
+  return `<div class="lwc s-${sk(w.health)}" style="--oc:${oc}" title="${esc(on+"，"+(w.tip||"")+(el==null?"":"，已用 "+fDur(el)))}">
     <span class="lw-be">${esc(w.backend||"")}</span><span class="lw-t">${esc(w.task||"")}</span><i class="lw-hb" title="${esc(hs)}"></i>
     <div class="lw-tr" style="--sc:${sc}">${steps}</div><span class="lw-ref">${ref}</span>
     <div class="lw-bar s-${es}" title="典型用时 ${esc(fDur(typ))}"><i style="width:${Math.min(100, 50*(el||0)/typ)}%"></i><b style="left:50%"></b></div><span class="lw-el s-${es}">${el==null?"—":fDur(el)}</span>${usageRows(w, mx)}</div>`;
@@ -1078,6 +1174,12 @@ function lwCard(w, nowS, mx) {
 function lwGauge(label, frac, st, txt) {
   return `<span class="lwg s-${st}" title="${esc(label)}"><em>${esc(label)}</em><span class="lwg-t"><i style="width:${Math.max(3,Math.min(100,100*frac))}%"></i></span><b>${esc(txt)}</b></span>`;
 }
+// 员工分组的唯一口径：总览卡、员工区都从这里取，不各自数。shortcut: 前端按 owner 分，数据层有 workers_by_kind 后改读它。
+const LW_GROUPS = [["pipeline","产线（做产品）"], ["opt","自进化"], ["hotfix","热修"], ["advisor","顾问"], ["release","发布"]];
+const lwGroup = w => LW_GROUPS.some(g => g[0]===w.owner) ? w.owner : "other";
+// 自我改进任务的 task 常是别的任务标题，真实名称在 tip 的第一段（如 zf-ci-waste）
+const lwName = w => w.owner==="opt" && w.tip ? zfName(String(w.tip).split(" · ")[0]) : w.task;
+function lwGrouped(items) { const m = {}; items.forEach(w => (m[lwGroup(w)] = m[lwGroup(w)] || []).push(w)); return m; }
 function livePanel(D) {
   const L = D.live_workers;
   if (!L || L.error || !Array.isArray(L.items)) return panel("workers", "员工", emptyMsg("员工清单不可用"));
@@ -1086,9 +1188,11 @@ function livePanel(D) {
   const gauges = lwGauge("CPU", ld==null?0:ld/24, ld==null?"none":ld<6?"none":ld<=16?"ok":"bad", ld==null?"—":ld.toFixed(1))
     + lwGauge("内存", mem==null?0:mem/16384, mem==null?"none":mem<2048?"bad":mem<4096?"warn":"ok", mem==null?"—":(mem/1024).toFixed(1)+"G");
   const legend = Object.entries(OWN).map(([k,[n,c]]) => `<span class="lwl" style="--oc:${c}"><i></i>${n}</span>`).join("");
-  const cards = L.items.length ? `<div class="lwgrid">${L.items.map(w => lwCard(w, nowS, maxUse(L.items))).join("")}</div>` : emptyMsg("空闲");
+  const G = lwGrouped(L.items), mxN = (D.summary || {}).max_workers, mx = maxUse(L.items);
+  const cards = L.items.length ? [...LW_GROUPS, ["other","其他"]].filter(g => (G[g[0]] || []).length).map(g =>
+    `<div class="sub" style="margin:16px 0 6px"><b>${esc(g[1])}</b>，${G[g[0]].length} 位${g[0]==="pipeline" && mxN ? `（上限 ${num(mxN)}）` : ""}</div><div class="lwgrid">${G[g[0]].map(w => lwCard(Object.assign({}, w, {task: lwName(w)}), nowS, mx)).join("")}</div>`).join("") : emptyMsg("空闲");
   const uleg = `<span class="lwl" style="--oc:var(--steel)"><i></i>用时</span><span class="lwl" style="--oc:var(--c7)"><i></i>token</span><span class="lwl" style="--oc:var(--c5)"><i></i>流量 ↓↑</span>`;
-  return panel("workers", "员工", `<div class="lwbar"><span class="lwlg">${legend}${uleg}</span><span class="lwgs">${gauges}</span></div>${cards}`);
+  return panel("workers", "员工", `<div class="lwbar"><span class="lwlg"></span><span class="lwgs">${gauges}</span></div>${cards}`);
 }
 const FMT = {n: v => String(Math.round(v)), h: v => (v < 10 ? v.toFixed(1) : Math.round(v)) + " 时", pct: v => Math.round(v) + "%",
   tok: v => v >= 1e6 ? (v/1e6).toFixed(1) + "M" : v >= 1e3 ? Math.round(v/1e3) + "K" : String(Math.round(v)),
@@ -1105,7 +1209,7 @@ function archivePanel(D) {
   const legend = Object.values(OUTC).map(([n,k]) => `<span class="lwl" style="--oc:${k==="run"?"var(--primary)":`var(--${k})`}"><i></i>${n}</span>`).join("");
   const cards = A.map(a => { const k = a.outcome, c = k==="run" ? "var(--primary)" : `var(--${k})`;
     const ref = a.pr ? `<a href="${repoUrl()}/pull/${esc(a.pr)}" target="_blank" rel="noopener">PR ${esc(a.pr)}</a>` : a.issue ? `<a href="${repoUrl()}/issues/${esc(a.issue)}" target="_blank" rel="noopener">#${esc(a.issue)}</a>` : "";
-    return `<div class="lwc lwa" style="--oc:${c}" title="${esc((OUTC[k]||[""])[0]+" · "+a.stage+" · "+a.tip+" · "+fDur(a.wall_s==null?null:Math.round(a.wall_s))+(a.end_epoch?" · "+fDur(nowS-a.end_epoch)+"前结束":""))}">
+    return `<div class="lwc lwa" style="--oc:${c}" title="${esc((OUTC[k]||[""])[0]+"，"+a.stage+"，"+a.tip+"，"+fDur(a.wall_s==null?null:Math.round(a.wall_s))+(a.end_epoch?"，"+fDur(nowS-a.end_epoch)+"前结束":""))}">
       <span class="lw-be">${esc(a.backend==="codex"?"cx":(a.backend||"").slice(0,2))}</span><span class="lw-t">${esc(a.task)}</span><span class="lw-ref">${ref}</span>
       <div class="lw-bar" style="--s:var(--steel)"><i style="width:${Math.max(2,100*(a.wall_s||0)/mw)}%"></i></div><span class="lw-el">${a.wall_s==null?"—":fDur(Math.round(a.wall_s))}</span>
       ${usageRows(a, mx)}</div>`; }).join("");
@@ -1115,7 +1219,7 @@ function sparkSvg(S, days, marks) {
   const n = days.length, W = 200, H = 44, x = i => 4 + i*(W-8)/Math.max(1,n-1);
   const vs = S.values.filter(v => v != null), lo = Math.min(...vs), hi = Math.max(...vs), y = v => hi===lo ? H/2 : H-5 - (v-lo)*(H-10)/(hi-lo);
   const t0 = Date.parse(days[0]+"T00:00:00Z")/1000, buckets = {};
-  (marks||[]).forEach(m => { const f = (m.epoch - t0)/86400; if (f < 0 || f > n) return; const i = Math.min(n-1, Math.floor(f)); (buckets[i] = buckets[i] || []).push(new Date(m.epoch*1000).toISOString().slice(5,16).replace("T"," ")+" UTC · "+m.label); });
+  (marks||[]).forEach(m => { const f = (m.epoch - t0)/86400; if (f < 0 || f > n) return; const i = Math.min(n-1, Math.floor(f)); (buckets[i] = buckets[i] || []).push(new Date(m.epoch*1000).toISOString().slice(5,16).replace("T"," ")+" UTC，"+m.label); });
   const ms = Object.entries(buckets).map(([i,l]) => `<line x1="${x(+i)+((W-8)/Math.max(1,n-1))/2}" x2="${x(+i)+((W-8)/Math.max(1,n-1))/2}" y1="1" y2="${H-1}" class="sp-m"><title>${esc(l.join("\n"))}</title></line>`).join("");
   let segs = [], cur = []; S.values.forEach((v,i) => { if (v == null) { if (cur.length) segs.push(cur); cur = []; } else cur.push([x(i), y(v)]); }); if (cur.length) segs.push(cur);
   const lines = segs.filter(s => s.length > 1).map(s => `<polyline class="sp-l" points="${s.map(p => p.join(",")).join(" ")}"/>`).join("");
@@ -1138,16 +1242,17 @@ function trendPanel(D) {
   return panel("arrow", "工厂是否在变好", `<div class="tgrid">${T.series.map(s => trendCard(s, T.days, T.milestones)).join("")}</div>
     <div class="lg"><span><i style="background:var(--hairline-strong);width:2px"></i>引擎里程碑（悬停看内容）</span><span><i style="background:var(--ok)"></i>比前 7 天好</span><span><i style="background:var(--bad)"></i>比前 7 天差</span></div>`);
 }
+const OWNER_CN = {pipeline:"流水线", "supervisor-review":"主管评审", hotfix:"热修", advisor:"顾问"};
 function founderPanel(D) {
   const R = D.founder_reqs;
   if (!R || R.error || !Array.isArray(R.items)) return panel("orders", "创始人需求", emptyMsg("需求台账不可用" + (R && R.error ? "：" + R.error : "")));
   const st = R.stages || [], nowS = Math.floor(Date.now()/1000), last = st.length - 1;
   const chips = st.map((n, i) => `<span class="chip s-${i===last?"ok":"none"}">${esc(n)} ${R.items.filter(x => x.stage === i).length}</span>`).join(" ");
   const rows = R.items.map(x => { const c = x.stage === last ? "var(--ok)" : x.blocker ? "var(--bad)" : "var(--hairline-strong)";
-    return `<div class="frq" style="--oc:${c}"><a href="${repoUrl()}/issues/${esc(x.issue)}" target="_blank" rel="noopener">#${esc(x.issue)}</a>
+    return `<div class="frq"><i class="ad ${x.stage === last ? "s-ok" : x.blocker ? "s-bad" : "s-none"}"></i><a href="${repoUrl()}/issues/${esc(x.issue)}" target="_blank" rel="noopener">#${esc(x.issue)}</a>
       <span class="fq-w" title="${esc((x.from_ruling ? "创始人原话：" : "issue 标题：") + x.text)}">${esc(x.text)}</span>
       <span class="fq-trk" title="${esc(st.join(" → "))}">${st.map((n, i) => `<i class="${i<=x.stage?"on":""}"></i>`).join("")}${esc(st[x.stage])}</span>
-      <span class="fq-x" title="负责人">${esc(x.owner)}</span><span class="fq-x" title="卡点">${esc(x.blocker || "—")}</span>
+      <span class="fq-x" title="负责人">${esc(OWNER_CN[x.owner] || x.owner)}</span><span class="fq-x" title="卡点">${esc(x.blocker || "—")}</span>
       <span class="fq-x" title="本阶段由流水线事件或验收结果确认的时间">${x.verified_epoch ? fDur(Math.max(0, nowS - x.verified_epoch)) + "前" : "未确认"}</span></div>`; }).join("");
   return panel("orders", "创始人需求", `<div class="lwbar"><span class="lwlg">${chips}</span></div>${R.items.length ? `<div class="frq-list">${rows}</div>` : emptyMsg("没有未完成的创始人需求")}`,
     R.partial ? stChip("bad", "GitHub 不可用，仅列 units") : "");
@@ -1157,37 +1262,90 @@ function roiLinePanel(D) {
   if (!T || !Array.isArray(T.daily)) return panel("arrow", "每日 ROI", emptyMsg("ROI 数据不可用"));
   const hit = (T.retro || []).slice(-1)[0];
   return panel("arrow", "每日 ROI", `<div class="tgrid">${T.daily.map(s => trendCard(s, T.days, T.milestones)).join("")}</div>
-    <div class="lg"><span>规则：每条已验收需求花费连续 3 天上升 → 开复盘；${hit ? `最近触发 ${esc(hit.slice(5))}` : "窗口内未触发"}。花费按模型 API 标价计美元；估算项与未定价记录单独列出。</span></div>`,
+    `,
     hit === T.days[T.days.length - 1] ? stChip("bad", "触发复盘") : "");
 }
+// 总览 = 给非技术人员看：工厂在不在正常运转？一句话结论 + 4 个大白话问题 + 最多 5 处需要留意；技术细节折叠在下面
+const metricMod = m => ID_MOD[m.id] || NODE_MOD[m.node] || "health";
+const PLAIN_NODE = Object.assign({}, NODE_NM, {flow:"整体流转", delivery:"交付质量", host:"服务器"});
+const firstSentence = t => String(t || "").split(/[。；;]/)[0];
+// 白话名称与原因，按指标 id 手写；没有的回退到指标自带解释的第一句。名称由英文标识推断，改错了在这里改。
+const PLAIN = {
+  "dispatch.collisions_per_day": ["多个任务同时改同一个文件", "会互相覆盖，需要返工"],
+  "repair.wall_p50": ["返工耗时偏长", "返工拖慢了交付"],
+  "ci.red_after_approve_pct": ["检查通过后 CI 又变红", "评审没发现的问题，或 CI 环境不稳定"],
+  "scheduler.tick_gap_p50": ["调度器间隔太长", "任务派得晚，看板数据也更新得慢"],
+  "release.hours_waiting": ["做完的改动迟迟没上线", "功能还没到用户手里"],
+  "release.hotpatch_blockers": ["紧急修复没有合入主线", "每次发布都被它们挡住"],
+  "workorders.over_standard": ["工作单超出时限", "耗时超过标准，需要查原因"],
+  "workorders.ticket_wall_p90": ["单个任务耗时偏长", "少数任务拖得特别久"],
+  "ci.cancel_deferred_per_day": ["CI 运行被取消后延后", "浪费 CI 额度"],
+  "loop.advisor_fail_pct": ["顾问没有给出裁决", "评审停在这一步，顾问模型可能不可用"],
+  "delivery.cycles_to_pass_30d": ["评审轮数偏多", "一个改动要评审多轮才通过"],
+  "delivery.approvals_per_merge_30d": ["每次合入需要的批准次数偏多", "评审流程在重复劳动"],
+  "delivery.unlinked_incidents_30d": ["事故没有关联到对应任务", "事故对不上任务，无法统计"],
+  "flow.merge_rate_per_hour": ["合入速度低于目标", "产出比预期慢"],
+  "flow.wip_age_stage_p90_hours": ["有任务在某一环节停留太久", "卡在某个环节，需要找出是哪一个"],
+  "flow.slot_idle_hours": ["有任务在排队，员工却空闲", "产能没有用起来"],
+  "flow.in_out_imbalance": ["进来的任务比完成的多", "任务在堆积"],
+  "mechanism.silent": ["有后台机制长时间没动静", "已部署但可能没有在运行"],
+};
+const ZF_NAMES = {"approve-after-green":"绿灯后自动批准", "maintenance-budget":"维护额度", "ci-waste":"减少 CI 浪费", "eval-on-pin":"版本固定后自动评测", "footprint-convoy":"减少资源占用堆积", "jqf-argv":"队列参数修复",
+  "pin-preflight":"版本固定前预检", "tick-latency":"缩短调度延迟", "glm-share":"模型额度共享", "incident-prior-art":"事故先例检索", "main-red":"主线变红处理", "slice-isolation":"任务切片隔离"};
+const zfName = k => { const x = String(k).replace(/^zf-/, ""); return ZF_NAMES[x] || x.replace(/-/g, " "); };
+function anomRow(m) { const lb = LABELS[m.id], st = sk(m.status), hib = !!m.higher_is_better, h = +m.healthy, u = +m.unhealthy, top = Math.max(Math.abs(h), Math.abs(u)) * (hib ? 1.4 : 1.6) || 1;
+    const pc = x => Math.max(0, Math.min(100, 100 * x / top)), v = m.value == null ? null : +m.value, unit = lb ? lb[1] : "", pl = PLAIN[m.id] || [lb ? lb[0] : firstSentence(m.meaning) || m.desc, ""];
+    const fv = v == null ? "—" : (Math.abs(v) >= 100 ? Math.round(v) : +v.toFixed(1)) + (unit ? " " + unit : "");
+    const zones = hib ? [[0,u,"bad"],[u,h,"warn"],[h,top,"ok"]] : [[0,h,"ok"],[h,u,"warn"],[u,top,"bad"]];
+    return `<div class="anom" data-m="${metricMod(m)}" data-tip="${esc(m.meaning || "")}"><i class="ad s-${st}"></i><span class="a-n">${esc(PLAIN_NODE[m.node] || m.node)}</span><span class="a-l">${esc(pl[0])}<small>${esc(pl[1])}</small></span>
+      <span class="a-t">${zones.filter(z => pc(z[1]) > pc(z[0])).map(z => `<i class="z-${z[2]}" style="left:${pc(z[0])}%;width:${pc(z[1]) - pc(z[0])}%"></i>`).join("")}${v == null ? "" : `<b style="left:${Math.min(pc(v), 99)}%"></b>`}</span><span class="a-v">${esc(fv)}</span></div>`; }
 function vOverview(D) {
-  const tiles = MODULES.filter(m => ["health","cost","host"].includes(m.id)).map(m => { const s = safeSum(m, D);
-    return `<button class="tile s-${sk(s.s)}" data-m="${m.id}" type="button"><div class="tile-h">${ic(m.icon)}${esc(m.nm)}<span class="si" data-tip="${esc(SL[sk(s.s)])}">${ic(sk(s.s))}</span></div>
-      <div class="tile-v"><b>${s.v}</b>${s.u?`<span>${esc(s.u)}</span>`:""}</div><div class="sub">${esc(s.l)}</div>${tally(s.st)}</button>`; });
-  return `<div class="stack16">${roiLinePanel(D)}${panel("arrow","流水线", pipeStrip(D), (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}${livePanel(D)}<div class="tiles" style="--cols:${tiles.length}">${tiles.join("")}</div></div>`;
+  const f = freshness(D), STD = D.standards || {}, ms = nodeMetrics(D), S = D.summary || {}, T = D.totals || {};
+  const bad = ms.filter(m => sk(m.status)==="bad"), warn = ms.filter(m => sk(m.status)==="warn");
+  const vs = f.s==="bad" || STD.paused || bad.length ? "bad" : warn.length ? "warn" : "ok";
+  const aside = [STD.paused ? stChip("bad","已暂停") : "", f.s==="bad" ? stChip("bad","数据过期") : "", bad.length ? stChip("bad", `${bad.length} 项异常`) : "", warn.length ? stChip("warn", `${warn.length} 项需留意`) : ""].join("");
+  const LWok = !!(D.live_workers && Array.isArray(D.live_workers.items)), LW = LWok ? D.live_workers.items : [], LWM = lwGrouped(LW);
+  const cap = S.max_workers || 8, np = (LWM.pipeline || []).length, rest = LW.length - np;
+  const slots = `<div class="sgs"><div class="sg"><span>产线 ${np}/${cap}</span><div class="slots">${Array.from({length: Math.max(cap, np)}, (_, i) => `<i class="${i<np?"on":""}"></i>`).join("")}</div></div>
+    <div class="sg"><span>自进化 ${(LWM.opt || []).length}</span><div class="slots">${Array.from({length: (LWM.opt || []).length}, () => `<i class="alt"></i>`).join("")}</div></div></div>`;
+  const cnt = l => (stageRow(D, l) || {}).count, q = cnt("ready-for-agent"), rel = cnt("awaiting-release");
+  const merged = Array.isArray(T.merged_today) ? T.merged_today.length : null;
+  const cost = D.cost || {}, td = (cost.today || {}).dollars, yd = (cost.yesterday || {}).dollars, cm = Math.max(td || 0, yd || 0, 1e-9);
+  const card = (icon, label, v, vis) => `<div class="kc"><div class="kc-h">${ic(icon)}${esc(label)}</div><div class="kc-v">${v}</div>${vis || ""}</div>`;
+  const cards = `<div class="kcs">
+    ${card("workers", "员工", LWok ? LW.length : "—", LWok ? slots : "")}
+    ${card("git", "今日完成", merged ?? "—")}
+    ${card("layers", "排队", q ?? "—", q == null ? "" : `<div class="split" data-tip="排队 ${q}，等上线 ${rel ?? "—"}"><i style="flex:${q}"></i><i class="b" style="flex:${rel || 0}"></i></div>`)}
+    ${card("cost", "今日花费", td == null ? "—" : "$" + td.toFixed(1), td == null ? "" : `<div class="pair" data-tip="今日 $${td.toFixed(1)}，昨日 $${(yd||0).toFixed(1)}"><i style="width:${100*td/cm}%"></i><i class="y" style="width:${100*(yd||0)/cm}%"></i></div>`)}</div>`;
+  const rows = [...bad, ...warn].slice(0, 6).map(anomRow).join("");
+  const more = bad.length + warn.length - 6;
+  return `<div class="stack16">${cards}
+    ${panel("health", "异常", (rows ? rows + (more > 0 ? `<div class="anom more" data-m="health">另有 ${more} 项</div>` : "") : emptyMsg("全部正常")), aside)}
+    <details class="panel" open><summary class="ph" style="cursor:pointer">详情</summary>
+      <div class="stack16" style="margin-top:14px">${panel("arrow","流水线", pipeStrip(D), (FR(D).errors||{}).stages ? stChip("bad","阶段计数不可用") : "")}${livePanel(D)}</div></details></div>`;
 }
 function vReqs(D) { return `<div class="stack16">${founderPanel(D)}</div>`; }
 function sumReqs(D) { const R = D.founder_reqs;
   if (!R || R.error || !Array.isArray(R.items)) return {s:"bad", v:"—", l:"需求台账不可用"};
   const blocked = R.items.filter(x => x.blocker).length;
-  return {s: blocked ? "warn" : "ok", v: R.items.length, l: blocked ? `未完成 · ${blocked} 条有卡点` : "未完成需求"}; }
-function vRoi(D) { return `<div class="stack16">${archivePanel(D)}${trendPanel(D)}</div>`; }
+  return {s: blocked ? "warn" : "ok", v: R.items.length, l: blocked ? `未完成，${blocked} 条有卡点` : "未完成需求"}; }
+function vRoi(D) { return `<div class="stack16">${roiLinePanel(D)}${archivePanel(D)}${trendPanel(D)}</div>`; }
 function sumRoi(D) { const F = D.factory, n = F && Array.isArray(F.archive) ? F.archive.length : null; return {s:"none", v: n==null ? "—" : n, l:"最近完成"}; }
 function sumOverview(D) { const f = freshness(D); return {s: f.s, v: f.age==null ? "—" : fDur(Math.round(f.age)), l: "数据新鲜度"}; }
 
 const MODULES = [
   {id:"overview", nm:"总览", en:"Overview", icon:"overview", render:vOverview, sum:sumOverview},
   {id:"reqs",     nm:"需求", en:"Founder requirements", icon:"layers", render:vReqs, sum:sumReqs},
-  {id:"intake",   nm:"入口 · 分诊", en:"Intake & triage", icon:"intake", render:vIntake, sum:sumIntake},
+  {id:"intake",   nm:"入口与分诊", en:"Intake & triage", icon:"intake", render:vIntake, sum:sumIntake},
   {id:"advisor",  nm:"顾问", en:"Advisor", icon:"advisor", render:vAdvisor, sum:sumAdvisor},
-  {id:"workers",  nm:"开发 · 评审", en:"Workers & review", icon:"workers", render:vWorkers, sum:sumWorkers},
+  {id:"workers",  nm:"开发与评审", en:"Workers & review", icon:"workers", render:vWorkers, sum:sumWorkers},
   {id:"orders",   nm:"工作单", en:"Work orders", icon:"orders", render:vOrders, sum:sumOrders},
   {id:"ci",       nm:"CI", en:"Continuous integration", icon:"ci", render:vCi, sum:sumCi},
-  {id:"release",  nm:"合并 · 发布", en:"Merge & release", icon:"release", render:vRelease, sum:sumRelease},
+  {id:"release",  nm:"合并与发布", en:"Merge & release", icon:"release", render:vRelease, sum:sumRelease},
   {id:"health",   nm:"健康标准", en:"Health & standards", icon:"health", render:vHealth, sum:sumHealth},
   {id:"cost",     nm:"成本", en:"Cost & tokens", icon:"cost", render:vCost, sum:sumCost},
-  {id:"roi",      nm:"效率 · ROI", en:"Efficiency & ROI", icon:"arrow", render:vRoi, sum:sumRoi},
-  {id:"host",     nm:"主机 · 运行", en:"Host, network & knobs", icon:"host", render:vHost, sum:sumHost},
+  {id:"roi",      nm:"效率与 ROI", en:"Efficiency & ROI", icon:"arrow", render:vRoi, sum:sumRoi},
+  {id:"host",     nm:"主机与运行", en:"Host, network & knobs", icon:"host", render:vHost, sum:sumHost},
 ];
 function safeSum(m, D) { try { return m.sum(D); } catch (e) { return {s:"none", v:"—", l:"出错"}; } }
 
@@ -1198,30 +1356,75 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
 let current = lsGet(LS_MOD);
 if (!MODULES.some(m => m.id===current)) current = "overview";
 
+// 刷新时只替换真正变了的节点：滚动位置、展开状态、悬停都保留，数据没变就什么都不动
+function morph(oldEl, html) {
+  const t = document.createElement("template"); t.innerHTML = html;
+  if (!t.content) { oldEl.innerHTML = html; return; } // 没有 template 的环境（测试桩）直接整体替换
+  const walk = (a, b) => {
+    const xs = [...a.childNodes], ys = [...b.childNodes];
+    if (xs.length !== ys.length) { a.replaceChildren(...ys); return; }
+    xs.forEach((x, i) => { const y = ys[i];
+      if (x.nodeType !== y.nodeType || x.nodeName !== y.nodeName) { x.replaceWith(y); return; }
+      if (x.nodeType === 3) { if (x.data !== y.data) x.data = y.data; return; }
+      if (x.outerHTML === y.outerHTML) return;
+      if (x.nodeName === "DETAILS") { const o = x.open; y.open = o; }
+      const same = x.attributes.length === y.attributes.length && [...x.attributes].every(at => at.name === "open" || y.getAttribute(at.name) === at.value);
+      if (!same) { x.replaceWith(y); return; }
+      walk(x, y); });
+  };
+  walk(oldEl, t.content);
+}
+// 任务标题白话化：自动生成的事故单和 conventional commit 标题，对普通用户不可读。原文保留在 raw_* 字段。
+// shortcut: 只认已见过的几种格式，其余原样显示；新格式出现后在这里补规则。
+const INC_SRC = {"scheduler.log":"调度器", "worker-died":"员工异常退出", "budget-park":"额度暂停", "supervisor":"主管", "scheduler":"调度器"};
+const TYPE_CN = {fix:"修复", feat:"新功能", chore:"维护", docs:"文档", refactor:"重构", test:"测试", perf:"性能"};
+const SCOPE_CN = {fruit:"水果行业包", "web-advisor":"网页顾问", hotfix:"热修", ci:"CI", engine:"引擎", pipeline:"流水线"};
+function plainTitle(t) {
+  if (typeof t !== "string") return t;
+  let m = t.match(/^Incident: scheduler\.log: refill done live=(\d+) secs=(\d+)/);
+  if (m) return `调度器补位耗时 ${m[2]} 秒`;
+  m = t.match(/^Incident: ([\w.-]+?)(?::| unit=| signature | budget-park)\s*(.*)$/);
+  if (m) { const src = INC_SRC[m[1]] || m[1], rest = /budget-park/.test(t) ? "额度暂停" : /worker-died/.test(t) ? "员工异常退出" : /signature/.test(t) ? "重复故障" : "";
+    return `事故：${src}${rest && !String(src).includes(rest) ? " " + rest : ""}`; }
+  m = t.match(/^Incident: (.+)$/);
+  if (m) return `事故：${m[1].slice(0, 24)}`;
+  m = t.match(/^(fix|feat|chore|docs|refactor|test|perf)\(([^)]*)\): (.*)$/);
+  if (m) return `${TYPE_CN[m[1]]} ${SCOPE_CN[m[2]] || m[2]}：${m[3]}`;
+  return t;
+}
+function plainTitles(D) {
+  const fix = (o, k) => { if (o && typeof o[k] === "string") { const v = plainTitle(o[k]); if (v !== o[k]) { o["raw_" + k] = o[k]; o[k] = v; } } };
+  ((D.live_workers || {}).items || []).forEach(o => fix(o, "task"));
+  ((D.factory || {}).archive || []).forEach(o => fix(o, "task"));
+  (D.units || []).forEach(o => { fix(o, "title"); fix(o, "task"); });
+}
 function renderModule(id) {
+  if (window.DASH) plainTitles(window.DASH);
   const D = window.DASH, m = MODULES.find(x => x.id===id) || MODULES[0];
   const nav = document.getElementById("nav"), view = document.getElementById("view");
   if (!D) {
     nav.innerHTML = MODULES.map(x => `<button class="nv" type="button" data-m="${x.id}">${ic(x.icon)}<span class="nv-t">${esc(x.nm)}</span></button>`).join("");
-    view.innerHTML = `<div class="unavail">${ic("bad")}<div><b style="color:inherit">数据不可用</b> · dashboard.data.js 尚未生成或无法解析<div class="sub">由 gen_dashboard.py 每拍写出；页面每 30 秒重试</div></div></div>`;
+    view.innerHTML = `<div class="unavail">${ic("bad")}<div><b style="color:inherit">数据不可用</b>，dashboard.data.js 尚未生成或无法解析<div class="sub">由 gen_dashboard.py 每拍写出；页面每 30 秒重试</div></div></div>`;
     return;
   }
-  nav.innerHTML = MODULES.map(x => { const s = safeSum(x, D);
-    return `<button class="nv ${x.id===m.id?"on":""}" type="button" data-m="${x.id}" title="${esc(x.nm+" · "+SL[sk(s.s)])}">${ic(x.icon)}<span class="nv-t">${esc(x.nm)}</span>${x.id==="overview"?"":`<span class="nv-n">${String(s.v).replace(/<[^>]*>/g,"")}</span>`}<i class="dot s-${sk(s.s)}"></i></button>`; }).join("");
-  document.getElementById("title").innerHTML = `${ic(m.icon)}${esc(m.nm)}<small>${esc(m.en)}</small>`;
+  // 导航徽标只表示一件事：该模块有几项指标异常（红 = 含不健康，黄 = 只有警告）；没有异常就不显示
+  const abn = id => { const ms = id==="overview"||id==="health" ? nodeMetrics(D) : modMetrics(D, id), b = ms.filter(m => sk(m.status)==="bad").length, w = ms.filter(m => sk(m.status)==="warn").length; return {n: b + w, s: b ? "bad" : "warn"}; };
+  morph(nav, MODULES.map(x => { const a = abn(x.id);
+    return `<button class="nv ${x.id===m.id?"on":""}" type="button" data-m="${x.id}" title="${esc(a.n ? x.nm + "，" + a.n + " 项异常" : x.nm)}">${ic(x.icon)}<span class="nv-t">${esc(x.nm)}</span>${a.n ? `<span class="nv-n s-${a.s}">${a.n}</span>` : ""}</button>`; }).join(""));
+  morph(document.getElementById("title"), `${ic(m.icon)}${esc(m.nm)}<small>${esc(m.en)}</small>`);
   const f = freshness(D);
   const STD = D.standards || {}, sample = scorecardFreshness(D, STD);
   const sampleStatus = sample.age==null ? "none" : sample.stale ? "bad" : "ok";
   const sampleLabel = sample.age==null ? "健康评分暂无样本" : sample.stale ? "健康评分已过期" : `健康评分 ${fDur(Math.round(sample.age))}前`;
   const commit = STD.source_commit ? String(STD.source_commit).slice(0,12) : "未知";
   const pause = STD.paused;
-  const pauseLabel = pause ? `流水线暂停 · ${pause.since ? utc(pause.since) : "时间未知"} · ${pause.reason || "原因未知"}`
+  const pauseLabel = pause ? `流水线暂停，${pause.since ? utc(pause.since) : "时间未知"}，${pause.reason || "原因未知"}`
     : Object.prototype.hasOwnProperty.call(STD, "paused") ? "流水线运行中" : "流水线状态未知";
   const pipelineStatus = pause ? "warn" : Object.prototype.hasOwnProperty.call(STD, "paused") ? "ok" : "none";
-  document.getElementById("fresh").innerHTML = `<span class="chip s-${f.s}" data-tip="看板数据生成于 ${esc(utc(D.generated))}\n每 30 秒自动刷新">${ic(f.s==="ok"?"clock":f.s)}${f.age==null?"—":fDur(Math.round(f.age))+"前"}</span><span class="chip s-${sampleStatus}" data-tip="评分采样于 ${esc(utc(sample.sampledAt))} · 每个调度拍采样">${ic(sampleStatus==="ok"?"clock":sampleStatus)}${sampleLabel}${sample.sampledAt?` · ${esc(utc(sample.sampledAt))}`:""}</span><span class="sub">运行版本 <code>${esc(commit)}</code></span><span class="chip s-${pipelineStatus}" data-tip="PAUSE 开始于 ${esc(pause&&pause.since?utc(pause.since):"—")}">${esc(pauseLabel)}</span>`;
-  try { view.innerHTML = m.render(D); }
+  morph(document.getElementById("fresh"), `<span class="chip s-${f.s}" data-tip="看板数据生成于 ${esc(utc(D.generated))}\n每 30 秒自动刷新">${ic(f.s==="ok"?"clock":f.s)}${f.age==null?"—":fDur(Math.round(f.age))+"前"}</span><span class="chip s-${sampleStatus}" data-tip="评分采样于 ${esc(utc(sample.sampledAt))}，每个调度拍采样">${ic(sampleStatus==="ok"?"clock":sampleStatus)}${sampleLabel}${sample.sampledAt?`，${esc(utc(sample.sampledAt))}`:""}</span><span class="sub">运行版本 <code>${esc(commit)}</code></span><span class="chip s-${pipelineStatus}" data-tip="PAUSE 开始于 ${esc(pause&&pause.since?utc(pause.since):"—")}">${esc(pauseLabel)}</span>`);
+  try { morph(view, m.render(D)); }
   catch (e) { view.innerHTML = `<div class="unavail">${ic("bad")}<div><b style="color:inherit">此模块渲染出错</b><div class="sub">${esc(e && e.stack || e)}</div></div></div>`; }
-  document.title = `${m.nm} · the product 流水线看板`;
+  document.title = `${m.nm}，Zenoforge`;
 }
 function go(id) { current = id; lsSet(LS_MOD, id); renderModule(id); window.scrollTo(0, 0); }
 
@@ -1265,7 +1468,6 @@ function reloadData() {
 applyTheme();
 renderModule(current);
 setInterval(reloadData, 30000);
-setTimeout(() => location.reload(), 30 * 60 * 1000);
 window.__dash = {MODULES, renderModule};
 </script>
 </body>
