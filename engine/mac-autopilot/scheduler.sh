@@ -47,6 +47,7 @@ declare -F jq_arg_file >/dev/null 2>&1 || jq_arg_file() {
 # The required names are the always-concluding aggregates (#4484): a gate that legitimately
 # does not run is an allowed skip inside the aggregate row, so this guard can no longer sit
 # in a permanent "required checks skipped" wait for PRs whose heavy jobs did not start.
+declare -F gh_timeout >/dev/null 2>&1 || source "$HERE/../lib.d/transport.sh"
 source "$HERE/scheduler.d/core.sh"
 if [[ -z "${REQUIRED_PR_CHECKS_FILE:-}" ]]; then
   REQUIRED_PR_CHECKS_FILE="$(ZF_REPO_DIR="${ZF_REPO_DIR:-$MAC_AUTOPILOT_ROOT}" \

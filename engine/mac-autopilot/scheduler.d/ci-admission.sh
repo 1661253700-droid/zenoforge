@@ -83,7 +83,7 @@ slot_sync() { # id head gated
 }
 
 ci_assign_wip() {
-  local wip k=0 id br head r st jobs n=0 started=0 pre_id="" precheck_on gated gdraft ghead synced_pr
+  local wip k=0 id br head r st jobs n=0 started=0 pre_id="" precheck_on gated gdraft ghead synced_pr cancelled_runs
   local detail_started detail_elapsed
   local -a jobs_to_load=()
   precheck_on="$(jqf -r 'if .precheck == false then 0 else 1 end' <<<"$CFG")"
@@ -136,7 +136,9 @@ ci_assign_wip() {
         continue
       fi
       if (( gated )); then gated_ready "$id" "$br" "$head"; continue; fi
-      for r in $(gh run list --commit "$head" --json databaseId,conclusion --jq '.[] | select(.conclusion=="cancelled") | .databaseId' 2>/dev/null); do
+      cancelled_runs="$(gh run list --commit "$head" --json databaseId,conclusion --jq '.[] | select(.conclusion=="cancelled") | .databaseId' 2>/dev/null)" \
+        || { say "ci wip unit=$id: could not list cancelled runs for head $head; admission deferred"; k=$((k-1)); continue; }
+      for r in $cancelled_runs; do
         gh run rerun "$r" --failed >/dev/null 2>&1 || true
       done
       set_unit "$id" "$(hist ci-wip-start "slot $k/$wip") | del(.ci_wip_wait) | del(.ci_cancel_reruns)"
