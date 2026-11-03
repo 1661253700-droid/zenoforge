@@ -445,7 +445,7 @@ footprint_convoy_alert() {
       aged_count=$((aged_count + 1))
       (( age <= max_age )) || max_age=$age
       if (( episode_epoch == 0 || since_epoch < episode_epoch )); then episode_epoch=$since_epoch; fi
-      aged_ids="$(jqf -cn --argjson ids "$aged_ids" --arg id "$id" '$ids + [$id]')" || return 1
+      aged_ids="$(jqf -cn --slurpfile ids <(printf '%s' "$aged_ids") --arg id "$id" '$ids[0] + [$id]')" || return 1
     done < <(jqf -c '.[]' <<<"$waiters")
     (( aged_count >= min_waiters )) || continue
     ids="$(jqf -r 'join(",")' <<<"$aged_ids")"
