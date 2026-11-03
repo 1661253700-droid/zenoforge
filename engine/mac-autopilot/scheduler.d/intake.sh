@@ -138,7 +138,7 @@ handoff_open_pr() { # issue → matching PR rows from this tick's single census
       | $p + {ambiguousIssues: (($issues | length) > 1)}]
     | map(. as $p | select($p.ambiguousIssues or (any($u[0].units[]; .pr == $p.number and .issue != null and (.issue | tostring) != $n) | not)))
     | map({number,headRefName,ambiguousIssues,hotfix:any(.labels[]; .name == "hotfix")})
-  ' <<<"$HANDOFF_PR_CENSUS"
+  ' <<<"${HANDOFF_PR_CENSUS:-[]}"
 }
 handoff_include_pr() { # fallback after a failed census: inspect only a known PR
   local pr_number="$1" row
@@ -149,7 +149,7 @@ handoff_include_pr() { # fallback after a failed census: inspect only a known PR
   fi
   jqf --argjson pr "$pr_number" '.units |= map(if .pr == $pr then del(.hold_handoff_lookup_pending) | if ((.hold_handoff_wait_issues // []) | length) == 0 then del(.hold_handoff_waiting) else . end else . end)' "$UNITS" | write_state "$UNITS"
   if jqf -e '.state == "OPEN"' <<<"$row" >/dev/null; then
-    HANDOFF_PR_CENSUS="$(jqf -c --slurpfile row <(printf '%s' "$row") '. + [$row[0]]' <<<"$HANDOFF_PR_CENSUS")"
+    HANDOFF_PR_CENSUS="$(jqf -c --slurpfile row <(printf '%s' "$row") '. + [$row[0]]' <<<"${HANDOFF_PR_CENSUS:-[]}")"
   fi
 }
 intake_footprint_snapshot() { # live writers plus dispatchable pending implement units
@@ -186,6 +186,13 @@ register_new_issues() {
   local existing_only="${1:-0}" only_pred=0 ids lookup handoff_rows matches ids_state pr_number known_prs known_failed hotfix_prs prior_worktree prior_reason episode_hash related_id related_hash unsafe_clones
   local issue_json parent_reason parent_status parent_transition_status intake_footprint_owners='[]' intake_candidate_json intake_candidate_scope intake_conflict intake_entry
   local refill_mode="${2:-false}" free_slots ready_buffer target_pending max_refill upstream_room
+  if [[ "$refill_mode" == true ]]; then
+    # Refill has no full handoff census; keep known-PR fallbacks partial and avoid another PR-list request.
+    HANDOFF_PR_CENSUS="${HANDOFF_PR_CENSUS:-[]}"
+    HANDOFF_CENSUS_PARTIAL="${HANDOFF_CENSUS_PARTIAL:-1}"
+    HANDOFF_WAIT_PRS="${HANDOFF_WAIT_PRS:-[]}"
+    HANDOFF_WAIT_BRANCHES="${HANDOFF_WAIT_BRANCHES:-[]}"
+  fi
   [[ "$refill_mode" == true ]] || hotfix_issue_numbers || say "hotfix issue list unavailable; linked issue PRs may not be classified this tick"
   enabled="$(jqf -r 'if .issue_intake.enabled == false then "false" else "true" end' <<<"$CFG")"
   [[ "$enabled" == true || "$existing_only" == 1 ]] || return 0
@@ -303,7 +310,7 @@ register_new_issues() {
       # A PR can appear after the handoff, or use a non-agent branch.
       lookup="$(handoff_open_pr "$n")" || { [[ -n "$handoff_pr" ]] && lookup='[]' || continue; }
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then
-        lookup="$(jqf -c --argjson pr "$handoff_pr" --slurpfile census <(printf '%s' "$HANDOFF_PR_CENSUS") '
+        lookup="$(jqf -c --argjson pr "$handoff_pr" --slurpfile census <(printf '%s' "${HANDOFF_PR_CENSUS:-[]}") '
           if any(.[]; .number == $pr) then . else
             . + [$census[0][] | select(.number == $pr) | {number,headRefName,ambiguousIssues:false,hotfix:any(.labels[]; .name == "hotfix")}]
           end' <<<"$lookup")"
@@ -312,7 +319,7 @@ register_new_issues() {
       if jqf -e --argjson known "$hotfix_prs" 'any(.[]; .hotfix == true) or ($known | length > 0)' <<<"$lookup" >/dev/null; then
         ids="$(jqf -c --argjson known "$hotfix_prs" '([.[].number] + $known) | unique' <<<"$lookup")"
         HANDOFF_WAIT_PRS="$(jqf -c --argjson add "$ids" '. + $add | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
-        HANDOFF_WAIT_BRANCHES="$(jqf -c --argjson prs "$ids" --slurpfile census <(printf '%s' "$HANDOFF_PR_CENSUS") --arg branch "$handoff_branch" '
+        HANDOFF_WAIT_BRANCHES="$(jqf -c --argjson prs "$ids" --slurpfile census <(printf '%s' "${HANDOFF_PR_CENSUS:-[]}") --arg branch "$handoff_branch" '
           . + [$census[0][] | select(.number as $p | $prs | index($p)) | .headRefName | select(type=="string" and length>0)] + (if $branch == "" then [] else [$branch] end) | unique' <<<"${HANDOFF_WAIT_BRANCHES:-[]}")"
         jqf --argjson n "$n" --argjson prs "$ids" '.units |= map(if .issue == $n or .branch == ("agent/issue-" + ($n | tostring)) or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)' "$UNITS" | write_state "$UNITS"
         continue
