@@ -1286,6 +1286,14 @@ lt="$fixture/looptick"; mkdir -p "$lt/alerts"; printf 'exec sleep 60 # wall-cloc
 grep -q 'TICK-TIMEOUT' "$lt/scheduler.log" && grep -q 'TICK-TIMEOUT' "$lt/alerts/waste.md" || fail 'hung tick was not killed and alerted'
 
 # repair 没推出新 head：自动重试两次，第三次转人工
+repair_no_push_selector_real="$(declare -f pick_review_for_unit)"
+repair_no_push_target_real="$(declare -f unit_review_target)"
+repair_no_push_room_real="$(declare -f room_for)"
+repair_no_push_verify_real="$(declare -f verify_handoff_delivery)"
+pick_review_for_unit() { PICK_MODEL=claude-sonnet-4-5; PICK_EFFORT=high; PICK_PROVIDER=claude; return 0; }
+unit_review_target() { printf '%s %s\n' "$H1" "$H1"; }
+room_for() { return 0; }
+verify_handoff_delivery() { return 0; }
 for round in 1 2 3; do
   hist_json="$(jq -cn --argjson n "$((round-1))" '[{stage:"review-request-changes"}] + [range($n) | {stage:"repair-no-push"}, {stage:"repair-delivered"}] + [{stage:"repair-delivered"}]')"
   units "{\"units\":[{\"id\":\"pr-5b\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"r.md\",\"history\":$hist_json}]}"
@@ -1296,6 +1304,7 @@ for round in 1 2 3; do
     [[ "$(field pr-5b .stage)" == rereview-pending && "$(field pr-5b .arbiter)" == true ]] || fail 'repair-no-push retried more than twice (expected one arbiter review)'
   fi
 done
+eval "$repair_no_push_selector_real"; eval "$repair_no_push_target_real"; eval "$repair_no_push_room_real"; eval "$repair_no_push_verify_real"
 # A CI failure after approval followed by an unchanged repair returns to native CI within the existing unit-row bound.
 gh_head_saved="$GH_HEAD"; gh_runs_saved="$GH_RUNS"; cancel_unit_runs_saved="$(declare -f cancel_unit_runs)"
 GH_HEAD="$H1"; GH_RUNS=777; GH_RERUNS=(); DISPATCHED=(); cancel_unit_runs() { :; }
