@@ -31,6 +31,17 @@ phase_yield_lock() { # slow operation; let the local refill controller take the 
   TICK_FOOTPRINT_CONFLICT_VALID=false
   return "$rc"
 }
+phase_yield_lock_batch() { # Callback that records its own phases while sharing one lock-yield window.
+  local rc=0
+  release_scheduler_lock
+  "$@" || rc=$?
+  acquire_scheduler_lock_wait
+  tick_prs_changed # Refill can change PRs while the scheduler lock is released.
+  LIVE_WORKER_CACHE_UNTIL=0
+  TICK_ACTIVE_FOOTPRINTS_VALID=false
+  TICK_FOOTPRINT_CONFLICT_VALID=false
+  return "$rc"
+}
 run_views() { # full = 体检 + 看板；dashboard = 只渲染看板（暂停时）
   [[ "$1" == full ]] && run_node_health
   SESSION_TZ="$SESSION_TZ" python3 "$HERE/gen_dashboard.py" 2>>"$A/autopilot.err"

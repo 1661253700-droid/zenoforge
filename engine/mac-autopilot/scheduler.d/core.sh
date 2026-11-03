@@ -97,11 +97,16 @@ gh() {
 tick_gh_calls_begin() {
   GH_TICK_CALLS_FILE="$A/gh-calls.$BASHPID"
   : >"$GH_TICK_CALLS_FILE" 2>/dev/null || GH_TICK_CALLS_FILE=""
+  TICK_INTAKE_READS_FILE="$A/intake-reads.$BASHPID"
+  printf '0\n' >"$TICK_INTAKE_READS_FILE" 2>/dev/null || TICK_INTAKE_READS_FILE=""
+  TICK_PHASE_DETAILS=""
+  TICK_PHASES=""
   # 被杀的 tick 留下的计数文件与过期的 ETag 缓存条目，下一拍顺手收掉。
   find "$A" -maxdepth 1 -name 'gh-calls.*' -mmin +120 -delete 2>/dev/null || :
+  find "$A" -maxdepth 1 -name 'intake-reads.*' -mmin +120 -delete 2>/dev/null || :
   find "$GH_ETAG_DIR" -type f -mmin +360 -delete 2>/dev/null || :
 }
-tick_gh_calls_count() { awk 'END {print NR}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf '0\n'; }
+tick_gh_calls_count() { [[ -n "${GH_TICK_CALLS_FILE:-}" ]] || { printf '0\n'; return 0; }; awk 'END {print NR}' "$GH_TICK_CALLS_FILE" 2>/dev/null || printf '0\n'; }
 gh_par_throttle() { # pid 数组名：在途数达到 GH_PARALLEL 时等最早的一个结束
   local -n _gh_pids="$1"
   while (( ${#_gh_pids[@]} >= GH_PARALLEL )); do wait "${_gh_pids[0]}" || :; _gh_pids=("${_gh_pids[@]:1}"); done

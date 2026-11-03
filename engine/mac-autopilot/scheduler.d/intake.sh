@@ -5,6 +5,27 @@
 # 非产品标签走直落车道，产品标签（默认 ready-for-agent）走 PR 车道（实现 → 推分支 → 流水线开 PR → 评审 → 合并 → 发布列车）。
 # WIP 护栏（Little 定律）：开发/评审/返工环节在途 ≤ max_upstream（默认 2×max_workers）；待合并队列 ≥ max_ready（默认 30）时停止收单——瓶颈在合并车道，堆更多 WIP 只会拉长交付时间。
 # founder-test 是维护者提的 issue，队列里排第一（docs/agents/issue-pipeline.md），不是跳过标签（2026-10-20 曾误跳过 30 个）。
+intake_remote_read_reserve() { # Reserve one bounded GH read across this tick and any intake subprocesses.
+  local cap="${ISSUE_INTAKE_REMOTE_READ_CAP:-24}" used=0 marker
+  [[ -n "${TICK_INTAKE_READS_FILE:-}" ]] || return 0
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap=24
+  (
+    exec 9>"$TICK_INTAKE_READS_FILE.lock" || exit 1
+    flock -x 9 || exit 1
+    IFS= read -r used < "$TICK_INTAKE_READS_FILE" || used=0
+    [[ "$used" =~ ^[0-9]+$ ]] || used=0
+    if (( used >= cap )); then
+      marker="$TICK_INTAKE_READS_FILE.reached"
+      if ( set -o noclobber; : > "$marker" ) 2>/dev/null; then say "intake remote read cap reached cap=$cap"; fi
+      exit 75
+    fi
+    printf '%s\n' "$((used + 1))" > "$TICK_INTAKE_READS_FILE"
+  )
+}
+intake_gh_read() {
+  intake_remote_read_reserve || return $?
+  "${TICK_INTAKE_GH_INVOKE:-gh}" "$@"
+}
 issue_skip_labels() {
   jqf -cn --arg hotfix "$(hotfix_lane_label)" \
     '["on-hold","needs-info","awaiting-release","ready-for-human","needs-owner","needs-advisor","needs-triage","roadmap-epic","roadmap-theme","roadmap","concluded","needs-recut","checks-blocked","awaiting-pipeline-sync","hotfix","opt-lane",$hotfix] | unique'
@@ -12,12 +33,12 @@ issue_skip_labels() {
 issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement 任务文本
   local json body task body_blocked_by skip_labels labels
   if [[ "${2:-}" == require-ready ]]; then
-    json="$(gh issue view "$1" --json number,title,body,state,labels 2>/dev/null)" || return 1
+    json="$(intake_gh_read issue view "$1" --json number,title,body,state,labels,subIssuesSummary 2>/dev/null)" || return 1
     skip_labels="$(issue_skip_labels)"
     jqf -e --argjson skip "$skip_labels" '.state == "OPEN" and any(.labels[]; .name == "ready-for-agent") and ([.labels[].name] - $skip) == [.labels[].name]' <<<"$json" >/dev/null || return 1
   else
     json="${2:-}"
-    [[ -n "$json" ]] || json="$(gh issue view "$1" --json number,title,body 2>/dev/null)" || return 1
+    [[ -n "$json" ]] || json="$(intake_gh_read issue view "$1" --json number,title,body,subIssuesSummary 2>/dev/null)" || return 1
   fi
   body="$(jqf -r '.body // ""' <<<"$json")"
   body_blocked_by="$(blocked_by_ids_from_body <<<"$body" | jqf -Rn '[inputs | select(length>0) | tonumber]')"
@@ -26,13 +47,17 @@ issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement �
   jqf -cn --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" '{task:$task,body_blocked_by:$body_blocked_by,labels:$labels}'
 }
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
-  local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status
+  local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 expected_queries=0 cache_file="$A/intake-candidates.json" cached_at now cache_rows cache_read_status
+  local cache_token="$BASHPID.$RANDOM" cache_rows_tmp cache_valid_tmp cache_json_tmp
   local -a query_files=() query_lanes=() query_pids=()
+  cache_rows_tmp="$cache_file.rows.$cache_token.tmp"
+  cache_valid_tmp="$cache_file.valid.$cache_token.tmp"
+  cache_json_tmp="$cache_file.$cache_token.tmp"
   if [[ "$refill_mode" == true ]]; then
     cached_at="$(jqf_optional_file "$cache_file" -r '.created_at // empty' 2>/dev/null || true)"
     now="$(date +%s)"
     if [[ "$cached_at" =~ ^[0-9]+$ ]] && (( now >= cached_at && now - cached_at <= 600 )) \
-      && jqf_optional_file "$cache_file" -e '.rows | type == "string"' >/dev/null 2>&1; then
+      && jqf_optional_file "$cache_file" -e '.schema == 2 and (.rows | type == "string")' >/dev/null 2>&1; then
       if cache_rows="$(jqf_optional_file "$cache_file" -r '.rows')"; then
         printf '%s\n' "$cache_rows"
         return 0
@@ -48,7 +73,9 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
   else
     candidate_labels="$(jqf -r '[((.issue_intake.labels // [])[] | ["direct-main", .]), ((.issue_intake.product_labels // ["ready-for-agent"])[] | ["pr", .])] | .[] | @tsv' <<<"$CFG")"
   fi
-  rm -f -- "$cache_file.valid.tmp"
+  expected_queries="$(awk 'NF {n++} END {print n+0}' <<<"$candidate_labels")"
+  if [[ "$refill_mode" == true ]] && (( expected_queries > 1 )); then expected_queries=1; fi
+  rm -f -- "$cache_valid_tmp"
   (
     query_dir="$(mktemp -d)" || exit 1
     trap 'rm -rf -- "$query_dir"' EXIT
@@ -58,7 +85,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
       [[ -n "$lane" && -n "$label" ]] || continue
       [[ "$refill_mode" != true || $index -lt 1 ]] || break
       query_file="$query_dir/$index.json"
-      gh issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels >"$query_file" 2>/dev/null &
+      intake_gh_read issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels,subIssuesSummary >"$query_file" 2>/dev/null &
       query_pids+=("$!"); query_files+=("$query_file"); query_lanes+=("$lane")
       gh_par_throttle query_pids
       index=$((index + 1))
@@ -80,19 +107,19 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
           elif ($n | index("legacy")) then 7 else 6 end;
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
       | group_by(.number) | map(sort_by(.lane) | .[0])
-      | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels} | @base64)"'
-    if (( valid_queries > 0 )); then : >"$cache_file.valid.tmp"; fi
-  ) >"$cache_file.rows.tmp"
-  if [[ -f "$cache_file.valid.tmp" ]]; then
-    rm -f -- "$cache_file.valid.tmp"
+      | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary} | @base64)"'
+    if (( valid_queries == expected_queries && ${#query_files[@]} == expected_queries )); then : >"$cache_valid_tmp"; fi
+  ) >"$cache_rows_tmp"
+  if [[ -f "$cache_valid_tmp" ]]; then
+    rm -f -- "$cache_valid_tmp"
     now="$(date +%s)"
-    jqf -Rs --argjson created_at "$now" '{created_at:$created_at,rows:rtrimstr("\n")}' \
-      <"$cache_file.rows.tmp" >"$cache_file.tmp" \
-      && mv -f -- "$cache_file.tmp" "$cache_file" || rm -f -- "$cache_file.tmp"
+    jqf -Rs --argjson created_at "$now" '{schema:2,created_at:$created_at,rows:rtrimstr("\n")}' \
+      <"$cache_rows_tmp" >"$cache_json_tmp" \
+      && mv -f -- "$cache_json_tmp" "$cache_file" || rm -f -- "$cache_json_tmp"
   fi
-  cat "$cache_file.rows.tmp" 2>/dev/null || true
-  [[ -s "$cache_file.rows.tmp" ]] || printf '\n'
-  rm -f -- "$cache_file.rows.tmp"
+  cat "$cache_rows_tmp" 2>/dev/null || true
+  [[ -s "$cache_rows_tmp" ]] || printf '\n'
+  rm -f -- "$cache_rows_tmp"
 }
 predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批量拉进来（拓扑顺序）
   local dep issue skip_labels q response start
@@ -112,7 +139,7 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
       q+=" i$dep: issue(number: $dep) { number title body state labels(first: 100) { nodes { name } } }"
     done
     [[ -n "$q" ]] || continue
-    response="$(gh api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q} }" 2>/dev/null)" || continue
+    response="$(intake_gh_read api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q} }" 2>/dev/null)" || continue
     jqf -r --argjson skip "$skip_labels" '
       [.data.repository | to_entries[] | .value | select(type=="object")
         | {number,title,body:(.body // ""),state,labels:[.labels.nodes[]? | {name}]}]
@@ -155,12 +182,12 @@ handoff_open_pr() { # issue → matching PR rows from this tick's single census
 }
 handoff_include_pr() { # fallback after a failed census: inspect only a known PR
   local pr_number="$1" row
-  row="$(gh pr view "$pr_number" --json number,headRefName,title,body,state,labels 2>/dev/null)" || row=""
+  row="$(intake_gh_read pr view "$pr_number" --json number,headRefName,title,body,state,labels 2>/dev/null)" || row=""
   if ! jqf -e --argjson pr "$pr_number" 'type=="object" and .number==$pr and (.headRefName|type)=="string" and (.state | IN("OPEN","CLOSED","MERGED")) and (.labels | type)=="array" and all(.labels[]; (.name | type)=="string")' <<<"$row" >/dev/null; then
-    jqf --argjson pr "$pr_number" '.units |= map(if .pr == $pr then .hold_handoff_lookup_pending=true | .hold_handoff_waiting=true else . end)' "$UNITS" | write_state "$UNITS"
+    units_update --argjson pr "$pr_number" '.units |= map(if .pr == $pr then .hold_handoff_lookup_pending=true | .hold_handoff_waiting=true else . end)'
     return 1
   fi
-  jqf --argjson pr "$pr_number" '.units |= map(if .pr == $pr then del(.hold_handoff_lookup_pending) | if ((.hold_handoff_wait_issues // []) | length) == 0 then del(.hold_handoff_waiting) else . end else . end)' "$UNITS" | write_state "$UNITS"
+  units_update --argjson pr "$pr_number" '.units |= map(if .pr == $pr then del(.hold_handoff_lookup_pending) | if ((.hold_handoff_wait_issues // []) | length) == 0 then del(.hold_handoff_waiting) else . end else . end)'
   if jqf -e '.state == "OPEN"' <<<"$row" >/dev/null; then
     HANDOFF_PR_CENSUS="$(jqf -c --slurpfile row <(printf '%s' "$row") '. + [$row[0]]' <<<"${HANDOFF_PR_CENSUS:-[]}")"
   fi
@@ -208,7 +235,7 @@ register_new_issues() {
     HANDOFF_WAIT_PRS="${HANDOFF_WAIT_PRS:-[]}"
     HANDOFF_WAIT_BRANCHES="${HANDOFF_WAIT_BRANCHES:-[]}"
   fi
-  [[ "$refill_mode" == true ]] || hotfix_issue_numbers || say "hotfix issue list unavailable; linked issue PRs may not be classified this tick"
+  [[ "$refill_mode" == true ]] || hotfix_issue_numbers >/dev/null || say "hotfix issue list unavailable; linked issue PRs may not be classified this tick"
   enabled="$(jqf -r 'if .issue_intake.enabled == false then "false" else "true" end' <<<"$CFG")"
   [[ "$enabled" == true || "$existing_only" == 1 ]] || return 0
   if (( existing_only )); then
@@ -222,14 +249,14 @@ register_new_issues() {
       if [[ -n "$cached_prs" ]] && jqf -e 'type=="array" and length < 300' <<<"$cached_prs" >/dev/null; then
         HANDOFF_PR_CENSUS="$(jqf -c '[.[] | {number,headRefName,title,body,labels}]' <<<"$cached_prs")"
       else
-        HANDOFF_PR_CENSUS="$(gh pr list --state open --limit 500 --json number,headRefName,title,body,labels 2>/dev/null)" || HANDOFF_PR_CENSUS=""
+        HANDOFF_PR_CENSUS="$(intake_gh_read pr list --state open --limit 500 --json number,headRefName,title,body,labels 2>/dev/null)" || HANDOFF_PR_CENSUS=""
       fi
       jqf -e 'type == "array" and all(.[]; (.number | type)=="number" and (.labels | type)=="array" and all(.labels[]; (.name | type)=="string"))' <<<"${HANDOFF_PR_CENSUS:-}" >/dev/null || HANDOFF_PR_CENSUS=""
       if [[ -z "$HANDOFF_PR_CENSUS" ]]; then
         HANDOFF_CENSUS_PARTIAL=1; HANDOFF_PR_CENSUS='[]'
         while read -r pr_number; do handoff_include_pr "$pr_number" || true; done < <(jqf -r '[.units[] | select((.stage | IN("merged","landed","closed","done","wontfix","duplicate")) | not) | .pr | select(type=="number")] | unique | .[]' "$UNITS")
       else
-        jqf '.units |= map(if .hold_handoff_lookup_pending == true then del(.hold_handoff_lookup_pending) | if ((.hold_handoff_wait_issues // []) | length) == 0 then del(.hold_handoff_waiting) else . end else . end)' "$UNITS" | write_state "$UNITS"
+        units_update '.units |= map(if .hold_handoff_lookup_pending == true then del(.hold_handoff_lookup_pending) | if ((.hold_handoff_wait_issues // []) | length) == 0 then del(.hold_handoff_waiting) else . end else . end)'
       fi
     fi
     want=1000000000; busy=""
@@ -274,7 +301,7 @@ register_new_issues() {
     if [[ -n "$busy_prs" ]]; then
       busy="$(jqf -r '.[] | "\(.headRefName) \(.title) \(.body // "")"' <<<"$busy_prs")"
     else
-      busy="$(gh pr list --state open --limit 200 --json headRefName,title,body --jq '.[] | "\(.headRefName) \(.title) \(.body // "")"' 2>/dev/null)" || return 0
+      busy="$(intake_gh_read pr list --state open --limit 200 --json headRefName,title,body --jq '.[] | "\(.headRefName) \(.title) \(.body // "")"' 2>/dev/null)" || return 0
     fi
   fi
   fi
@@ -311,7 +338,7 @@ register_new_issues() {
     if [[ -n "$episode" ]]; then
       if (( existing_only )); then
         # An unavailable PR lookup must not release an already known unit's old approval.
-        jqf --argjson n "$n" --arg episode "$episode" '.units |= map(if (.issue == $n or .branch == ("agent/issue-" + ($n | tostring))) and .hold_handoff_episode != $episode then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)' "$UNITS" | write_state "$UNITS"
+        units_update --argjson n "$n" --arg episode "$episode" '.units |= map(if (.issue == $n or .branch == ("agent/issue-" + ($n | tostring))) and .hold_handoff_episode != $episode then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
       fi
       # Recorded PRs can be outside the census or attached to an existing unit.
       # Read their current labels before reusing them, rather than inferring
@@ -328,7 +355,7 @@ register_new_issues() {
       if (( known_failed )); then
         HANDOFF_WAIT_PRS="$(jqf -c --argjson add "$known_prs" '. + $add | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
         HANDOFF_WAIT_BRANCHES="$(jqf -c --arg branch "$handoff_branch" 'if $branch == "" then . else (. + [$branch] | unique) end' <<<"${HANDOFF_WAIT_BRANCHES:-[]}")"
-        jqf --argjson n "$n" --argjson prs "$known_prs" '.units |= map(if .issue == $n or .branch == ("agent/issue-" + ($n | tostring)) or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)' "$UNITS" | write_state "$UNITS"
+        units_update --argjson n "$n" --argjson prs "$known_prs" '.units |= map(if .issue == $n or .branch == ("agent/issue-" + ($n | tostring)) or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
         continue
       fi
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]] && ! jqf -e --argjson pr "$handoff_pr" 'any(.[]; .number == $pr)' <<<"${HANDOFF_PR_CENSUS:-[]}" >/dev/null; then
@@ -348,23 +375,23 @@ register_new_issues() {
         HANDOFF_WAIT_PRS="$(jqf -c --argjson add "$ids" '. + $add | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
         HANDOFF_WAIT_BRANCHES="$(jqf -c --argjson prs "$ids" --slurpfile census <(printf '%s' "${HANDOFF_PR_CENSUS:-[]}") --arg branch "$handoff_branch" '
           . + [$census[0][] | select(.number as $p | $prs | index($p)) | .headRefName | select(type=="string" and length>0)] + (if $branch == "" then [] else [$branch] end) | unique' <<<"${HANDOFF_WAIT_BRANCHES:-[]}")"
-        jqf --argjson n "$n" --argjson prs "$ids" '.units |= map(if .issue == $n or .branch == ("agent/issue-" + ($n | tostring)) or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)' "$UNITS" | write_state "$UNITS"
+        units_update --argjson n "$n" --argjson prs "$ids" '.units |= map(if .issue == $n or .branch == ("agent/issue-" + ($n | tostring)) or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
         continue
       fi
       # Clear this issue's wait from a PR once its successfully read association
       # no longer points here; other handoffs may still be waiting on the PR.
       ids="$(jqf -c '[.[].number] | unique' <<<"$lookup")"
-      jqf --argjson n "$n" --argjson prs "$ids" '.units |= map(
+      units_update --argjson n "$n" --argjson prs "$ids" '.units |= map(
         if ((.hold_handoff_wait_issues // []) | index($n)) != null and .issue != $n
           and .hold_handoff_lookup_pending != true and ((.pr // null) as $pr | $prs | index($pr)) == null
         then .hold_handoff_wait_issues |= map(select(. != $n))
           | if (.hold_handoff_wait_issues | length) == 0 then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end
-        else . end)' "$UNITS" | write_state "$UNITS"
+        else . end)'
       # Individually read ledger PRs can protect their old approvals, but do not
       # establish that an unregistered PR for this issue does not also exist.
       if [[ "${HANDOFF_CENSUS_PARTIAL:-0}" == 1 ]]; then
         HANDOFF_WAIT_PRS="$(jqf -c --argjson add "$ids" '. + $add | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
-        jqf --argjson n "$n" --argjson prs "$ids" '.units |= map(if .issue == $n or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)' "$UNITS" | write_state "$UNITS"
+        units_update --argjson n "$n" --argjson prs "$ids" '.units |= map(if .issue == $n or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
         continue
       fi
       matches="$(jqf 'length' <<<"$lookup")"
@@ -372,7 +399,7 @@ register_new_issues() {
         ids="$(jqf -c '[.[].number] | sort' <<<"$lookup")"
         HANDOFF_WAIT_PRS="$(jqf -c --argjson add "$ids" '. + $add | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
         ids_state="$(jqf -r 'map(tostring) | join("-")' <<<"$ids")"
-        jqf --argjson n "$n" --argjson prs "$ids" '.units |= map(if .issue == $n or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)' "$UNITS" | write_state "$UNITS"
+        units_update --argjson n "$n" --argjson prs "$ids" '.units |= map(if .issue == $n or ((.pr // null) as $pr | $prs | index($pr)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
         (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "handoff-pr-ambiguous:$n:$ids" "handoff-pr-ambiguous issue=#$n status=prs-$ids_state prs=$ids") \
           || say "handoff issue #$n: could not notify supervisor about ambiguous PRs $ids"
         continue
@@ -395,13 +422,13 @@ register_new_issues() {
       [[ -n "$episode" ]] || continue
       ids="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)) | .id]' "$UNITS")"
       if jqf -e --argjson n "$n" --arg pr "$handoff_pr" --arg episode "$episode" 'all(.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)); .hold_handoff_episode == $episode) and ($pr == "" or any(.units[]; ((.pr // "") | tostring) == $pr))' "$UNITS" >/dev/null; then
-        jqf --argjson ids "$ids" --argjson n "$n" '.units |= map(if (.id as $id | $ids | index($id)) != null then .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n))) | if (.hold_handoff_wait_issues | length) == 0 and .hold_handoff_lookup_pending != true then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end else . end)' "$UNITS" | write_state "$UNITS"
+        units_update --argjson ids "$ids" --argjson n "$n" '.units |= map(if (.id as $id | $ids | index($id)) != null then .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n))) | if (.hold_handoff_wait_issues | length) == 0 and .hold_handoff_lookup_pending != true then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end else . end)'
         continue
       fi
       HANDOFF_WAIT_PRS="$(jqf -c --argjson add "$(jqf -c '[.[].number]' <<<"$lookup")" '. + $add | unique' <<<"${HANDOFF_WAIT_PRS:-[]}")"
       lane="$(unit_field "$existing_id" '.lane // empty')"
       # Block the old approval while any matching unit still has a live owner.
-      jqf --argjson ids "$ids" --argjson n "$n" '.units |= map(if (.id as $id | $ids | index($id)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)' "$UNITS" | write_state "$UNITS"
+      units_update --argjson ids "$ids" --argjson n "$n" '.units |= map(if (.id as $id | $ids | index($id)) != null then .hold_handoff_wait_issues = (((.hold_handoff_wait_issues // []) + [$n]) | unique) | .hold_handoff_waiting=true else . end)'
       jqf -e --argjson ids "$ids" 'any(.workers[]; (.unit as $id | $ids | index($id)) != null and .harvested != true)' "$WORKERS" >/dev/null && continue
       # A worker which has already started may have read the old issue; do not
       # consume the new episode until it exits and the continuation can run.
@@ -454,7 +481,7 @@ register_new_issues() {
       [[ -n "$handoff_pr" ]] || ! grep -qE "(#|issue-)${n}([^0-9]|\$)" <<<"$busy" || continue
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
-      [[ -n "$issue_json" ]] || issue_json="$(gh issue view "$n" --json number,title,body,state,labels 2>/dev/null)" || continue
+      [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary 2>/dev/null)" || continue
       if parent_reason="$(scheduler_issue_intake_parent_reason "$n" "$issue_json")"; then
         if scheduler_issue_transition "$n" needs-triage "intake-parent:$parent_reason" . 0 "$issue_json"; then
           say "intake issue #$n -> needs-triage (parent: $parent_reason)"
@@ -523,7 +550,7 @@ register_new_issues() {
       else branch="agent/auto-issue-$n-recovered-${recovery_sha:0:12}"; fi
     fi
     if [[ -n "$existing_id" ]]; then
-      jqf --arg id "$existing_id" --argjson n "$n" --arg episode "$episode" --arg pr_state "$pr_state" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" \
+      units_update --arg id "$existing_id" --argjson n "$n" --arg episode "$episode" --arg pr_state "$pr_state" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" \
         --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg existing_pr "$existing_pr" --arg handoff_branch "$handoff_branch" --argjson pr_changed "$pr_changed" --argjson ids "$ids" --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" --arg at "$STAMP" \
         '.units |= map(if (.id as $unit | $ids | index($unit)) != null then
           .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n)))
@@ -552,18 +579,17 @@ register_new_issues() {
           | if (($handoff_all.worktree_sha // "") | test("^[0-9a-f]{40}$")) then
               .handoff_worktree = $handoff_all.worktree | .handoff_worktree_sha = $handoff_all.worktree_sha | .handoff_worktree_dirty = $handoff_all.worktree_dirty
             else . end
-          end)' "$UNITS" | write_state "$UNITS"
+          end)'
       say "hold handoff issue #$n resumed existing unit=$existing_id"
     else
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then branch="$handoff_branch"; fi
-      jqf --argjson n "$n" --arg title "$title" --argjson labels "${labels:-[]}" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg episode "$episode" --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" \
+      units_update --argjson n "$n" --arg title "$title" --argjson labels "${labels:-[]}" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg episode "$episode" --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" \
         --arg pr "$handoff_pr" --arg acceptance "${acceptance:-}" \
-        '.units += [{id:("issue-"+($n|tostring)), issue:$n, title:$title, labels:$labels, stage:"implement-pending", lane:$lane, branch:$branch, task:$task, body_blocked_by:$body_blocked_by, history:[],hold_handoff_episode:$episode}
+        'if any(.units[]; .issue == $n) then . else .units += [{id:("issue-"+($n|tostring)), issue:$n, title:$title, labels:$labels, stage:"implement-pending", lane:$lane, branch:$branch, task:$task, body_blocked_by:$body_blocked_by, history:[],hold_handoff_episode:$episode}
           + (if $acceptance != "" then {acceptance:($acceptance | fromjson)} else {} end)
           + (if $pr != "" then {pr:($pr | tonumber),stage:"repair-pending",lane_policy:$lane_policy,repair_hint:"Read the issue comments for the ownerless hold handoff and complete the existing PR."} else {} end)
           + (if (($handoff_all.worktree_sha // "") | test("^[0-9a-f]{40}$")) then {handoff_worktree:$handoff_all.worktree,handoff_worktree_sha:$handoff_all.worktree_sha,handoff_worktree_dirty:$handoff_all.worktree_dirty} else {} end)
-          + (if $handoff.start_ref then {handoff_start_ref:$handoff.start_ref,handoff_start_sha:$handoff.start_sha} else {} end)]' \
-        "$UNITS" | write_state "$UNITS"
+          + (if $handoff.start_ref then {handoff_start_ref:$handoff.start_ref,handoff_start_sha:$handoff.start_sha} else {} end)] end'
     fi
     if [[ -n "$intake_candidate_scope" ]]; then
       intake_entry="$(jqf -cn --arg id "issue-$n" --argjson scope "$intake_candidate_scope" '{id:$id,footprint:$scope}')"
