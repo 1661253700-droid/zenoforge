@@ -2,6 +2,8 @@
 # PORTABLE_ONLY=1 tools/run-engine-tests.sh runs only these. They run on every OS leg (macos-intel, wsl2, and later the pidfile-runner leg).
 # Later portability tickets append their own suites here (platform-env, proc, hostinfo, doctor, portable-shim/*, unitgen, coord).
 engine/lib.test.sh
+engine/lib-gitnexus.test.sh
+engine/lib-model-policy.test.sh
 engine/execution-admission.test.sh
 engine/execution-admission-metrics.test.sh
 engine/mac-autopilot/start.test.sh
