@@ -187,6 +187,8 @@ class ExecutionAdmission(unittest.TestCase):
         source = self.driver.read_text()
         self.driver.write_text(source.replace("try:sys.exit", """from pathlib import Path
 import os
+from types import SimpleNamespace
+g.time=SimpleNamespace(monotonic=lambda:float(os.environ['FIXTURE_MONOTONIC']))
 read=Path.read_text
 def fixture_read(path,*args,**kwargs):
  if path==Path('/proc/stat') and os.environ.get('FIXTURE_STAT_FAILURE')=='1':raise FileNotFoundError('fixture stat')
@@ -196,6 +198,7 @@ try:sys.exit"""))
         start = self.home / "locks/execution-cpu-start.json"
         for initially_unknown in (False, True):
             with self.subTest(initially_unknown=initially_unknown):
+                self.env["FIXTURE_MONOTONIC"] = "100"
                 start.unlink(missing_ok=True)
                 self.env["FIXTURE_STAT_FAILURE"] = "1" if initially_unknown else "0"
                 self.assertEqual(self.run_guard("run", "true").returncode, 0)
@@ -206,6 +209,8 @@ try:sys.exit"""))
                 self.env["FIXTURE_STAT_FAILURE"] = "0"
                 self.assertEqual(self.run_guard("run", "true").returncode, 75)
                 self.assertEqual(json.loads(start.read_text()), record)
+                self.env["FIXTURE_MONOTONIC"] = "106"
+                self.assertEqual(self.run_guard("run", "true").returncode, 0)
 
     def test_cpu_interval_missing_corrupt_permission_and_real_boot_change(self):
         (self.home / "capacity.env").write_text("AGENT_GLOBAL_EXECUTION_CAP=16\nAGENT_EXECUTION_CPU_TARGET_PERCENT=90\n")
