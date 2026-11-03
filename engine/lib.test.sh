@@ -1548,7 +1548,7 @@ HOLD_DEAD_RUN="$(AGENT_HOME="$HOLD_DEAD_HOME" ZF_NIGHT_DIR="$HOLD_DEAD_HOME/nigh
       "$$" "$owner_ticks" > "$ZF_NIGHT_DIR/agents.txt"
     gh() {
       if [[ "$1 ${2:-}" == "issue list" ]]; then
-        jq -cn '\''[{number:740040},{number:740041},{number:740046},{number:740048}]'\''
+        jq -cn '\''[740040,740041,740046,740048] | map({number:.,state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"})'\''
       else
         jq -cn '\''{state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"}'\''
       fi
