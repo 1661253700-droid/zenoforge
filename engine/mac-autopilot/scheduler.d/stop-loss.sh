@@ -17,14 +17,47 @@ loop_rounds() { # 只数最近一次 supervisor 裁决（requeue/approve）或�
 }
 
 # 止损预算（#4363）：自最近一次裁决（supervisor requeue/approve 或顾问裁决）起，
-# 已花费的 implement/repair 轮数（每个 write-start 一轮）与第一轮至今的墙钟。裁决重置预算，
-# 让既有顾问收敛通道完整跑完；没有任何裁决拦得住的单元才止损转 supervisor。
+# 已花费的 implement/repair 轮数（每个有效 write-start 一轮）与第一轮至今的墙钟。经记录确认的空发现、同 head 无推送修复不计轮；
+# 裁决重置预算，让既有顾问收敛通道完整跑完；没有任何裁决拦得住的单元才止损转 supervisor。
 # 预算内输出空；超轮数输出 "rounds N of B"，超墙钟输出 "wall Xmin of Ymin after N rounds"。
+effective_write_starts_since_ruling() { # unit-json ruling-stages-json → write-start records excluding verified empty repair no-ops
+  jqf -c --argjson ruling_stages "$2" '
+    def empty_findings_noop($index; $history; $records):
+      ([$history | to_entries[]
+        | select(.key < $index and (.value.stage | startswith("review-")))] | last // null) as $review
+      | if $review == null or $review.value.stage != "review-request-changes" then false
+        else
+          ([$history | to_entries[]
+            | select(.key <= $review.key and .value.stage == "review-request-changes")] | length) as $round
+          | ([$records[] | select(.round == $round)] | last // null) as $findings
+          | ([$history | to_entries[] | select(.key > $index and .value.stage == "repair-no-push")] | first // null) as $no_push
+          | ([$history | to_entries[] | select(.key > $index and .value.stage == "write-start")] | first // null) as $next_write
+          | (if $no_push == null then ""
+             else try ($no_push.value.result | capture("^head (?<sha>[0-9a-f]{40}) unchanged after repair$").sha) catch ""
+             end) as $same_head
+          | $findings != null and $findings.block == "ok"
+            and ($findings.findings | type) == "array" and ($findings.findings | length) == 0
+            and ($findings.all_findings | type) == "array" and ($findings.all_findings | length) == 0
+            and $same_head != "" and $review.value.result == $same_head
+            and ($next_write == null or $no_push.key < $next_write.key)
+        end;
+    (.history // []) as $history
+    | (.review_findings // []) as $records
+    | ([$history | to_entries[]
+        | select(.value.stage as $stage | ($ruling_stages | index($stage)) != null)
+        | .key] | max // -1) as $ruling
+    | [$history | to_entries[]
+      | select(.key > $ruling and .value.stage == "write-start")
+      | select(.value.work_type != "repair" or (empty_findings_noop(.key; $history; $records) | not))
+      | .value]
+  ' <<<"$1"
+}
+
 ticket_budget_reason() { # unit-json
-  jqf -r --argjson round_budget "$TICKET_ROUND_BUDGET" --argjson wall_budget "$TICKET_WALL_BUDGET_SECONDS" --argjson now "$NOW_EPOCH" '
-    (.history // []) as $h
-    | ([$h | to_entries[] | select(.value.stage | IN("supervisor-requeue","supervisor-approve","advisor-ruling")) | .key] | max // -1) as $ruling
-    | [$h[($ruling + 1):][] | select(.stage == "write-start")] as $rounds
+  local rounds
+  rounds="$(effective_write_starts_since_ruling "$1" '["supervisor-requeue","supervisor-approve","advisor-ruling"]')" || return 1
+  jqf -r --argjson rounds "$rounds" --argjson round_budget "$TICKET_ROUND_BUDGET" --argjson wall_budget "$TICKET_WALL_BUDGET_SECONDS" --argjson now "$NOW_EPOCH" '
+    $rounds as $rounds
     | if ($rounds | length) >= $round_budget
       then "rounds \($rounds | length) of \($round_budget)"
       else ($rounds | map(.at // empty) | first) as $first
@@ -36,24 +69,23 @@ ticket_budget_reason() { # unit-json
 }
 
 repair_rounds_since_ruling() { # unit-json → repair starts since the last successful review or supervisor/advisor decision
-  jqf -r '
+  local starts
+  starts="$(effective_write_starts_since_ruling "$1" '["supervisor-arbiter","supervisor-arbiter-round","supervisor-requeue","supervisor-approve","advisor-ruling","review-approve"]')" || return 1
+  jqf -r --argjson starts "$starts" '
     (.history // []) as $h
     | ([$h | to_entries[] | select(.value.stage | IN("supervisor-arbiter","supervisor-arbiter-round","supervisor-requeue","supervisor-approve","advisor-ruling","review-approve")) | .key] | max // -1) as $ruling
     | $h[$ruling + 1:] as $recent
     | ($recent | [to_entries[] | select(.value.stage == "write-start" and .value.work_type == "repair") | .key] | min // ($recent | length)) as $first_tagged
     | ([$recent[0:$first_tagged][] | select(.stage == "repair-delivered" or .stage == "self-fix-delivered" or (.stage == "worker-no-output" and .result == "repair"))] | length) as $legacy
-    | ([$recent[] | select(.stage == "write-start" and .work_type == "repair")] | length) as $tagged
+    | ([$starts[] | select(.work_type == "repair")] | length) as $tagged
     | $legacy + $tagged' <<<"$1"
 }
 repair_cap_admission() { # unit-id unit-json → two failed repair rounds escalate before another worker is prepared
-  local rounds hard_attempts
+  local rounds hard_attempts starts
   rounds="$(repair_rounds_since_ruling "$2")"
   [[ "$rounds" =~ ^[0-9]+$ ]] && (( rounds >= 2 )) || return 0
-  hard_attempts="$(jqf -r '
-    (.history // []) as $h
-    | ([$h | to_entries[] | select(.value.stage | IN("supervisor-arbiter","supervisor-arbiter-round","supervisor-requeue","supervisor-approve","advisor-ruling","review-approve")) | .key] | max // -1) as $ruling
-    | [$h[($ruling + 1):][] | select(.stage == "write-start" and .work_type == "repair" and .hard_escalation == true)] | length
-  ' <<<"$2")"
+  starts="$(effective_write_starts_since_ruling "$2" '["supervisor-arbiter","supervisor-arbiter-round","supervisor-requeue","supervisor-approve","advisor-ruling","review-approve"]')" || return 1
+  hard_attempts="$(jqf -r --argjson starts "$starts" '[ $starts[] | select(.work_type == "repair" and .hard_escalation == true) ] | length')"
   if [[ "$(jqf -r '.hard_escalated // false' <<<"$2")" != true || "$hard_attempts" == 0 ]]; then
     if ! hard_implementer_fields || ! provider_runtime_ready "$PICK_PROVIDER" "$PICK_MODEL" production; then
       to_supervisor "$1" "repair cap: two failed repair rounds and no configured hard implementation identity is available" \

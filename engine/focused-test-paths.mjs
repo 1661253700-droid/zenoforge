@@ -78,6 +78,8 @@ export const RELATED_TESTS = new Map([
   ['engine/hold.test.sh', ['engine/hold.test.sh']],
   ['engine/mac-autopilot/advisor-provider-missing.test.sh', ['engine/mac-autopilot/advisor-provider-missing.test.sh']],
   ['engine/mac-autopilot/scheduler.d/review-rules.sh', ['engine/mac-autopilot/incident-prior-art-gate.test.sh']],
+  ['engine/mac-autopilot/scheduler.d/stop-loss.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh']],
+  ['engine/mac-autopilot/scheduler.d/evals-arbiter.sh', ['engine/mac-autopilot/noop-repair-rounds.test.sh']],
   ['engine/mac-autopilot/scheduler.d/dispatch-queue.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
   ['engine/mac-autopilot/scheduler.d/footprint.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
   ['engine/mac-autopilot/scheduler.d/intake.sh', ['engine/mac-autopilot/scheduler.d/footprint-convoy.test.sh']],
@@ -224,6 +226,7 @@ export const RELATED_TESTS = new Map([
   ]],
   // Remaining readers of the incident registry data.
   ['engine/state/incident-guards.json', [
+    'engine/mac-autopilot/noop-repair-rounds.test.sh',
     'engine/check-rulings.test.sh',
     'engine/land-direct-main.test.sh',
     'engine/lesson-fragments.test.sh',
