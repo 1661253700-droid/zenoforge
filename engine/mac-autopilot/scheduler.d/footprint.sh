@@ -449,7 +449,7 @@ footprint_convoy_alert() {
       aged_id_lines+="$id_json"$'\n'
     done < <(jqf -c '.[]' <<<"$waiters")
     (( aged_count >= min_waiters )) || continue
-    ids="$(jqf -Rsc 'split("\n") | map(select(length > 0) | fromjson) | join(",")' <<<"$aged_id_lines")" || return 1
+    ids="$(jqf -Rsr 'split("\n") | map(select(length > 0) | fromjson) | join(",")' <<<"$aged_id_lines")" || return 1
     line="footprint-convoy owner=$owner waiters=$ids oldest_wait_min=$max_age min_waiters=$min_waiters wait_minutes=$wait_minutes action=recut-overlapping-scopes"
     key="footprint-convoy:$owner:$episode_epoch"
     say "$line"
