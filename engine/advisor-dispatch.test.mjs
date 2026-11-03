@@ -1,0 +1,225 @@
+import assert from 'node:assert/strict';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import test from 'node:test';
+
+import { fixture, run, text, dispatchBlock, here } from './test-advisor-convergence-helpers.mjs';
+
+// Shared harness for the dispatch block: N/WT/SCRIPT_DIR match production's
+// own script-global variables at the point the slice begins; ISSUE_JSON/
+// PRIOR_STATE are the two inputs run-advisor.sh normally reads from a real
+// `gh issue view` and state_read() before this slice starts, supplied here
+// as plain env vars per call (never a default baked into the fixture body:
+// `set -u` means a test that forgets one fails loudly, not silently, on an
+// unbound-variable error rather than a wrong result). web_advisor_provider_
+// usable()/_poll()/_dispatch_async() are the only functions this slice
+// depends on that reach outside the process (CDP, a spawned browser job);
+// every other name it calls (advisor_resume_check, advisor_persist_pending,
+// state_merge, record_env_fault, model_call_failure_kind, log_model_
+// failure, scrub_git_object_ids, jq_arg_file) is the real one, extracted
+// above.
+const dispatchFixture = `
+N=90042
+WT="$HOME/worktree"
+SCRIPT_DIR="$2"
+BOT_DISCLAIMER=fixture-disclaimer
+WEB_ADVISOR_PROVIDER_JOB_TIMEOUT_SECONDS=2400
+WEB_ADVISOR_PROVIDER_CDP_PORT=9224
+WEB_ADVISOR_PROVIDER_SCRIPT="$HOME/web-advisor-provider-fixture.cjs"
+SPEND_DIR="$AGENT_HOME/spend"
+git() {
+  local arg add=0
+  for arg in "$@"; do
+    if [ "$add" = 1 ]; then
+      case "$arg" in
+        -*) ;;
+        *) mkdir -p "$arg"; return 0 ;;
+      esac
+    elif [ "$arg" = add ]; then
+      add=1
+    fi
+  done
+  return 0
+}
+gitnexus_refresh_index_once() { :; }
+fail_attempt() {
+  [ "$2" = 0 ] || pause_for_backoff
+  state_bump_attempts "$N"
+  exit 1
+}
+pause_for_backoff() { touch "$HOME/PAUSE"; }
+web_advisor_provider_usable() { [ "\${USABLE:-1}" = 1 ]; }
+web_advisor_provider_poll() {
+  printf 'poll:%s\\n' "$1" >> "$HOME/calls"
+  if [ -n "\${POLL_OUTPUT:-}" ]; then printf '%s' "$POLL_OUTPUT"; fi
+  return "\${POLL_STATUS:-0}"
+}
+web_advisor_provider_dispatch_async() {
+  printf 'dispatch:%s\\n' "$1" >> "$HOME/calls"
+}
+`;
+function runDispatch(f, { issueJson = '{"title":"t","body":"b","comments":[]}', priorState = '{"attempts":2}', ...envOverrides } = {}) {
+  // PRIOR_STATE (the env var the slice itself reads) and the real on-disk
+  // state file must agree: state_merge() inside the slice reads/writes the
+  // FILE, not this env var, so a scenario claiming an existing job (or a
+  // pending verdict) must also be on disk or a post-run assertion would be
+  // checking a field the real state never had.
+  writeFileSync(join(f.root, 'agent/state/90042.json'), priorState);
+  return run(f, dispatchFixture + dispatchBlock + '\nprintf "RESULT=%s DEGRADED=%s\\n" "$RESULT" "$ADVISOR_DEGRADED"\n',
+    { ISSUE_JSON: issueJson, PRIOR_STATE: priorState, ...envOverrides });
+}
+function envFaultText(f) {
+  const dir = join(f.root, 'agent/env-faults');
+  if (!existsSync(dir)) return '';
+  return readdirSync(dir).map((name) => readFileSync(join(dir, name), 'utf8')).join('\n');
+}
+
+test('CDP unreachable records an environment fault and charges no attempt', () => {
+  const f = fixture();
+  try {
+    const r = runDispatch(f, { USABLE: '0' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /RESULT=/, 'must exit before a verdict is ever computed');
+    assert.match(envFaultText(f), /advisor/);
+    assert.equal(JSON.parse(text(f, 'agent/state/90042.json')).attempts, 2, 'an unreachable CDP session is never charged to the ticket');
+    assert.equal(existsSync(join(f.root, 'PAUSE')), false);
+  } finally { f.close(); }
+});
+
+test('an in-flight job still polling exits cleanly without charging an attempt', () => {
+  const f = fixture();
+  try {
+    const priorState = JSON.stringify({ attempts: 2, web_advisor_provider_job_id: 'advisor-90042-1', web_advisor_provider_job_started_at: Math.floor(Date.now() / 1000) });
+    const r = runDispatch(f, { priorState, POLL_STATUS: '2' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /RESULT=/);
+    assert.match(text(f, 'calls'), /^poll:advisor-90042-1$/m);
+    assert.equal(envFaultText(f), '', 'still-running is normal in-flight state, not a fault');
+    const state = JSON.parse(text(f, 'agent/state/90042.json'));
+    assert.equal(state.attempts, 2);
+    assert.equal(state.web_advisor_provider_job_id, 'advisor-90042-1', 'a live poll never touches the job record');
+  } finally { f.close(); }
+});
+
+test('a job past its own timeout ceiling is treated as a dead session, not a running one', () => {
+  const f = fixture();
+  try {
+    const priorState = JSON.stringify({ attempts: 2, web_advisor_provider_job_id: 'advisor-90042-9', web_advisor_provider_job_started_at: Math.floor(Date.now() / 1000) - 2401 });
+    const r = runDispatch(f, { priorState, POLL_STATUS: '2' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(envFaultText(f), /web-advisor-provider/);
+    const state = JSON.parse(text(f, 'agent/state/90042.json'));
+    assert.equal(state.web_advisor_provider_job_id, undefined, 'a dead session is cleared so the next tick dispatches fresh');
+    assert.equal(state.attempts, 2, 'an environment fault is never charged to the ticket');
+  } finally { f.close(); }
+});
+
+test('a finished job whose call itself failed is an environment fault, not a charged attempt', () => {
+  const f = fixture();
+  try {
+    const priorState = JSON.stringify({ attempts: 2, web_advisor_provider_job_id: 'advisor-90042-1' });
+    const r = runDispatch(f, { priorState, POLL_STATUS: '0', POLL_OUTPUT: '{"subtype":"web_advisor_provider_call_failed","result":"CDP crashed mid-turn"}' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(envFaultText(f), /CDP crashed mid-turn/);
+    const state = JSON.parse(text(f, 'agent/state/90042.json'));
+    assert.equal(state.web_advisor_provider_job_id, undefined);
+    assert.equal(state.attempts, 2);
+    assert.equal(existsSync(join(f.root, 'PAUSE')), false);
+  } finally { f.close(); }
+});
+
+test('a finished job with a malformed answer charges an attempt via the shared admission path', () => {
+  const f = fixture();
+  try {
+    const priorState = JSON.stringify({ attempts: 2, web_advisor_provider_job_id: 'advisor-90042-1' });
+    const r = runDispatch(f, { priorState, POLL_STATUS: '0', POLL_OUTPUT: '0' });
+    assert.equal(r.status, 1, r.stderr);
+    assert.doesNotMatch(r.stdout, /RESULT=/);
+    const state = JSON.parse(text(f, 'agent/state/90042.json'));
+    assert.equal(state.web_advisor_provider_job_id, undefined);
+    assert.equal(state.attempts, 3, 'GPT-6 answered, just not usably -- a real failure, unlike an unreachable CDP session');
+    assert.equal(existsSync(join(f.root, 'PAUSE')), false, 'the job itself completed; nothing here is a backoff-worthy exit status');
+  } finally { f.close(); }
+});
+
+// PR #191 made a complete plan part of a valid non-close answer: the
+// dispatch block now runs advisor_plan_action() on every polled or resumed
+// RESULT, so fixtures standing in for "the advisor answered validly" carry
+// the minimal complete plan shape (prompts/advisor.schema.json) or they
+// take the reask path instead of resolving a verdict.
+const fixturePlan = {
+  changes: [{ file: 'engine/lib.sh', symbol: 'route_to_advisor', change: 'fixture-only change' }],
+  tests_fail_first: ['node --test engine/advisor-convergence.test.mjs'],
+  non_goals: ['fixture-only non-goal'],
+};
+const fixtureAdvisedResult = JSON.stringify({ verdict: 'advised', plan: fixturePlan });
+
+test('a finished job with a valid answer produces RESULT without charging an attempt', () => {
+  const f = fixture();
+  try {
+    const priorState = JSON.stringify({ attempts: 2, web_advisor_provider_job_id: 'advisor-90042-1' });
+    const r = runDispatch(f, { priorState, POLL_STATUS: '0', POLL_OUTPUT: `{"is_error":false,"structured_output":${fixtureAdvisedResult}}` });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.includes(`RESULT=${fixtureAdvisedResult} DEGRADED=0`), r.stdout);
+    const state = JSON.parse(text(f, 'agent/state/90042.json'));
+    assert.equal(state.web_advisor_provider_job_id, undefined);
+    assert.equal(state.attempts, 2);
+  } finally { f.close(); }
+});
+
+test('resuming an existing pending verdict skips dispatch entirely and reuses the cached result', () => {
+  const f = fixture();
+  try {
+    const issueJson = '{"title":"t","body":"b","comments":[]}';
+    const priorState = JSON.stringify({
+      attempts: 2,
+      pending_advisor_verdict: {
+        result: JSON.parse(fixtureAdvisedResult),
+        input: { title: 't', body: 'b', comments: [] },
+        computed_at: 'an earlier tick',
+        episode_seq: 0,
+        effects: {},
+      },
+    });
+    const r = runDispatch(f, { issueJson, priorState });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.includes(`RESULT=${fixtureAdvisedResult} DEGRADED=0`), r.stdout);
+    assert.equal(text(f, 'calls'), '', 'a resumed verdict must never touch usable()/poll()/dispatch_async()');
+    assert.equal(JSON.parse(text(f, 'agent/state/90042.json')).attempts, 2);
+  } finally { f.close(); }
+});
+
+test('no existing job dispatches a fresh one and exits, leaving the ticket to poll next tick', () => {
+  const f = fixture();
+  try {
+    const r = runDispatch(f, { priorState: '{"attempts":2}' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /RESULT=/, 'a fresh dispatch never resolves a verdict on the same tick');
+    assert.match(text(f, 'calls'), /^dispatch:advisor-90042-\d+$/m);
+    const state = JSON.parse(text(f, 'agent/state/90042.json'));
+    assert.match(state.web_advisor_provider_job_id, /^advisor-90042-\d+$/);
+    assert.equal(typeof state.web_advisor_provider_job_started_at, 'number');
+    assert.equal(state.web_advisor_provider_job_episode_seq, 0);
+    assert.equal(state.attempts, 2);
+  } finally { f.close(); }
+});
+
+test('the legacy triage/recut failure outlet cannot bypass shared admission', () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.root, 'agent/state/90042.json'), '{"attempts":4,"advisor_ruled_at":"prior"}');
+    const r = run(f, `
+guarded_write() { echo forbidden >> "$HOME/actions"; }
+record_run_decision() { :; }
+conclude_run() { echo reached > "$HOME/conclusion-reached"; }
+give_up_on_issue 90042 "fixture failure"
+`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(text(f, 'conclusion-reached').trim(), 'reached');
+    assert.equal(text(f, 'actions'), '');
+    assert.equal(JSON.parse(text(f, 'agent/state/90042.json')).advisor_ruled_at, 'prior');
+  } finally { f.close(); }
+});
