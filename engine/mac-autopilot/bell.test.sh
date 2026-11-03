@@ -18,7 +18,7 @@ printf 'window.DASH={};\n' > "$autopi/dashboard.data.js"
 trap 'rm -rf "$tmp"' EXIT
 
 cat > "$autopi/config.json" <<'JSON'
-{"bell":{"enabled":true,"notify":true,"auto_supervisor":true,"dedup_minutes":30}}
+{"bell":{"enabled":true,"notify":true,"auto_supervisor":true,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}
 JSON
 printf 'existing alert\n' > "$autopi/alerts/gate.md"
 old_mtime="$(python3 - "$autopi/alerts/gate.md" <<'PY'
@@ -140,7 +140,7 @@ export PATH="$bin:$PATH"
 pause_autopi="$tmp/pause-autopi"
 pause_agent="$tmp/pause-agent"
 mkdir -p "$pause_autopi/alerts" "$pause_agent"
-printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false}}' > "$pause_autopi/config.json"
+printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false},"incident":{"file_min_severity":"off"}}' > "$pause_autopi/config.json"
 printf '%s\n' '{"units":[]}' > "$pause_autopi/units.json"
 printf '%s\n' '{"caller":"operator","reason":"maintenance","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-01T00:00:00Z"}' > "$pause_agent/PAUSE"
 BELL_AUTOPI_DIR="$pause_autopi" AGENT_HOME="$pause_agent" AUTOPILOT_LOOP_UNIT=fixture-loop.service bash "$bell"
@@ -306,7 +306,7 @@ unset AGENT_HOME
 ci_autopi="$tmp/ci-autopi"
 mkdir -p "$ci_autopi/alerts" "$tmp/ci-supervisor"
 printf 'window.DASH={};\n' > "$ci_autopi/dashboard.data.js"
-printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false}}' > "$ci_autopi/config.json"
+printf '%s\n' '{"bell":{"enabled":true,"notify":false,"auto_supervisor":false},"incident":{"file_min_severity":"off"}}' > "$ci_autopi/config.json"
 printf '%s\n' '{"units":[]}' > "$ci_autopi/units.json"
 printf '%s\n' '{"workers":[]}' > "$ci_autopi/workers.json"
 printf '%s\n' '{"steps":[{"step":"release fixture","status":"done"}]}' > "$ci_autopi/release.json"
@@ -529,5 +529,127 @@ cp -R "$ci_autopi" "$tmp/train-check-only-before"
 bash "$bell" --check-only > "$tmp/train-check-only.out"
 assert_no_cancellations
 diff -qr "$ci_autopi" "$tmp/train-check-only-before" >/dev/null
+
+# A medium bell event uses the real upsert helper: first sighting creates one
+# incident issue, and a repeated event appends evidence to that open issue.
+incident_autopi="$tmp/incident-autopi"
+incident_supervisor="$tmp/incident-supervisor"
+incident_bin="$tmp/incident-bin"
+mkdir -p "$incident_autopi/alerts" "$incident_supervisor" "$incident_bin"
+cat > "$incident_autopi/config.json" <<'JSON'
+{"bell":{"enabled":true,"notify":false,"auto_supervisor":false,"dedup_minutes":30}}
+JSON
+printf 'window.DASH={};\n' > "$incident_autopi/dashboard.data.js"
+incident_tick="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+printf '[%s] tick done units=0 live=0\n' "$incident_tick" > "$incident_autopi/scheduler.log"
+printf '%s\n' '{"units":[]}' > "$incident_autopi/units.json"
+printf '%s\n' '{"workers":[]}' > "$incident_autopi/workers.json"
+cat > "$incident_supervisor/advisor-verdicts-stale.json" <<'JSON'
+[{"n":1,"verdict":"FIX","reason":"fixture problem"}]
+JSON
+touch -d "@$(( $(date +%s) - 200000 ))" "$incident_supervisor/advisor-verdicts-stale.json"
+jq -n '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:{},signatures:{},pending:[]}' \
+  > "$incident_autopi/bell-state.json"
+cat > "$incident_bin/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$INCIDENT_GH_CALLS"
+case "${1:-}:${2:-}" in
+  label:list)
+    while IFS= read -r label; do printf '%s\n' "$label"; done < "$INCIDENT_LABELS"
+    ;;
+  label:create)
+    label="${3:?}"
+    grep -qx -- "$label" "$INCIDENT_LABELS" || printf '%s\n' "$label" >> "$INCIDENT_LABELS"
+    ;;
+  api:--method)
+    jq -c '[.]' "$INCIDENT_ISSUES"
+    ;;
+  api:repos/*/issues/*/sub_issues)
+    echo '{}'
+    ;;
+  api:repos/*/issues/*)
+    echo 501000
+    ;;
+  issue:create)
+    title=""; body_file=""; previous=""; labels=()
+    for arg in "$@"; do
+      case "$previous" in
+        --title) title="$arg" ;;
+        --body-file) body_file="$arg" ;;
+        --label) labels+=("$arg") ;;
+      esac
+      previous="$arg"
+    done
+    number="$(cat "$INCIDENT_NEXT_NUMBER")"
+    printf '%s\n' "$((number + 1))" > "$INCIDENT_NEXT_NUMBER"
+    labels_json="$(printf '%s\n' "${labels[@]}" | jq -R . | jq -s 'map({name:.})')"
+    jq --argjson number "$number" --arg title "$title" --argjson labels "$labels_json" --rawfile body "$body_file" \
+      '. + [{number:$number,title:$title,body:$body,state:"OPEN",labels:$labels}]' "$INCIDENT_ISSUES" > "$INCIDENT_ISSUES.tmp"
+    mv "$INCIDENT_ISSUES.tmp" "$INCIDENT_ISSUES"
+    printf 'https://github.com/test/repo/issues/%s\n' "$number"
+    ;;
+  issue:view)
+    jq -ce --argjson number "${3:?}" '[.[] | select(.number==$number)][0]' "$INCIDENT_ISSUES"
+    ;;
+  issue:edit)
+    echo '{}'
+    ;;
+  issue:comment)
+    number="${3:?}"; body_file=""; previous=""
+    for arg in "$@"; do
+      [[ "$previous" != --body-file ]] || body_file="$arg"
+      previous="$arg"
+    done
+    jq -cn --argjson number "$number" --rawfile body "$body_file" '{number:$number,body:$body}' >> "$INCIDENT_COMMENTS"
+    ;;
+  *) echo "unexpected incident-test gh call: $*" >&2; exit 91 ;;
+esac
+SH
+chmod +x "$incident_bin/gh"
+cat > "$incident_bin/timeout" <<'SH'
+#!/usr/bin/env bash
+while [[ "${1:-}" == --foreground || "${1:-}" == --kill-after=* ]]; do shift; done
+[[ "${1:-}" =~ ^[0-9]+s?$ ]] && shift
+exec "$@"
+SH
+chmod +x "$incident_bin/timeout"
+printf 'ready-for-agent\n' > "$tmp/incident-labels"
+printf '[]\n' > "$tmp/incident-issues.json"
+: > "$tmp/incident-comments.jsonl"
+: > "$tmp/incident-gh-calls.log"
+printf '6100\n' > "$tmp/incident-next-number"
+export INCIDENT_LABELS="$tmp/incident-labels" INCIDENT_ISSUES="$tmp/incident-issues.json"
+export INCIDENT_COMMENTS="$tmp/incident-comments.jsonl" INCIDENT_GH_CALLS="$tmp/incident-gh-calls.log"
+export INCIDENT_NEXT_NUMBER="$tmp/incident-next-number"
+cat > "$tmp/incident-roadmap.json" <<'JSON'
+{"roots":[{"number":900,"title":"the product roadmap","state":"open","labels":["roadmap"],"children":[{"number":910,"title":"开发流水线与运行稳定","state":"open","milestone":"开发流水线与运行稳定","labels":["roadmap-theme"],"children":[{"number":912,"title":"Incident intake","state":"open","labels":["roadmap-epic"],"children":[]}]}]}]}
+JSON
+export BELL_AUTOPI_DIR="$incident_autopi" BELL_SUPERVISOR_DIR="$incident_supervisor"
+export MAC_AUTOPILOT_ROOT="$MAC_AUTOPILOT_ENV_ROOT" ZF_ENGINE_DIR="$MAC_AUTOPILOT_ENV_ROOT/engine"
+export ZF_REPO_DIR="$MAC_AUTOPILOT_ENV_ROOT" ZF_REPO=test/repo ZF_GH_REPO=test/repo
+export ZF_ISSUE_LOCK_DIR="$tmp/incident-locks" AGENT_HOME="$tmp/incident-agent"
+export ZF_ROADMAP_TREE_CACHE_FILE="$tmp/incident-roadmap.json"
+export PATH="$incident_bin:$PATH" BELL_TEST_NETWORK=green BELL_STALE_CI_DISABLE=1
+bash "$bell" > "$tmp/incident-first.out" 2>&1
+[[ "$(jq 'length' "$INCIDENT_ISSUES")" == 1 ]] || {
+  echo 'bell.test.sh: medium incident event did not create exactly one issue' >&2
+  cat "$tmp/incident-first.out" "$incident_autopi/bell-state.json" "$incident_autopi/bell.log" "$INCIDENT_GH_CALLS" >&2
+  exit 1
+}
+jq -e '.[0].body | contains("<!-- vecta-incident-class:verdicts-backlog-stale -->")
+  and contains("First seen:") and contains("Occurrence count: 1") and contains("advisor FIX backlog")' \
+  "$INCIDENT_ISSUES" >/dev/null
+jq -e '.[0].labels | any(.name=="incident") and any(.name=="pipeline-system") and any(.name=="ready-for-agent")' \
+  "$INCIDENT_ISSUES" >/dev/null
+grep -Fxq incident "$INCIDENT_LABELS"
+grep -Fxq pipeline-system "$INCIDENT_LABELS"
+bash "$bell"
+[[ "$(jq 'length' "$INCIDENT_ISSUES")" == 1 ]]
+[[ "$(wc -l < "$INCIDENT_COMMENTS" | tr -d ' ')" == 1 ]]
+jq -se '.[0].number == 6100 and (.[0].body | contains("Occurrence count: 2") and contains("advisor FIX backlog"))' \
+  "$INCIDENT_COMMENTS" >/dev/null
+[[ "$(grep -c '^issue create ' "$INCIDENT_GH_CALLS")" == 1 ]]
+grep -Fq 'incident filed class=verdicts-backlog-stale count=2' "$incident_autopi/bell.log"
 
 echo 'bell.test.sh: PASS'
