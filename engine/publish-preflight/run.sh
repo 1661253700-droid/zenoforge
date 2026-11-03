@@ -20,10 +20,14 @@ if ! bash "$here/unit-paths-check.sh" "$live_version" "$new_version"; then
 fi
 
 echo "publish-preflight: checking resolved config"
-if ! python3 -I "$here/resolved-config-check.py" \
-  "$live_version" "$target_repo" "$live_ref" "$new_version" "$target_repo" "$new_ref" "${intended[@]}"; then
-  echo "publish-preflight: resolved-config check failed" >&2
-  exit 1
+if [[ "${ZF_PREFLIGHT_PREVIOUSLY_LIVE:-0}" == 1 ]]; then
+  echo "publish-preflight: skipping resolved-config comparison for previously live version"
+else
+  if ! python3 -I "$here/resolved-config-check.py" \
+    "$live_version" "$target_repo" "$live_ref" "$new_version" "$target_repo" "$new_ref" "${intended[@]}"; then
+    echo "publish-preflight: resolved-config check failed" >&2
+    exit 1
+  fi
 fi
 
 echo "publish-preflight: checking suite set"
@@ -33,9 +37,13 @@ if ! python3 -I "$here/suite-set-check.py" "$live_version" "$new_version" "$targ
 fi
 
 echo "publish-preflight: checking dropped file references"
-if ! python3 -I "$here/dropped-file-refs-check.py" "$live_version" "$new_version" "${intended[@]}"; then
-  echo "publish-preflight: dropped-file-refs check failed" >&2
-  exit 1
+if [[ "${ZF_PREFLIGHT_PREVIOUSLY_LIVE:-0}" == 1 ]]; then
+  echo "publish-preflight: skipping dropped-file-refs comparison for previously live version"
+else
+  if ! python3 -I "$here/dropped-file-refs-check.py" "$live_version" "$new_version" "${intended[@]}"; then
+    echo "publish-preflight: dropped-file-refs check failed" >&2
+    exit 1
+  fi
 fi
 
 echo "publish-preflight: OK"

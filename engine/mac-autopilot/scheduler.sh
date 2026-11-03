@@ -6,6 +6,10 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$HERE/../merge-result-check.sh"
 source "$HERE/../closing-keywords.sh"
 source "$HERE/runtime-env.sh"
+if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && -z "${1:-}" && -f "$HERE/engine-canary.sh" ]]; then
+  bash "$HERE/engine-canary.sh" tick-begin || :
+  trap 'bash "$HERE/engine-canary.sh" tick-complete || :' EXIT
+fi
 source "$HERE/../verification-plan-runtime.sh"
 source "$HERE/config-reconcile.sh"
 source "$HERE/../matt-skills.sh"
