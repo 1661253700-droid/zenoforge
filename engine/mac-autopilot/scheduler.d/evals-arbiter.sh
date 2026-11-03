@@ -371,14 +371,54 @@ supervisor_section_of() { # report-path section（如 GUIDANCE）→ 冒号后�
     f {print}' "$1" 2>/dev/null
 }
 
+supervisor_requeue_rereview() { # unit-json → true when the latest unchanged reviewed head has no actionable review or a confirmed no-push repair
+  jqf -e '
+    (.history // []) as $history
+    | (.review_findings // []) as $records
+    | ([$history | to_entries[] | select(.value.stage | startswith("review-"))] | last // null) as $review
+    | if $review == null or $review.value.stage != "review-request-changes" then false
+      else
+        ([$history | to_entries[]
+          | select(.key <= $review.key and .value.stage == "review-request-changes")] | length) as $round
+        | ([$records[] | select(.round == $round)] | last // null) as $findings
+        | ($review.value.result // "") as $review_sha
+        | ((.reviewed_sha // "") == $review_sha
+           and ($review_sha | test("^[0-9a-f]{40}$"))
+           and ((.reviewed_pr_head // "") | test("^[0-9a-f]{40}$"))) as $reviewed_pair
+        | ($findings != null and $findings.block == "ok"
+           and ($findings.findings | type) == "array"
+           and ([$findings.findings[] | select(.status == "open" and (.severity == "P0" or .severity == "P1"))] | length) == 0) as $no_actionable
+        | ([$history | to_entries[]
+          | select(.key > $review.key and (.value.stage == "repair-delivered" or .value.stage == "self-fix-delivered"))] | last // null) as $delivery
+        | ([$history | to_entries[]
+          | select(.key > $review.key and .value.stage == "repair-no-push")] | last // null) as $no_push
+        | (if $no_push == null then ""
+           else try ($no_push.value.result | capture("^head (?<sha>[0-9a-f]{40}) unchanged after repair$").sha) catch ""
+           end) as $no_push_sha
+        | ([$history | to_entries[] | select(.key > $review.key and .value.stage == "write-start")] | last // null) as $latest_write
+        | $reviewed_pair and (
+            ($no_actionable and $latest_write == null)
+            or ($delivery != null and $no_push != null and $no_push.key > $delivery.key
+                and $no_push_sha == $review_sha
+                and ($latest_write == null or $latest_write.key < $no_push.key))
+          )
+      end
+  ' <<<"$1" >/dev/null 2>&1
+}
+
 supervisor_requeue_unit() { # id action guidance decision —— requeue/reroute 落地：选一个工作环节放回去
   local id="$1" action="$2" guidance="$3" decision="$4" u target extra="" issue issue_json issue_state issue_reason issue_repo="${REPO:-${ZF_REPO:-}}"
   u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
   if jqf -e 'any((.history // [])[]?; (.stage | test("^review")) or .stage == "repair-delivered" or .stage == "delivered")' <<<"$u" >/dev/null \
      && { [[ "$(jqf -r '.pr // empty' <<<"$u")" =~ ^[0-9]+$ ]] \
        || { [[ "$(jqf -r '.lane // empty' <<<"$u")" == direct-main ]] && [[ -n "$(jqf -r '.branch // empty' <<<"$u")" ]]; } }; then
-    target="repair-pending"
-    extra=" | .repair_hint=$(js "$guidance")"
+    if supervisor_requeue_rereview "$u"; then
+      target="rereview-pending"
+      extra=' | .reviewed_sha=null | .reviewed_pr_head=null | .repair_hint=null'
+    else
+      target="repair-pending"
+      extra=" | .repair_hint=$(js "$guidance")"
+    fi
   elif [[ -n "$(jqf -r '.task // empty' <<<"$u")" && -n "$(jqf -r '.branch // empty' <<<"$u")" ]]; then
     target="implement-pending"
     extra=" | .task += ($(js "
@@ -390,7 +430,10 @@ supervisor 裁决（${action}）后重排：$guidance"))"
     say "supervisor arbitration unit=$id: $action has no work stage -> parked"
     return 0
   fi
-  [[ "$action" == reroute ]] && extra=" | del(.blocked_on) | .reviewed_sha=null | .reviewed_pr_head=null$extra"
+  if [[ "$action" == reroute ]]; then
+    extra=" | del(.blocked_on)$extra"
+    [[ "$target" == rereview-pending ]] || extra=" | .reviewed_sha=null | .reviewed_pr_head=null$extra"
+  fi
   issue="$(jqf -r '.issue // empty' <<<"$u")"
   if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
     [[ -n "$issue_repo" ]] || { say "supervisor arbitration unit=$id: repository is unavailable for issue #$issue requeue"; return 1; }

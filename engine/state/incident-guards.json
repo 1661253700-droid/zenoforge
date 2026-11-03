@@ -695,6 +695,48 @@
           "engine/mac-autopilot/incident-prior-art-gate.test.sh"
         ]
       }
+    },
+    {
+      "id": "findingsless-noop-repair-spends-failure-budget",
+      "date": "2026-11-03",
+      "class": "non-progressing-repair-consumes-failure-budget",
+      "what_happened": "A valid REQUEST-CHANGES review recorded no findings, then a repair delivered no new head. The scheduler still counted its write-start toward stop-loss and the repair cap, and supervisor requeue selected another repair for the unchanged head.",
+      "root_cause_evidence": "Original scheduler event: '[2026-11-03T05:52:03Z] repair-no-push: head 6e66bd2a38d04d4551036ba778fccd945b638940 unchanged after repair'. On origin/main, engine/mac-autopilot/scheduler.d/stop-loss.sh:23 and engine/mac-autopilot/scheduler.d/stop-loss.sh:38 counted every write-start without correlating the repair with its triggering review_findings record and later same-SHA repair-no-push outcome; engine/mac-autopilot/scheduler.d/evals-arbiter.sh:374 always selected repair-pending for units with review history and a PR.",
+      "classic_pattern": "A retry policy spends a finite failure budget on work that has no actionable input and cannot make progress, then retries the same unchanged state.",
+      "best_known_solution": "Correlate each repair start with its recorded review marker and subsequent outcome. Exclude only a valid empty-findings review followed by a same-SHA repair-no-push from failure budgets; route unchanged no-actionable heads and confirmed no-push repairs to a fresh independent review, while retaining ordinary repair counting and repair requeues for real findings.",
+      "lesson_id": "V1279",
+      "research_sources": [
+        "https://sre.google/sre-book/addressing-cascading-failures/",
+        "https://learn.microsoft.com/en-us/azure/architecture/best-practices/transient-faults",
+        "https://docs.aws.amazon.com/wellarchitected/2024-06-27/framework/rel_mitigate_interaction_failure_limit_retries.html"
+      ],
+      "options_considered": [
+        "Keep counting every write-start; rejected because it charges an empty, unchanged repair against both stop-loss and repair limits.",
+        "Exclude every repair-no-push; rejected because a failed repair with actionable findings still needs to count.",
+        "Manually refund a round when the unit reaches supervisor review; rejected because that mutates accounting based on the escalation destination instead of the persisted review and repair outcome.",
+        "Correlate the verified empty findings marker, unchanged reviewed SHA, and repair-no-push event; selected because it distinguishes non-progress from real repair failure using the state the scheduler already records."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/mac-autopilot/noop-repair-rounds.test.sh",
+        "expected_result": "Three write-starts with one verified no-op count as two, do not trip a three-round budget, and requeue to rereview; a real failed repair still counts and returns to repair."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/noop-repair-rounds.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Replays the empty-review/no-push history, validates stop-loss and repair-cap accounting plus rereview routing, and preserves real failed repair counting and repair routing.",
+          "test_file": "engine/mac-autopilot/noop-repair-rounds.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/mac-autopilot/noop-repair-rounds.test.sh"
+        ]
+      }
     }
   ]
 }
