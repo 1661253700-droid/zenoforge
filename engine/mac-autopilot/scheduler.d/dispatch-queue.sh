@@ -33,8 +33,8 @@ dispatch_pending() {
     fi
     if [[ "$local_refill" != true ]]; then
       tick_prs_prime
-    elif [[ "$stage" == repair-pending || "$stage" == review-pending || "$stage" == rereview-pending ]] \
-      && [[ "$local_refill_prs_primed" != true ]]; then
+    elif [[ "$stage" == repair-pending ]] && [[ "$local_refill_prs_primed" != true ]]; then
+      # Repair evidence uses the checks census; review stages fetch only their target head below.
       tick_prs_prime
       local_refill_prs_primed=true
     fi

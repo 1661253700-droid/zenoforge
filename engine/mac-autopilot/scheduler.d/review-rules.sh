@@ -92,8 +92,14 @@ review_prompt() { # pr-or-subject title sha report [lane] [checkout]
 }
 
 pr_view() { gh pr view "$1" --json "$2" --jq ".$2" 2>/dev/null; }
-tick_pr_head() { # PR → head SHA from this tick's open-PR census, with a direct fallback for a census miss
+tick_pr_head() { # PR → head SHA from this tick's census, or a targeted read during an uncached local refill
   local pr="$1" prs="" head=""
+  if [[ "${TICK_DISPATCH_LOCAL_REFILL:-false}" == true && -z "${TICK_PRS:-}" ]]; then
+    head="$(pr_view "$pr" headRefOid)" || return 1
+    [[ "$head" =~ $SHA_RE ]] || return 1
+    printf '%s\n' "$head"
+    return 0
+  fi
   prs="$(tick_prs 2>/dev/null || true)"
   if [[ -n "$prs" ]]; then
     head="$(jqf -r --argjson p "$pr" '[.[] | select(.number == $p) | .headRefOid][0] // empty' <<<"$prs")"

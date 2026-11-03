@@ -3049,6 +3049,76 @@ command jq -e '
 )
 sched_run_case refill_pending_stages
 
+sched_case_refill_targeted_pr_head() (
+  new_tick_fixture refill-review-targeted-head
+  ROOT="$TF/repo"; SUP="$TF/supervisor"; A="$SUP/autopi"
+  UNITS="$A/units.json"; WORKERS="$A/workers.json"; LOG="$A/scheduler.log"
+  WT_ROOT="$TF/clones"; LUNA_SLOTS="$TF/luna-slots"
+  mkdir -p "$WT_ROOT/wt-review-one" "$TF/clone" "$A/alerts" "$LUNA_SLOTS"
+  touch "$LOG"
+  SCHED_LOCK_HELD=true
+  CFG='{"advisor":false,"max_workers":4,"implement_cap":2,"size_admission_lines":800,"issue_intake":{"enabled":false}}'
+  MAX=4; IMPLEMENT_CAP=2; SIZE_ADMISSION_LINES=800; FOCUS_MODE=all
+  LOOP_TOTAL_ROUNDS=4; LOOP_BREAKER_ROUNDS=4; ADVISOR_ROUNDS=4
+  NOW_EPOCH=1793577600; STAMP=refill-review-targeted-head; TAG=refill-test
+  TICK_DISPATCH_LOCAL_REFILL=true; TICK_PRS=""; TICK_FOOTPRINT_CACHE=(); TICK_ACTIVE_FOOTPRINTS_VALID=false; TICK_ACTIVE_FOOTPRINTS='[]'
+  DISPATCH_PRIORITY_ORDER='["hotfix","opt","normal"]'
+  declare -A TICK_FOOTPRINT_CACHE=()
+  command jq -n '{units:[{id:"review-one",pr:8812,lane:"pr",branch:"agent/issue-8812",stage:"review-pending",footprint:[],history:[]}]}' > "$UNITS"
+  echo '{"workers":[]}' > "$WORKERS"
+  dispatched=()
+  live_workers() { echo "${#dispatched[@]}"; }
+  live_by_type() { echo 0; }
+  git() {
+    [[ "$*" != *'merge-base --is-ancestor'* ]] || return 0
+    [[ "$*" != *'rev-parse'*'refs/remotes/origin/main'* ]] || { printf '%s\n' 0123456789abcdef0123456789abcdef01234567; return 0; }
+    command git "$@"
+  }
+  dispatch() { dispatched+=("$1:$4"); }
+  gh() {
+    printf '%s\n' "$*" >> "$TF/gh-calls"
+    case "$1 ${2:-}" in
+      'pr list') printf '%s\n' '[{"number":8812,"headRefOid":"0123456789abcdef0123456789abcdef01234567","headRefName":"agent/issue-8812","baseRefName":"main","isDraft":false,"title":"fixture","labels":[],"body":"","statusCheckRollup":[],"mergeable":"MERGEABLE","createdAt":"2026-11-03T00:00:00Z"}]' ;;
+      'pr view') printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
+      *) echo "unexpected gh command: $*" >&2; return 1 ;;
+    esac
+  }
+  pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
+  footprint_room() { return 0; }
+  verify_handoff_delivery() { return 0; }
+  ensure_clone() { printf '%s' "$TF/clone"; }
+  checkout_pr_head() { return 0; }
+  self_check_before_review() { return 0; }
+  dispatch_if_room() { dispatched+=("$2:$1"); return 0; }
+  review_prompt() { printf 'fixture review prompt'; }
+  risk_class_safety_rule() { :; }
+  lane_rule() { :; }
+  review_contract_rule() { :; }
+  subject_of() { printf 'fixture PR %s' "$1"; }
+  arbiter_rule() { :; }
+  hotpatch_rule() { :; }
+  supervisor_rule() { :; }
+  matt_method_rule() { :; }
+  decision_scope() { :; }
+  sweep_rule() { :; }
+  acquire_scheduler_lock() { return 0; }
+  state_schema_ok() { return 0; }
+  coord_reap_expired() { return 0; }
+  coord_reconcile_systemd_workers() { return 0; }
+  coord_reconcile_scheduler_workers() { return 0; }
+  tick_gh_calls_begin() { GH_TICK_CALLS_FILE="$TF/gh-calls-count"; : > "$GH_TICK_CALLS_FILE"; }
+  tick_gh_calls_count() { echo 0; }
+  PAUSE_FILE="$TF/pause"
+  dispatch_pending true
+  [[ "${dispatched[*]}" == 'review:review-one' ]] \
+    || { echo "scheduler.test.sh: refill did not dispatch the review (${dispatched[*]:-none})" >&2; cat "$LOG" >&2; exit 1; }
+  grep -Fqx 'pr view 8812 --json headRefOid --jq .headRefOid' "$TF/gh-calls" \
+    || { echo 'scheduler.test.sh: refill did not fetch the candidate PR head directly' >&2; cat "$TF/gh-calls" >&2; exit 1; }
+  ! grep -Fq 'pr list --state open --limit 300' "$TF/gh-calls" \
+    || { echo 'scheduler.test.sh: refill loaded the full 300-PR census for one review' >&2; cat "$TF/gh-calls" >&2; exit 1; }
+)
+sched_run_case refill_targeted_pr_head
+
 sched_case_refill_self_check_harvest() (
 # 2026-11-03 03:12Z：5 个单元的自检先后结束，补派每分钟都在跑却派不出评审——refill_tick 不跑
 # self_check_harvest，self_check_pid 一直压着 room_for，空槽干等下一次慢拍（20 分钟）。补派必须

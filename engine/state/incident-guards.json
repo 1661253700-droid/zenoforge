@@ -310,6 +310,47 @@
           "engine/tick-refuse-guard.test.sh"
         ]
       }
+    },
+    {
+      "id": "refill-review-census-blocks-dispatch",
+      "date": "2026-11-03",
+      "class": "fast-refill-review-loads-full-pr-census",
+      "what_happened": "Issue #5174 recorded a 40-second refill with dispatch_pending=12s and gh_calls=1. In the code-history window after #169 (2026-11-03T06:16:57Z), 18 gh_pr slow calls had median 12s; 18 refill dispatch_pending slow phases had median 15.5s and max 68s. A review refill synchronously loaded a 300-PR census although it needed one candidate head.",
+      "root_cause_evidence": "Original scheduler.log: [2026-11-03T06:31:01Z] dispatch detail gh_pr unit=issue-5043 secs=11s; [2026-11-03T06:31:01Z] refill done live=7 secs=40 gh_calls=1 slow: harvest_workers=5s dispatch_pending=12s. Before the fix, engine/mac-autopilot/scheduler.d/dispatch-queue.sh:36 included review-pending and rereview-pending in the local-refill tick_prs_prime branch; engine/mac-autopilot/scheduler.d/ci-status.sh:442 shows that call loaded up to 300 open PRs with body and statusCheckRollup before capacity gating. The regression replay logged the same full-list command.",
+      "classic_pattern": "A fast action path performs a wide batch read to obtain one current record; the serialized read blocks dispatch even when the candidate will need only a single field.",
+      "best_known_solution": "Reuse an already-loaded census when present. In an uncached local refill, query only the candidate PR head for review and rereview; keep the full census in the slow tick and in repair paths that use check evidence.",
+      "lesson_id": "V1274",
+      "research_sources": [
+        "https://cli.github.com/manual/gh_pr_list",
+        "https://cli.github.com/manual/gh_pr_view",
+        "Zenoforge commit 548f4ab (#154) introduced same-pass refill review dispatch.",
+        "engine/mac-autopilot/scheduler.d/ci-status.sh:441-446 and engine/mac-autopilot/scheduler.d/review-rules.sh:95-108 show the census and per-PR head lookup paths."
+      ],
+      "options_considered": [
+        "Remove review and rereview from the fast refill; rejected because it restores the slow-tick wait after self-check completion.",
+        "Keep the full 300-PR census in every fast refill; rejected because one review needs only its current head and the census also transfers body and check summaries.",
+        "Reuse a census already loaded by another stage, otherwise read only the candidate head with gh pr view; selected because it preserves current-head review safety without the broad census.",
+        "Persist and reuse a previous tick's PR head; rejected because it can dispatch a review against a superseded head."
+      ],
+      "machine_checks": [
+        {
+          "command": [
+            "env",
+            "SCHED_TEST_CASE=refill_targeted_pr_head",
+            "bash",
+            "engine/mac-autopilot/scheduler.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Exercises dispatch_pending(true) with an uncached review-pending PR and asserts it reads only that PR's head instead of loading the full open-PR census.",
+          "test_file": "engine/mac-autopilot/scheduler.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.test.sh"
+        ]
+      }
     }
   ]
 }
