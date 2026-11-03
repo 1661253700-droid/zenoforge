@@ -1818,7 +1818,9 @@ gh() {
   fi
 }
 TICK_UNFINISHED="[{\"databaseId\":91,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"c\"},{\"databaseId\":92,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"agent/issue-77\"},{\"databaseId\":93,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"ci/x\"}]"
+gh_repo_saved="${GH_REPO:-}"; GH_REPO=fixture/repo
 root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
+GH_REPO="$gh_repo_saved"
 [[ "$(field pr-42 .product_paths):$(field pr-40 .product_paths)" == "false:true" ]] || fail "product paths not classified ($(field pr-42 .product_paths) $(field pr-40 .product_paths))"
 [[ "$(field pr-40 '.history[-1].stage')" == ci-wip-start && "$(field pr-40 '.ci_wip_wait // "none"')" == none ]] \
   || fail "the free slot did not follow same-class readiness ($(field pr-40 '.history[-1].stage // "none"'))"
