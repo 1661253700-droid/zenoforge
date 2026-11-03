@@ -533,6 +533,7 @@ main() {
       phase fast_land_lane
       tick_prs_changed # Dispatched workers can push while earlier phases run.
       phase_yield_lock ci_admission
+      phase_yield_lock ci_approved_watch
       phase_yield_lock run_merge_lane
     fi
     phase register_new_prs
