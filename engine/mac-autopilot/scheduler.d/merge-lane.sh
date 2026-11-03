@@ -155,7 +155,7 @@ run_merge_lane() {
     open_landed_red_unit "$eval_sha" "$CI_RUN_ID" "$CI_RUN_ATTEMPT"
     [[ "$CI_CLASS" != code ]] || main_red_attribution "$eval_sha" "$CI_RUN_ID" "$CI_RUN_ATTEMPT"
     [[ -f "$A/gate-net-rerun.json" ]] || echo '{}' > "$A/gate-net-rerun.json"
-    retry_record="$(jqf -c --arg sha "$eval_sha" 'if has($sha) then .[$sha] else null end' "$A/gate-net-rerun.json" 2>/dev/null)" || retry_record='{}'
+    retry_record="$(jqf_optional_file "$A/gate-net-rerun.json" -c --arg sha "$eval_sha" 'if has($sha) then .[$sha] else null end' 2>/dev/null)" || retry_record='{}'
     ci_failure_retry_status "$eval_sha" "$gate_run" "$retry_record"
     if (( MAIN_RED_REVERTED )); then
       CI_REASON="$CI_REASON; culprit reverted, awaiting Pipeline suites on the revert"

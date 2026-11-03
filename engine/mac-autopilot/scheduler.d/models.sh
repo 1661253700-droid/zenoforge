@@ -21,10 +21,8 @@ flush_focus_alert() {
   now="${NOW_EPOCH:-$(date +%s)}"
   last_ids=""
   last_epoch=0
-  if [[ -f "$state" ]]; then
-    last_ids="$(jqf -r '.ids // empty' "$state" 2>/dev/null || true)"
-    last_epoch="$(jqf -r '.epoch // 0' "$state" 2>/dev/null || true)"
-  fi
+  last_ids="$(jqf_optional_file "$state" -r '.ids // empty' 2>/dev/null || true)"
+  last_epoch="$(jqf_optional_file "$state" -r '.epoch // 0' 2>/dev/null || true)"
   [[ "$last_epoch" =~ ^[0-9]+$ ]] || last_epoch=0
   if [[ "$ids" == "$last_ids" ]] && (( now - last_epoch < 1800 )); then return 0; fi
   echo "[$STAMP] focus: ${#unique[@]} units queued ($ids)" >> "$A/alerts/focus.md"
@@ -36,7 +34,13 @@ flush_focus_alert() {
 session_role() { case "$1" in review|rereview) echo review ;; *) echo repair ;; esac; }
 provider_of() { [[ "$1" == claude-* ]] && echo claude || echo codex; }
 cooling() { # provider → 成功(0) 表示仍在冷却
-  local until; until="$(jqf -r --arg p "$1" '.[$p] // 0' "$COOLDOWN" 2>/dev/null)"
+  local until read_status
+  if until="$(jqf_optional_file "$COOLDOWN" -r --arg p "$1" '.[$p] // 0' 2>/dev/null)"; then :
+  else
+    read_status=$?
+    (( read_status == 64 )) || return "$read_status"
+    until=0
+  fi
   [[ "$until" =~ ^[0-9]+$ ]] && (( until > NOW_EPOCH ))
 }
 start_cooldown() { # provider reason

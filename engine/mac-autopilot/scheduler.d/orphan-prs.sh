@@ -1,12 +1,17 @@
 
 # ---------- 4b. 环节 SLO 护栏：每个等待环节有预算，超了写 alerts/slo.md（每单元每次停留只报一次） ----------
 handoff_pr_waiting() { # PR issue: unresolved handoffs retain every associated PR
-  local pr_number="$1" n="${2:-0}" state_file episode
+  local pr_number="$1" n="${2:-0}" state_file episode read_status
   jqf -e --argjson pr "$pr_number" 'index($pr) != null' <<<"${HANDOFF_WAIT_PRS:-[]}" >/dev/null && return 0
   jqf -e --argjson pr "$pr_number" --argjson n "$n" 'any(.units[]; .hold_handoff_waiting == true and (.pr == $pr or .issue == $n or ((.hold_handoff_wait_issues // []) | index($n)) != null))' "$UNITS" >/dev/null && return 0
   (( n > 0 )) || return 1
   state_file="${AGENT_HOME:-${HOME:-}/.zenoforge}/state/$n.json"
-  episode="$(jqf -r 'select(.state == "ready-for-agent") | .scheduler_handoff.episode // empty' "$state_file" 2>/dev/null)"
+  if episode="$(jqf_optional_file "$state_file" -r 'select(.state == "ready-for-agent") | .scheduler_handoff.episode // empty' 2>/dev/null)"; then :
+  else
+    read_status=$?
+    (( read_status == 64 )) || return "$read_status"
+    episode=""
+  fi
   [[ -n "$episode" ]] || return 1
   ! jqf -e --argjson n "$n" --arg episode "$episode" 'any(.units[]; .issue == $n and .hold_handoff_episode == $episode)' "$UNITS" >/dev/null
 }
@@ -52,7 +57,7 @@ reconcile_orphan_prs() {
       | "\(.number)\t\(.headRefName)\t\(.isDraft)\t\(.issue // "")\t\(.title | gsub("\t"; " "))\t\(.issue_state)"' <<<"$prs")"
   now="$(date -u +%FT%TZ)"
   # 生产热修的源 PR 先收（任意分支），它们挡着所有 Example 发布（release_train.sh 写 release-blockers.json）。
-  for prn in $(jqf -r '.blockers[]?' "$A/release-blockers.json" 2>/dev/null); do
+  for prn in $(jqf_optional_file "$A/release-blockers.json" -r '.blockers[]?' 2>/dev/null); do
     [[ "$prn" =~ ^[0-9]+$ ]] || continue
     if [[ -n "${HANDOFF_PR_CENSUS:-}" && "${HANDOFF_CENSUS_PARTIAL:-0}" == 1 ]]; then
       handoff_include_pr "$prn" || continue

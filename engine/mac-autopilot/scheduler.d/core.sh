@@ -12,12 +12,39 @@ jqf() {
   if (( _rc != 0 )) && [[ -s "$_err" && -n "${LOG:-}" ]]; then
     _first="$(head -n1 "$_err")"
     _who="${FUNCNAME[1]:-top}"
+    [[ "$_who" != jqf_optional_file ]] || _who="${FUNCNAME[2]:-top}"
     if ! grep -Fq "[$STAMP] jqf error (rc=$_rc) in $_who: $_first" "$LOG" 2>/dev/null; then
       say "jqf error (rc=$_rc) in $_who: $_first"
     fi
   fi
   rm -f "$_err"
   return "$_rc"
+}
+# Optional file reads return 64 without logging only when the path is truly
+# absent. Existing unreadable, malformed, or non-file paths still pass through
+# jqf so scheduler.log keeps the diagnostic even when callers redirect stderr.
+jqf_optional_file() {
+  local _file="$1" _parent
+  shift
+  if [[ ! -e "$_file" && ! -L "$_file" ]]; then
+    if [[ "$_file" == */* ]]; then
+      _parent="${_file%/*}"
+      [[ -n "$_parent" ]] || _parent=/
+    else
+      _parent=.
+    fi
+    while [[ ! -e "$_parent" && ! -L "$_parent" ]]; do
+      case "$_parent" in
+        /|.) break ;;
+        */*) _parent="${_parent%/*}"; [[ -n "$_parent" ]] || _parent=/ ;;
+        *) _parent=. ;;
+      esac
+    done
+    if [[ -d "$_parent" && -x "$_parent" ]]; then
+      return 64
+    fi
+  fi
+  jqf "$@" "$_file"
 }
 js() { jq -cn --arg v "$1" '$v'; }  # 任意文本 → jq 字符串字面量，供拼入 set_unit 表达式
 gh() {
