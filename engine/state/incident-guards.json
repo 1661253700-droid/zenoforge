@@ -450,7 +450,7 @@
       "date": "2026-11-03",
       "class": "defer-exit-status-treated-as-stage-failure",
       "what_happened": "Every pipeline tick since 2026-11-03 05:23Z was refused: one advisor batch member had a live scheduler worker, pipeline_batch_claim_acquire returned 1, the advisor stage translated it to exit 75, and issue-pipeline-slices.sh counted only 0/124/137 as non-failures, so failed=1 and run-tick refused the tick. The same batch re-triaged two tickets whose scheduler units were in flight, which is what made a member busy in the first place.",
-      "root_cause_evidence": "engine/issue-pipeline-slices.sh slice case (pre-fix: '0) ;; 124|137) ... *) failed=1') had no defer arm; engine/issue-pipeline.sh dispatch_advisor_batch claim-unavailable 'return 75'; live journal shows repeated 'run-tick: refusing to run this tick — issue-pipeline.sh exited with status 1' and the live autopilot scheduler.log shows the incident signature matched nothing in engine/mac-autopilot/bell.sh scheduler_signature_class().",
+      "root_cause_evidence": "engine/issue-pipeline-slices.sh slice case (pre-fix: '0) ;; 124|137) ... *) failed=1') had no defer arm; engine/issue-pipeline.sh dispatch_advisor_batch claim-unavailable 'return 75'; live journal shows repeated 'run-tick: refusing to run this tick \u2014 issue-pipeline.sh exited with status 1' and the live autopilot scheduler.log shows the incident signature matched nothing in engine/mac-autopilot/bell.sh scheduler_signature_class().",
       "classic_pattern": "A component communicates 'temporary, retry later' through a non-zero exit code that an aggregator treats as failure, so a single soft miss is escalated to a whole-system outage; paired with a monitor that only recognizes hard-crash signatures, the outage also files no incident.",
       "best_known_solution": "Keep the stage-exit contract in one place: 75 defers and 124/137 overrun without refusing, while any other unexpected stage status is logged and isolated to that slice. The run-tick checkout gate retains its explicit pre-handoff integrity refusal set. Advisor selection and batch acquisition both consult the scheduler-unit in-flight predicate; claim renewal drops one failed member and keeps the batch running; #166 incident classes include slice and status.",
       "lesson_id": "V1273",
@@ -819,6 +819,47 @@
         "level": "regression-test",
         "enforced_by": [
           "engine/mac-autopilot/noop-repair-rounds.test.sh"
+        ]
+      }
+    },
+    {
+      "id": "pin-landing-skips-target-build-contract",
+      "date": "2026-11-03",
+      "class": "landing-verified-against-source-suite-not-against-deployment-contract",
+      "what_happened": "The product's engine pin moved to zenoforge 302a839 through engine/land-direct-main.sh and the push succeeded, but the pinned engine included #164 (d6eee42), which changed engine/hotfix/hf-start.sh, a file the product overrides. Every converge tick then failed for 27 minutes with 'override changed: hotfix/hf-start.sh; adopt the engine version, re-override, or add a seam, then update the row' and 'converge: 302a839... failed to build or check'; the only fix was a manual re-override.",
+      "root_cause_evidence": "engine/land-direct-main.sh preflight (pre-fix) ran only scripts/branch-delivery-preflight.mjs and never the target's engine build contract; the contract and its override guard live in the target checkout's build.json hook (.zenoforge/build/engine-sync.sh, 'override guard failed' die at its build()); engine commit d6eee42 (#164) changed engine/hotfix/hf-start.sh while the product's overrides.tsv row pinned the older blob.",
+      "classic_pattern": "A deployment pipeline gates a push on the change's own source suites but not on the consumer's integration contract, so the earliest point the contract is exercised is after the change is already live, where failure is an outage instead of a refusal.",
+      "best_known_solution": "The lander runs the target's engine-build contract before the push, not just at converge: when the landing range changes the target config root's build.json pin file or the hook's overrides.tsv, run the hook with --build into a scratch versions root and --check the built version; a build or override-guard failure refuses the push with the hook's guard lines and the adopt/re-override/seam next step. Hook path and pin come from the pin file's own hook/engine fields, so no deployment path is hardcoded.",
+      "lesson_id": "V1275",
+      "research_sources": [
+        "https://sre.google/sre-book/release-engineering/",
+        "https://martinfowler.com/articles/continuousIntegration.html",
+        "https://git-scm.com/book/en/v2/Customizing-Git-Git-Hooks"
+      ],
+      "options_considered": [
+        "Alert faster at converge time (the existing lag clock and supervisor inbox); rejected: it shortens the outage but still lands a pin known to fail its own build contract.",
+        "Keep a copy of each consumer's override table inside the engine repo and check engine PRs against it; rejected: no channel syncs the copy when a consumer re-overrides, so it rots and gives false confidence.",
+        "Run the target's build hook at landing time for ranges that touch the pin file or override table; selected: the contract is verified at the only moment refusal is cheap, and the guard's own message names the next step."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/land-pin-preflight.test.sh",
+        "expected_result": "A pin bump onto an engine whose overridden file changed is refused with the hook guard lines; a clean pin bump and a pin bump with matching re-override pass; a range that touches neither file never runs the build."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/land-pin-preflight.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Runs the extracted lander preflight against a fixture product+engine pair whose build hook implements the engine-sync contract with the same override guard; fails on the pre-fix engine (no preflight to extract).",
+          "test_file": "engine/land-pin-preflight.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-test",
+        "enforced_by": [
+          "engine/land-pin-preflight.test.sh"
         ]
       }
     }
