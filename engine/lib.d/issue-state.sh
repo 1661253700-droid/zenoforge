@@ -467,6 +467,14 @@ issue_transition_state_is_valid() {
 }
 
 
+issue_transition_hold_release_reason_is_valid() {
+  case "${1:-}" in
+    hold-applied|hold-expired|hold-dead-owner|hold-release|hold-requeue|hold-backfill|hold-supervisor-release|recut-parent-retired|merged-pr|deployment-proven|all-children-released|pipeline-system-verification|main-red-revert) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+
 issue_transition_allowed() {
   local from="$1" to="$2" reason="$3"
   issue_transition_state_is_valid "$from" && issue_transition_state_is_valid "$to" || return 1
@@ -511,11 +519,16 @@ issue_transition_allowed() {
     concluded:released)
       [ "$reason" = deployment-proven ] || return 1
       ;;
-    on-hold:concluded|on-hold:duplicate|on-hold:finish-first|on-hold:wontfix)
+    on-hold:concluded|on-hold:duplicate|on-hold:wontfix)
       [[ "$reason" == conclude:* || "$reason" == close-* ]] || return 1
       ;;
+    # finish-first can still be concluded, but it is also a resumable stage:
+    # an expired hold must use the same allowlist as other on-hold releases.
+    on-hold:finish-first)
+      case "$reason" in conclude:*|close-*) ;; *) issue_transition_hold_release_reason_is_valid "$reason" || return 1 ;; esac
+      ;;
     on-hold:*)
-      case "$reason" in hold-applied|hold-expired|hold-dead-owner|hold-release|hold-requeue|hold-backfill|hold-supervisor-release|recut-parent-retired|merged-pr|deployment-proven|all-children-released|pipeline-system-verification|main-red-revert) ;; *) return 1 ;; esac
+      issue_transition_hold_release_reason_is_valid "$reason" || return 1
       ;;
     finish-first:needs-triage)
       [ "$reason" = blocking-pr-cleared ] || return 1

@@ -1,6 +1,46 @@
 {
   "incidents": [
     {
+      "id": "hold-expiry-finish-first-transition-rejected",
+      "date": "2026-11-03",
+      "class": "hold-expiry-rejected-for-resumable-stage",
+      "what_happened": "At 08:11:51Z, cap triage for unit pr-3521 could not send issue #3026 to needs-recut because it remained on-hold. The issue's stop-loss hold had expired at 04:48:41Z and an expiry comment was posted, but the issue state and label never left on-hold.",
+      "root_cause_evidence": "scheduler.log 2026-11-03T08:11:51Z: supervisor budget-park unit=pr-3521: cap triage: 当前单元待修复范围超过准入上限，必须缩小范围或拆分后才能继续派工和评审，因此裁决为 RECUT。; evidence: supervisor-escalated 记录排除文档、生成文件、锁文件和快照后仍有 1085 行变更，超过 800 行上限；最近的 ci-test-red 显示 Touched packages PR gate 失败。 (recut route failed: issue #3026 routed to on-hold, not needs-recut). Issue #3026 still carried state=on-hold with expires_at=2026-11-03T04:48:41Z and stage_before=finish-first. Before the fix, engine/lib.d/issue-state.sh:514 classified on-hold -> finish-first as close-only, so hold-expired was refused after the expiry comment had already been written; engine/hold.test.sh reproduces that refusal with the captured stop-loss record shape.",
+      "classic_pattern": "An over-specific state-transition branch intercepts a valid resumable state and blocks an event that the general transition policy permits; the side-effect comment is published while the durable state remains unchanged.",
+      "best_known_solution": "Keep the close/conclude reasons already valid for finish-first, and also allow the existing on-hold release reasons for that resumable stage; keep terminal-only reasons restricted to terminal outcomes. Lock the #3026-shaped stop-loss case into the hold lifecycle test.",
+      "lesson_id": "V1277",
+      "research_sources": [
+        "https://www.w3.org/TR/scxml/#transition",
+        "https://stately.ai/docs/transitions"
+      ],
+      "options_considered": [
+        "Add a stop-loss-only exception for finish-first in hold_sweep; this fixes #3026 but leaves other legitimate expired holds at the same stage blocked.",
+        "Make the RECUT scheduler route override on-hold; this bypasses a still-active hold and hides the failed hold-expiry transition.",
+        "Add the shared hold-release reason allowlist to finish-first's explicit transition branch while retaining its existing close/conclude reasons; selected because it fixes the state-machine edge at its owner and preserves active holds."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/hold.test.sh",
+        "expected_result": "An expired stop-loss hold whose stage_before is finish-first resumes at finish-first, clears its hold record and on-hold label, and records the expiry comment."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/hold.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "The planted #3026-shaped stop-loss fixture exercises the real hold_sweep and issue_transition path, then proves the prior stage and label are restored.",
+          "test_file": "engine/hold.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "test",
+        "enforced_by": [
+          "engine/hold.test.sh"
+        ]
+      }
+    },
+    {
       "id": "ci-admission-unlabeled-draft-starvation",
       "date": "2026-11-03",
       "class": "membership-gate-silent-noop-starvation",

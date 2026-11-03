@@ -654,6 +654,26 @@ test_expired_hold_restores_original_stage() {
   assert_eq "ordinary expiry records a scheduler handoff" "hold-$created" "$(jq -r '.scheduler_handoff.episode' <<< "$state")"
 }
 
+test_expired_stop_loss_restores_finish_first() {
+  local labels comments state close_status
+  reset_fixture
+  write_issue 4190 '[{"name":"on-hold"}]' '[]' 'expired stop-loss hold'
+  write_state 4190 '{"state":"on-hold","attempts":0,"state_changed_from":"finish-first","hold":{"holder":"scheduler-stop-loss","release_condition":"supervisor rules on the stop-loss escalation; requeue or approve refills the budget","expires_at":"2026-11-03T04:48:41Z","stage_before":"finish-first","kind":"stop-loss","created_at":"2026-11-02T04:48:42Z","durable_record":true}}'
+
+  issue_transition_allowed on-hold finish-first conclude:deployed >/dev/null && close_status=0 || close_status=$?
+  assert_eq "finish-first retains its conclude transition" 0 "$close_status"
+  run_sweep
+  assert_eq "expired stop-loss hold sweep succeeds" 0 "$LAST_STATUS"
+  state="$(state_read 4190)"
+  assert_eq "expired stop-loss resumes its pre-hold stage" finish-first "$(jq -r '.state' <<< "$state")"
+  assert_eq "expired stop-loss clears its hold record" null "$(jq -c '.hold' <<< "$state")"
+  labels="$(jq -r '[.labels[].name] | join(",")' "$FAKE_GH_ROOT/issues/4190.json")"
+  assert_contains "expired stop-loss restores finish-first label" "$labels" finish-first
+  assert_not_contains "expired stop-loss removes on-hold label" "$labels" on-hold
+  comments="$(jq -r '[.comments[].body] | join("\n")' "$FAKE_GH_ROOT/issues/4190.json")"
+  assert_contains "expired stop-loss records the prior stage" "$comments" 'Resuming at stage finish-first'
+}
+
 test_expired_unknown_backfill_stays_ownerless() {
   local expired release before_issue before_state inbox
   reset_fixture
@@ -1602,6 +1622,7 @@ run_case "fastlane holds immediately requeue an out-of-band hand" test_pipeline_
 run_case "named queued hand owns fastlane issue" test_named_queued_hand_owns_fastlane_issue
 run_case "queued sweep owns fastlane issues from row and brief" test_queued_sweep_owns_fastlane_issues
 run_case "expired hold resumes original stage" test_expired_hold_restores_original_stage
+run_case "expired stop-loss resumes finish-first" test_expired_stop_loss_restores_finish_first
 run_case "unknown backfill remains ownerless and unreleased" test_expired_unknown_backfill_stays_ownerless
 run_case "manual hold release reconciles persisted state" test_manual_hold_release_reconciles_persisted_state
 run_case "durable hold release resolves conflicting labels" test_durable_hold_release_uses_recorded_stage_when_labels_conflict
