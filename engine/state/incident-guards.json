@@ -1,6 +1,59 @@
 {
   "incidents": [
     {
+      "id": "ci-admission-unlabeled-draft-starvation",
+      "date": "2026-11-03",
+      "class": "membership-gate-silent-noop-starvation",
+      "what_happened": "Four ready-to-merge hotpatch units (release-blocker PRs on hotfix/* branches) stayed on draft PRs for hours while 5 of 12 PR runners idled; every slow tick logged merge skipped PR#<n> (draft, waiting for its CI slot) and no admission path flipped them.",
+      "root_cause_evidence": "Live scheduler.log 2026-11-03T05:24:24Z repeats merge skipped PR#4938/4940/4942/4921 (draft, waiting for its CI slot); the PRs carry no agent/ci-gated label, so gated_ready returned at the [[ -n \"$pr\" ]] || return 0 guard (engine/mac-autopilot/scheduler.d/ci-status.sh:371 pre-fix) while the WIP selection excludes them via (.hotpatch // false) != true (engine/mac-autopilot/scheduler.d/ci-admission.sh:156): the two selectors have an empty intersection, so no code path could ever ready them.",
+      "classic_pattern": "A membership-gated handler returns success without acting (silent no-op), and the population it silently drops is excluded from every other path by a disjoint predicate: starvation with all capacity idle.",
+      "best_known_solution": "A single admission decision point must resolve PR draft/head state from the full PR census when the gated-label census does not index the unit, and a symptom watch must alert when a ready-to-merge draft waits past a bound while free slots exist.",
+      "lesson_id": "V1273",
+      "research_sources": [
+        "https://en.wikipedia.org/wiki/Starvation_(computer_science)",
+        "https://sre.google/sre-book/monitoring-distributed-systems/"
+      ],
+      "options_considered": [
+        "Add the gated label to hotfix PRs at orphan adoption; this repairs one registration path but any other unlabeled draft source starves the same way.",
+        "Drop the hotpatch exclusion so hotpatches take product CI slots; this inverts the hotfix exemption design and queues hotfixes behind product CI.",
+        "Resolve draft/head from the full per-tick PR census inside gated_ready when the branch is unlabeled, keeping one ready decision point for labeled and unlabeled drafts; selected.",
+        "Add ci_slot_starve_watch so any future class of un-readable ready draft alerts within a bounded time while free slots exist; selected as the symptom guard."
+      ],
+      "siblings": {
+        "discovery_command": "grep -c 'draft, waiting for its CI slot' \"$A/scheduler.log\" vs gh api runners busy count",
+        "expected_result": "Zero ready-to-merge drafts remain after an admission pass with free slots; CI-SLOT-STARVE alerts otherwise."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Replays the live four-unit unlabeled-draft population through ci_admission: all readied in one pass with 5 free slots, starvation watch alerts after three slow admission ticks with free slots and stays silent at zero free slots, and the per-pass slot_sync and product-path lookup bounds hold.",
+          "test_file": "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh",
+            "--plant-old"
+          ],
+          "expected": "exit:1",
+          "why": "Plants the verbatim pre-fix gated_ready and proves the replay detects the un-readied drafts (fail against the real past bad code) and starts the starvation clock.",
+          "test_file": "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "test",
+        "enforced_by": [
+          "engine/mac-autopilot/scheduler.d/ci-status.sh",
+          "engine/mac-autopilot/scheduler.d/ci-admission.sh",
+          "engine/mac-autopilot/scheduler.d/ci-admission-draft-starve.test.sh"
+        ]
+      }
+    },
+    {
       "id": "supervisor-cap-triage-unbalanced-jq-regex",
       "date": "2026-11-03",
       "class": "literal-jq-regex-not-compiled-before-fixture-execution",
@@ -312,6 +365,106 @@
       }
     },
     {
+      "id": "jqf-epipe-from-early-exiting-consumer",
+      "date": "2026-11-03",
+      "class": "epipe-from-closed-consumer-logged-as-jq-error",
+      "what_happened": "Most intake ticks logged 'jqf error (rc=2) in intake_candidates: jq: error: writing output failed: Broken pipe' (69 lines in the live scheduler.log, 2026-10-30 through 2026-11-03, latest 04:01:33Z) and dispatch_supervisor_arbiters the same (16 lines). Consumers stop reading jqf streams early by design - register_new_issues breaks at 'added < want', arbiter dispatch returns at capacity, 'jqf | head -n' bounds rows - and under systemd (SIGPIPE ignored) jq reports the closed pipe as rc=2 with that message, so jqf logged a healthy truncation as an error and buried real ones in scheduler.log, the incident intake and the canary signature baseline (extract_signatures normalizes every jqf error line).",
+      "root_cause_evidence": "engine/mac-autopilot/scheduler.d/core.sh jqf() logged every non-zero jq exit whose stderr was non-empty; intake.sh:289 '(( added < want )) || break' closes the candidate stream fed at intake.sh:574 while the producer's jqf is still writing; evals-arbiter.sh dispatch_supervisor_arbiters returns 0 from inside a loop fed by 'done < <(jqf ... \"$UNITS\")' (evals-arbiter.sh:355). With SIGPIPE ignored (systemd service, command substitution) jq exits 2 with 'jq: error: writing output failed: Broken pipe'; with SIGPIPE default it dies silently with rc=141 and empty stderr, which jqf already did not log.",
+      "classic_pattern": "A producer wrapper reports every downstream failure as its own error, so a consumer that stops reading by design (break, return, head) is indistinguishable from a real processing failure in the logs, and the noise hides genuine errors from humans and signature scanners.",
+      "best_known_solution": "jqf treats exactly 'writing output failed: Broken pipe' (EPIPE on jq's stdout, only possible when the downstream reader closed) as not an error and skips the log line; every other first-line message - parse and runtime errors, and write failures such as ENOSPC - is still logged. jq's exit code is returned unchanged. One fix in the shared wrapper covers all ~50 'done < <(jqf ...)' consumers; no per-consumer draining.",
+      "lesson_id": "V1274",
+      "research_sources": [
+        "https://www.man7.org/linux/man-pages/man7/signal.7.html",
+        "https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Signal%20Handlers"
+      ],
+      "options_considered": [
+        "Suppress every rc=2 write failure; rejected because ENOSPC and other real output failures share the exit code.",
+        "Drain or bound the candidate stream in intake instead; rejected because it fixes one consumer of ~50 with the same shape and keeps the wrapper lying about the class.",
+        "Skip the log line only for the exact EPIPE message; selected: EPIPE on stdout can only mean the consumer closed the pipe, so the carve-out cannot hide a real jq failure."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/mac-autopilot/jqf-epipe.test.sh",
+        "expected_result": "Early-stopping consumers log no jqf error and real failures still do; every case fails on the pre-fix wrapper (exit 1 on origin/main)."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/jqf-epipe.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Runs the real jqf wrapper with a bounded 'jqf | head' consumer, a read loop that breaks early, a malformed-JSON parse error and an ENOSPC write to /dev/full; the first two must stay silent, the last two must log.",
+          "test_file": "engine/mac-autopilot/jqf-epipe.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/intake-missing-state.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Adjacent contract on the same wrapper: real malformed-state jq failures through register_new_issues keep their jqf diagnostics.",
+          "test_file": "engine/mac-autopilot/intake-missing-state.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "static-test",
+        "enforced_by": [
+          "engine/mac-autopilot/jqf-epipe.test.sh",
+          "engine/mac-autopilot/intake-missing-state.test.sh"
+        ]
+      }
+    },
+    {
+      "id": "advisor-provider-path-from-engine-live-symlink",
+      "date": "2026-11-03",
+      "class": "version-relative-path-derived-from-logical-symlink-location",
+      "what_happened": "The per-unit advisor launched Node with a bundled provider path based on the engine-live symlink's parent. Node returned MODULE_NOT_FOUND and the unit fell back to arbiter review.",
+      "root_cause_evidence": "Original log: Error: Cannot find module '<engine-live>/../.agents/skills/web-advisor-provider/ask.cjs' (MODULE_NOT_FOUND). engine/config.sh:45 kept ZF_ENGINE_DIR logical for live-link behavior, while :112 derived the provider path by appending ../ to that logical path. The planted case in engine/config.test.sh fails on the old derivation.",
+      "classic_pattern": "A logical symlink path is used to find a sibling resource with .., so lookup follows the symlink's parent instead of the directory containing the target version.",
+      "best_known_solution": "Keep ZF_ENGINE_DIR logical for live-link reload behavior, resolve its physical directory once in engine/config.sh, and derive every parent-relative path from that physical parent. Before launching a unit advisor, require a readable provider; log one stable scheduler line, route to arbiter review, and let the bell file the incident through issue upsert.",
+      "lesson_id": "V1275",
+      "research_sources": [
+        "https://www.gnu.org/software/bash/manual/bash.html",
+        "https://www.gnu.org/software/coreutils/manual/html_node/pwd-invocation.html"
+      ],
+      "options_considered": [
+        "Make ZF_ENGINE_DIR physical everywhere; this fixes sibling lookup but changes the logical live-link path used by long-running loops after a swap.",
+        "Resolve only the provider script at its caller; this leaves ZF_REPO_DIR and any other parent-relative engine defaults exposed to the same symlink error.",
+        "Keep ZF_ENGINE_DIR logical and derive one physical parent in config.sh for all parent-relative defaults; selected because it fixes the whole path family while preserving live-link behavior."
+      ],
+      "siblings": {
+        "discovery_command": "bash engine/config.test.sh",
+        "expected_result": "The planted engine-live symlink resolves the provider script into the physical version root; the old derivation exits 1 with a path mismatch."
+      },
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/config.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Sources config.sh through a symlinked engine with ZF_ENGINE_DIR unset and asserts the provider script resolves inside the physical version root.",
+          "test_file": "engine/config.test.sh"
+        },
+        {
+          "command": [
+            "bash",
+            "engine/mac-autopilot/advisor-provider-missing.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "Proves an absent provider is routed to arbiter review without launching the advisor, logs one diagnostic, and files one bell incident through the issue-upsert entry point.",
+          "test_file": "engine/mac-autopilot/advisor-provider-missing.test.sh"
+        }
+      ],
+      "enforcement": {
+        "level": "regression-test",
+        "enforced_by": [
+          "engine/config.test.sh",
+          "engine/mac-autopilot/advisor-provider-missing.test.sh"
+        ]
+      }
+    },
+    {
       "id": "refill-review-census-blocks-dispatch",
       "date": "2026-11-03",
       "class": "fast-refill-review-loads-full-pr-census",
@@ -319,7 +472,7 @@
       "root_cause_evidence": "Original scheduler.log: [2026-11-03T06:31:01Z] dispatch detail gh_pr unit=issue-5043 secs=11s; [2026-11-03T06:31:01Z] refill done live=7 secs=40 gh_calls=1 slow: harvest_workers=5s dispatch_pending=12s. Before the fix, engine/mac-autopilot/scheduler.d/dispatch-queue.sh:36 included review-pending and rereview-pending in the local-refill tick_prs_prime branch; engine/mac-autopilot/scheduler.d/ci-status.sh:442 shows that call loaded up to 300 open PRs with body and statusCheckRollup before capacity gating. The regression replay logged the same full-list command.",
       "classic_pattern": "A fast action path performs a wide batch read to obtain one current record; the serialized read blocks dispatch even when the candidate will need only a single field.",
       "best_known_solution": "Reuse an already-loaded census when present. In an uncached local refill, query only the candidate PR head for review and rereview; keep the full census in the slow tick and in repair paths that use check evidence.",
-      "lesson_id": "V1274",
+      "lesson_id": "V1276",
       "research_sources": [
         "https://cli.github.com/manual/gh_pr_list",
         "https://cli.github.com/manual/gh_pr_view",
