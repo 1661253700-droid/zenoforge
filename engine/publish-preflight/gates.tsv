@@ -1,0 +1,5 @@
+# Gates executed by both engine-sync --preflight at converge and the landing pin preflight.
+unit-paths
+resolved-config
+suite-set
+dropped-file-refs

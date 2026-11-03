@@ -829,7 +829,7 @@
       "what_happened": "The product's engine pin moved to zenoforge 302a839 through engine/land-direct-main.sh and the push succeeded, but the pinned engine included #164 (d6eee42), which changed engine/hotfix/hf-start.sh, a file the product overrides. Every converge tick then failed for 27 minutes with 'override changed: hotfix/hf-start.sh; adopt the engine version, re-override, or add a seam, then update the row' and 'converge: 302a839... failed to build or check'; the only fix was a manual re-override.",
       "root_cause_evidence": "engine/land-direct-main.sh preflight (pre-fix) ran only scripts/branch-delivery-preflight.mjs and never the target's engine build contract; the contract and its override guard live in the target checkout's build.json hook (.zenoforge/build/engine-sync.sh, 'override guard failed' die at its build()); engine commit d6eee42 (#164) changed engine/hotfix/hf-start.sh while the product's overrides.tsv row pinned the older blob.",
       "classic_pattern": "A deployment pipeline gates a push on the change's own source suites but not on the consumer's integration contract, so the earliest point the contract is exercised is after the change is already live, where failure is an outage instead of a refusal.",
-      "best_known_solution": "The lander runs the target's engine-build contract before the push, not just at converge: when the landing range changes the target config root's build.json pin file or the hook's overrides.tsv, run the hook with --build into a scratch versions root and --check the built version; a build or override-guard failure refuses the push with the hook's guard lines and the adopt/re-override/seam next step. Hook path and pin come from the pin file's own hook/engine fields, so no deployment path is hardcoded.",
+      "best_known_solution": "The lander runs every converge gate before the push, not just the hook's build and check: when the landing range changes the target config root's build.json pin file or the hook's overrides.tsv, run the hook with --build into a scratch versions root, --check the built version, then the built engine's engine-sync.sh --preflight with the landing product SHA as ZF_PREFLIGHT_LIVE_REF and the optional intended-changes.tsv. Converge and landing share publish-preflight/gates.tsv. A failed gate refuses the push with the guard lines and recovery step. Intended rows require an engine SHA so an old approval cannot authorize a later swap; resolved-config changes that exactly match changed product bytes are reported as product-owned, while engine-side or transformed bytes still require a matching-SHA row. Hook path and pin come from the pin file's own hook/engine fields, so no deployment path is hardcoded.",
       "lesson_id": "V1275",
       "research_sources": [
         "https://sre.google/sre-book/release-engineering/",
@@ -843,7 +843,7 @@
       ],
       "siblings": {
         "discovery_command": "bash engine/land-pin-preflight.test.sh",
-        "expected_result": "A pin bump onto an engine whose overridden file changed is refused with the hook guard lines; a clean pin bump and a pin bump with matching re-override pass; a range that touches neither file never runs the build."
+        "expected_result": "A pin bump onto an engine whose overridden file changed is refused with the hook guard lines; a pin bump whose publish-preflight detects an undeclared engine-owned file is refused before push; a matching-SHA intended row passes while stale and legacy rows warn and do not approve; product-owned vendored data changes pass, engine-side changes still block without a matching row, and a gate added to the shared manifest runs in both converge and landing; ranges that touch neither the pin nor overrides skip the build."
       },
       "machine_checks": [
         {
@@ -852,7 +852,7 @@
             "engine/land-pin-preflight.test.sh"
           ],
           "expected": "exit:0",
-          "why": "Runs the extracted lander preflight against a fixture product+engine pair whose build hook implements the engine-sync contract with the same override guard; fails on the pre-fix engine (no preflight to extract).",
+          "why": "Runs the extracted lander preflight against fixture product and engine repos. It checks build/check and publish-preflight refusals, matching/stale/legacy SHA-scoped rows, product-owned vendored and direct data, engine-side changes, dropped-file approvals, and that a gate appended to the shared manifest executes in both the landing check and built-engine converge preflight.",
           "test_file": "engine/land-pin-preflight.test.sh"
         }
       ],
