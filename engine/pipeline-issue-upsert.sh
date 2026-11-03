@@ -7,6 +7,7 @@ class=""
 title=""
 body_file=""
 lane="pipeline-system"
+extra_labels=()
 labels=()
 
 usage() {
@@ -19,7 +20,7 @@ while (($#)); do
     --title) title="${2:-}"; shift 2 ;;
     --body-file) body_file="${2:-}"; shift 2 ;;
     --lane) lane="${2:-}"; shift 2 ;;
-    --label) labels+=("${2:-}"); shift 2 ;;
+    --label) extra_labels+=("${2:-}"); shift 2 ;;
     --repo) repo="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 64 ;;
@@ -29,13 +30,18 @@ done
 [[ "$class" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || { usage; exit 64; }
 [[ "$lane" == pipeline-system || "$lane" == product ]] || { usage; exit 64; }
 [[ -n "$title" && -n "$repo" && -r "$body_file" ]] || { usage; exit 64; }
-if ((${#labels[@]} == 0)); then
-  if [[ "$lane" == pipeline-system ]]; then
-    labels=(pipeline-system ready-for-agent)
-  else
-    labels=(bug priority:top needs-triage)
-  fi
+if [[ "$lane" == pipeline-system ]]; then
+  labels=(pipeline-system ready-for-agent)
+else
+  labels=(bug priority:top needs-triage)
 fi
+for label in "${extra_labels[@]}"; do
+  found=0
+  for existing_label in "${labels[@]}"; do
+    [[ "$existing_label" == "$label" ]] && { found=1; break; }
+  done
+  (( found )) || labels+=("$label")
+done
 for label in "${labels[@]}"; do
   [[ "$label" =~ ^[[:alnum:]][[:alnum:]_:-]{0,49}$ ]] || { usage; exit 64; }
 done
@@ -86,6 +92,28 @@ if [[ -n "$existing" ]]; then
     "$existing" "$class" "$(jq 'length' <<< "$matches")"
   exit 0
 fi
+
+# Labels are repository state. Read the current set once and create missing
+# lane/custom labels before the issue write, following issue-state.sh's label-heal pattern.
+existing_labels="$(gh label list --repo "$repo" --limit 200 --json name -q '.[].name')" || {
+  echo "pipeline-issue-upsert: could not read repository labels; no issue created" >&2
+  exit 1
+}
+for label in "${labels[@]}"; do
+  grep -qx -- "$label" <<<"$existing_labels" && continue
+  if ! gh label create "$label" --repo "$repo" --color ededed \
+    --description "Zenoforge pipeline issue label" >/dev/null 2>&1; then
+    existing_labels="$(gh label list --repo "$repo" --limit 200 --json name -q '.[].name')" || {
+      echo "pipeline-issue-upsert: could not verify label $label; no issue created" >&2
+      exit 1
+    }
+    grep -qx -- "$label" <<<"$existing_labels" || {
+      echo "pipeline-issue-upsert: could not create label $label; no issue created" >&2
+      exit 1
+    }
+  fi
+  existing_labels+=$'\n'"$label"
+done
 
 new_body="$(mktemp)"
 trap 'rm -f -- "${new_body:-}"' EXIT

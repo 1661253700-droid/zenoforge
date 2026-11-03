@@ -11,6 +11,13 @@ cat > "$tmp/bin/gh" <<'FAKE_GH'
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 case "${1:-}:${2:-}" in
+  label:list)
+    cat "$FAKE_LABELS"
+    ;;
+  label:create)
+    label="${3:?}"
+    grep -qx -- "$label" "$FAKE_LABELS" || printf '%s\n' "$label" >> "$FAKE_LABELS"
+    ;;
   api:--method)
     [[ "${FAKE_GH_LIST_FAIL:-0}" != 1 ]] || exit 42
     jq -c 'if length == 0 then [[]] else [.[0:1], .[1:]] end' "$FAKE_ISSUES"
@@ -68,7 +75,10 @@ export FAKE_GH_LOG="$tmp/gh.log"
 export FAKE_ISSUES="$tmp/issues.json"
 export FAKE_COMMENTS="$tmp/comments.jsonl"
 export FAKE_NEXT_NUMBER="$tmp/next-number"
+export FAKE_LABELS="$tmp/labels"
 printf '[{"number":4999,"title":"Unrelated open issue","body":"no class marker","state":"OPEN","labels":[{"name":"pipeline-system"}]}]\n' > "$FAKE_ISSUES"
+: > "$FAKE_LABELS"
+printf '%s\n' pipeline-system ready-for-agent bug priority:top needs-triage > "$FAKE_LABELS"
 : > "$FAKE_GH_LOG"
 : > "$FAKE_COMMENTS"
 printf '5001\n' > "$FAKE_NEXT_NUMBER"
@@ -151,10 +161,19 @@ last_list_call="$(grep '^api ' "$FAKE_GH_LOG" | tail -n 1)"
 [[ "$last_list_call" != *"labels=pipeline-system"* ]]
 echo 'ok - product lane upserts bug, priority:top, needs-triage without pipeline-system label'
 
+printf 'incident evidence\n' > "$tmp/incident.md"
+run_upsert --class incident-intake-fixture --title 'Bell incident intake fixture' --body-file "$tmp/incident.md" --label incident
+jq -e --arg marker '<!-- vecta-incident-class:incident-intake-fixture -->' \
+  '[.[] | select((.body // "") | contains($marker))][0]
+   | ([.labels[].name] | sort) == ["incident","pipeline-system","ready-for-agent"]' "$FAKE_ISSUES" >/dev/null
+grep -Fxq incident "$FAKE_LABELS"
+[[ "$(jq 'length' "$FAKE_ISSUES")" == 6 ]]
+echo 'ok - custom incident label preserves the pipeline-system lane and creates the missing repository label'
+
 if FAKE_GH_LIST_FAIL=1 run_upsert --class unreadable-list --title 'Do not lose issue' --body-file "$tmp/distinct.md" >/dev/null 2>&1; then
   echo 'not ok - unreadable issue list must refuse creation' >&2
   exit 1
 fi
-[[ "$(jq 'length' "$FAKE_ISSUES")" == 5 ]]
-[[ "$(grep -c '^issue create ' "$FAKE_GH_LOG")" == 4 ]]
+[[ "$(jq 'length' "$FAKE_ISSUES")" == 6 ]]
+[[ "$(grep -c '^issue create ' "$FAKE_GH_LOG")" == 5 ]]
 echo 'ok - unreadable issue list fails closed without creating a duplicate'

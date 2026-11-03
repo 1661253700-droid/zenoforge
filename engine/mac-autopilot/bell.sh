@@ -36,6 +36,20 @@ DEDUP_MINUTES="$(cfg '.bell.dedup_minutes')"
 [[ "$DEDUP_MINUTES" =~ ^[0-9]+$ ]] || DEDUP_MINUTES=30
 (( DEDUP_MINUTES > 0 )) || DEDUP_MINUTES=30
 DEDUP_SECONDS=$((DEDUP_MINUTES * 60))
+FILE_MIN_SEVERITY="$(cfg '.incident.file_min_severity')"
+case "$FILE_MIN_SEVERITY" in info|low|medium|high|critical|off) ;; *) FILE_MIN_SEVERITY=medium ;; esac
+severity_rank() {
+  case "$1" in
+    info) printf 0 ;;
+    low) printf 1 ;;
+    medium) printf 2 ;;
+    high) printf 3 ;;
+    critical) printf 4 ;;
+    off) printf 5 ;;
+    *) printf -1 ;;
+  esac
+}
+FILE_MIN_SEVERITY_RANK="$(severity_rank "$FILE_MIN_SEVERITY")"
 if [[ "$ENABLED" != true ]]; then
   [[ "$CHECK_ONLY" == 1 ]] && echo "bell check-only: disabled by config"
   exit 0
@@ -48,9 +62,9 @@ SCAN_LOCK="$A/.bell.lock"
 SUPERVISOR_LOCK="$A/.bell-supervisor.lock"
 SCAN_PID=""
 if [[ -s "$STATE" ]] && jq -e 'type=="object"' "$STATE" >/dev/null 2>&1; then
-  STATE_JSON="$(jq -c '. + {monitor_initialized:(.monitor_initialized//false),scheduler_lines:(.scheduler_lines//0),alert_mtimes:(.alert_mtimes//{}),merge_events:(.merge_events//{}),signatures:(.signatures//{}),pending:(.pending//[]),network_down:(.network_down//false)}' "$STATE")"
+  STATE_JSON="$(jq -c '. + {monitor_initialized:(.monitor_initialized//false),scheduler_lines:(.scheduler_lines//0),alert_mtimes:(.alert_mtimes//{}),merge_events:(.merge_events//{}),signatures:(.signatures//{}),pending:(.pending//[]),incident_stats:(.incident_stats//{}),incident_filing:(.incident_filing//{}),scheduler_signature_seen:(.scheduler_signature_seen//{}),network_down:(.network_down//false)}' "$STATE")"
 else
-  STATE_JSON='{"monitor_initialized":false,"scheduler_lines":0,"alert_mtimes":{},"merge_events":{},"signatures":{},"pending":[],"network_down":false}'
+  STATE_JSON='{"monitor_initialized":false,"scheduler_lines":0,"alert_mtimes":{},"merge_events":{},"signatures":{},"pending":[],"incident_stats":{},"incident_filing":{},"scheduler_signature_seen":{},"network_down":false}'
 fi
 MONITOR_INITIALIZED="$(jq -r '.monitor_initialized' <<<"$STATE_JSON")"
 
@@ -117,6 +131,134 @@ mtime_epoch() {
 import os,sys
 print(int(os.stat(sys.argv[1]).st_mtime))
 PY
+}
+
+incident_class() {
+  local raw="$1" slug hash
+  slug="$(printf '%s' "$raw" | LC_ALL=C tr '[:upper:]_' '[:lower:]-' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-|-$//g')"
+  [[ -n "$slug" ]] || slug=incident
+  if ((${#slug} > 64)); then
+    hash="$(printf '%s' "$raw" | shasum -a 256 | awk '{print substr($1,1,8)}')"
+    slug="${slug:0:55}-$hash"
+  fi
+  printf '%s\n' "$slug"
+}
+
+scheduler_signature_class() {
+  local line="$1" rc fn var
+  if [[ "$line" =~ jqf[[:space:]]error[[:space:]]\(rc=([0-9]+)\)[[:space:]]in[[:space:]]([^[:space:]:]+) ]]; then
+    rc="${BASH_REMATCH[1]}"; fn="${BASH_REMATCH[2]}"
+    fn="$(printf '%s' "$fn" | LC_ALL=C tr '[:upper:]_' '[:lower:]-' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-|-$//g')"
+    [[ -n "$fn" ]] || fn=unknown
+    printf 'sched-jqf-%s-rc%s\n' "$fn" "$rc"
+  elif [[ "$line" == *'unbound variable'* ]]; then
+    if [[ "$line" =~ ([[:alnum:]_]+):[[:space:]]unbound[[:space:]]variable ]]; then
+      var="$(printf '%s' "${BASH_REMATCH[1]}" | LC_ALL=C tr '[:upper:]_' '[:lower:]-' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-|-$//g')"
+      [[ -n "$var" ]] || var=unknown
+      printf 'sched-unbound-%s\n' "$var"
+    else
+      printf 'sched-unbound-variable\n'
+    fi
+  elif [[ "$line" == *TICK-TIMEOUT* ]]; then
+    printf 'sched-tick-timeout\n'
+  elif [[ "$line" == *REFILL-TIMEOUT* ]]; then
+    printf 'sched-refill-timeout\n'
+  fi
+}
+
+scheduler_history_consider() {
+  local line="$1" ts class
+  [[ "$line" =~ ^\[([^]]+)\] ]] || return 0
+  ts="${BASH_REMATCH[1]}"
+  [[ "$ts" > "$SCHEDULER_CUTOFF_STAMP" && ( "$ts" < "$SCHEDULER_EVENT_STAMP" || "$ts" == "$SCHEDULER_EVENT_STAMP" ) ]] || return 0
+  class="$(scheduler_signature_class "$line")"
+  [[ "$class" == "$SCHEDULER_WANTED_CLASS" ]] || return 0
+  if [[ -z "$SCHEDULER_HISTORY_STAMP" || "$ts" > "$SCHEDULER_HISTORY_STAMP" ]]; then
+    SCHEDULER_HISTORY_STAMP="$ts"
+  fi
+}
+
+scheduler_signature_last_seen() {
+  local wanted="$1" before_line="$2" event_stamp="$3" file stored_epoch stored_recent=0 latest_epoch=0
+  local SCHEDULER_WANTED_CLASS="$wanted" SCHEDULER_EVENT_STAMP="$event_stamp" SCHEDULER_HISTORY_STAMP=""
+  SCHEDULER_CUTOFF_STAMP="$(python3 - "$((now - 86400))" <<'PY'
+from datetime import datetime, timezone
+import sys
+print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)"
+  stored_epoch="$(jq -r --arg c "$wanted" '.scheduler_signature_seen[$c]//0' <<<"$STATE_JSON")"
+  if [[ "$stored_epoch" =~ ^[0-9]+$ ]] && (( now - stored_epoch < 86400 )); then
+    stored_recent="$stored_epoch"
+  fi
+  for file in "$A/scheduler.log.1" "$A/scheduler.log"; do
+    [[ -r "$file" ]] || continue
+    if [[ "$file" == "$A/scheduler.log" ]]; then
+      (( before_line > 1 )) || continue
+      while IFS= read -r history_line; do scheduler_history_consider "$history_line"; done \
+        < <(sed -n "1,$((before_line - 1))p" "$file" 2>/dev/null)
+    else
+      while IFS= read -r history_line; do scheduler_history_consider "$history_line"; done < "$file"
+    fi
+  done
+  if [[ -n "$SCHEDULER_HISTORY_STAMP" ]]; then
+    latest_epoch="$(to_epoch "$SCHEDULER_HISTORY_STAMP")"
+    [[ "$latest_epoch" =~ ^[0-9]+$ ]] || latest_epoch=0
+  fi
+  (( stored_recent > latest_epoch )) && latest_epoch="$stored_recent"
+  printf '%s\n' "$latest_epoch"
+}
+
+INCIDENT_REPO="${ZF_GH_REPO:-${ZF_REPO:-}}"
+if [[ -z "$INCIDENT_REPO" ]]; then
+  incident_remote="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
+  INCIDENT_REPO="$(printf '%s' "$incident_remote" | sed -E 's#^(git@[^:]+:|[a-z+]+://([^/@]+@)?[^/]+/)##; s#\.git$##')"
+fi
+file_incident_issue() {
+  local class="$1" severity="$2" summary="$3" evidence="$4" first_seen="$5" count="$6"
+  local engine_dir upsert body_file title
+  engine_dir="${ZF_ENGINE_DIR:-$ROOT/engine}"
+  upsert="$engine_dir/pipeline-issue-upsert.sh"
+  [[ -r "$upsert" ]] || { echo "bell.sh: incident upsert helper is missing: $upsert" >&2; return 1; }
+  body_file="$(mktemp "$A/.bell-incident.XXXXXX")" || return 1
+  title="Incident: ${summary:0:180}"
+  {
+    printf '# Detected incident\n\n'
+    printf -- '- Class: `%s`\n- Severity: %s\n- First seen: %s\n- Occurrence count: %s\n- Latest seen: %s\n\n' \
+      "$class" "$severity" "$first_seen" "$count" "$stamp"
+    printf '## Observation\n\n%s\n\n## Evidence lines\n\n%s\n' "$summary" "$evidence"
+  } > "$body_file"
+  local output status
+  if output="$(ZF_GH_REPO="$INCIDENT_REPO" ZF_REPO="$INCIDENT_REPO" ZF_REPO_DIR="$ROOT" ZF_ENGINE_DIR="$engine_dir" \
+    bash "$upsert" --class "$class" --title "$title" --body-file "$body_file" --lane pipeline-system \
+      --label incident 2>&1)"; then
+    [[ -z "$output" ]] || printf '%s\n' "$output" >> "$LOG"
+    rm -f -- "$body_file"
+    return 0
+  else
+    status=$?
+    printf '[%s] incident upsert failed class=%s: %s\n' "$stamp" "$class" "$(clean "$output")" >> "$LOG"
+    rm -f -- "$body_file"
+    return "$status"
+  fi
+}
+
+queue_incident_filing() {
+  local severity="$1" raw="$2" summary="$3" evidence="$4"
+  local class first_seen occurrence_count
+  (( $(severity_rank "$severity") >= FILE_MIN_SEVERITY_RANK )) || return 0
+  class="$(incident_class "$raw")"
+  first_seen="$(jq -r --arg c "$class" '.incident_stats[$c].first_seen // empty' <<<"$STATE_JSON")"
+  occurrence_count="$(jq -r --arg c "$class" '.incident_stats[$c].count // 0' <<<"$STATE_JSON")"
+  [[ "$occurrence_count" =~ ^[0-9]+$ ]] || occurrence_count=0
+  [[ -n "$first_seen" ]] || first_seen="$stamp"
+  occurrence_count=$((occurrence_count + 1))
+  STATE_JSON="$(jq -c --arg c "$class" --arg first "$first_seen" --arg latest "$stamp" \
+    --arg severity "$severity" --arg summary "$summary" --arg evidence "$evidence" \
+    --argjson count "$occurrence_count" \
+    '.incident_stats[$c]={first_seen:$first,count:$count,last_seen:$latest}
+     |.incident_filing[$c]={class:$c,severity:$severity,summary:$summary,evidence:$evidence,first_seen:$first,count:$count}' \
+    <<<"$STATE_JSON")"
 }
 
 # Read the candidate identities retained by the scheduler and both publishers.
@@ -219,10 +361,28 @@ if [[ "$MONITOR_INITIALIZED" == true ]]; then
   [[ "$old_lines" =~ ^[0-9]+$ ]] || old_lines=0
   (( lines < old_lines )) && old_lines=0
   if (( lines > old_lines )); then
+    line_num="$old_lines"
     while IFS= read -r line; do
+      line_num=$((line_num + 1))
       [[ -n "$line" ]] || continue
       # tick done 行只是每拍汇总；它的阶段计时含 release_dependency_blocks，会被 BLOCK 误判成 high（2026-10-20 32 条）。
       [[ "$line" == *"] tick done "* ]] && continue
+      event_class="$(scheduler_signature_class "$line")"
+      if [[ -n "$event_class" ]]; then
+        event_stamp=""
+        [[ "$line" =~ ^\[([^]]+)\] ]] && event_stamp="${BASH_REMATCH[1]}"
+        seen_epoch=0
+        if [[ "$event_stamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+          seen_epoch="$(scheduler_signature_last_seen "$event_class" "$line_num" "$event_stamp")"
+        fi
+        if [[ "$seen_epoch" =~ ^[0-9]+$ ]] && (( now - seen_epoch < 86400 )); then
+          STATE_JSON="$(jq -c --arg c "$event_class" --argjson seen "$seen_epoch" '.scheduler_signature_seen[$c]=$seen' <<<"$STATE_JSON")"
+          continue
+        fi
+        add_event high "$event_class" "scheduler signature $event_class: $(clean "$line")" "scheduler.log: $line"
+        STATE_JSON="$(jq -c --arg c "$event_class" --argjson seen "$now" '.scheduler_signature_seen[$c]=$seen' <<<"$STATE_JSON")"
+        continue
+      fi
       printf '%s\n' "$line" | grep -Eiq 'SLOW|KILL|BLOCK|orphan-recover|budget|merge-revert|verdict=BLOCK|error' || continue
       clean_line="$(printf '%s\n' "$line" | sed -E 's/^\[[^]]+\][[:space:]]*//' | tr '\t\r\n' '   ')"
       sev=medium
@@ -476,9 +636,12 @@ for item in "${events[@]}"; do
   if [[ "$raw" != network-recovered ]] && (( prev > 0 && now - prev < DEDUP_SECONDS )); then
     count=$((count+1))
     STATE_JSON="$(jq -c --arg h "$h" --argjson now "$now" --argjson n "$count" --arg id "$event_id" '.signatures[$h].last=$now|.signatures[$h].count=$n|if $n>=2 and $id!="" then .pending|=map(if .id==$id and .status=="queued" then .needs_supervisor=true else . end) else . end' <<<"$STATE_JSON")"
+    queue_incident_filing "$sev" "$raw" "$summary" "$evidence"
     save_state
     continue
   fi
+
+  queue_incident_filing "$sev" "$raw" "$summary" "$evidence"
 
   event_seq=$((event_seq+1))
   event_id="${now}-$$-${event_seq}"
@@ -498,6 +661,19 @@ for item in "${events[@]}"; do
   action_results+=("queue=append,notify=$notified,supervisor=$sup")
   save_state
 done
+
+# Keep failed writes queued in bell-state and retry them on the next scan. The
+# upsert helper is idempotent by class, so a retry cannot open a second issue.
+while IFS=$'\t' read -r incident_key incident_severity incident_summary incident_evidence incident_first_seen incident_count; do
+  [[ -n "$incident_key" ]] || continue
+  if file_incident_issue "$incident_key" "$incident_severity" "$incident_summary" "$incident_evidence" "$incident_first_seen" "$incident_count"; then
+    printf '[%s] incident filed class=%s count=%s\n' "$stamp" "$incident_key" "$incident_count" >> "$LOG"
+    STATE_JSON="$(jq -c --arg c "$incident_key" 'del(.incident_filing[$c])' <<<"$STATE_JSON")"
+    save_state
+  else
+    printf '[%s] incident filing failed class=%s; will retry\n' "$stamp" "$incident_key" >> "$LOG"
+  fi
+done < <(jq -r '.incident_filing // {} | to_entries[] | [.key,.value.severity,.value.summary,.value.evidence,.value.first_seen,(.value.count|tostring)] | @tsv' <<<"$STATE_JSON")
 
 if [[ -r "$A/BELL-RESOLUTION.md" ]]; then
   while IFS= read -r id; do

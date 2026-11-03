@@ -96,6 +96,9 @@
     "notify": false,
     "auto_supervisor": false
   },
+  "incident": {
+    "file_min_severity": "medium"
+  },
   "supervisor_arbiter": {
     "enabled": true,
     "profile": "terra",

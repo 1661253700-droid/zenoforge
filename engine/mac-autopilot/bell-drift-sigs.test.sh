@@ -13,7 +13,7 @@ fixture_root="$tmp/repo"
 bin="$tmp/bin"
 mkdir -p "$autopi/alerts" "$fixture_root/engine/mac-autopilot" "$bin" "$tmp/supervisor"
 cat > "$autopi/config.json" <<'JSON'
-{"bell":{"enabled":true,"notify":false,"auto_supervisor":false,"dedup_minutes":30}}
+{"bell":{"enabled":true,"notify":false,"auto_supervisor":false,"dedup_minutes":30},"incident":{"file_min_severity":"off"}}
 JSON
 touch -t 202001010000 "$autopi/dashboard.data.js"
 printf '[%s] scheduler tick\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$autopi/scheduler.log"
@@ -114,6 +114,34 @@ rm -rf "$st/.scheduler.lock"
 BELL_AUTOPI_DIR="$st" bash "$bell" --check-only > "$st/out" 2>&1 || :
 grep -q '^candidate severity=high' "$st/out" || { echo 'tick with no lock holder not judged stale' >&2; exit 1; }
 
+# A scheduler error class is emitted only when the signature was not already
+# present in the preceding 24 hours; a distinct jqf caller/rc is still new.
+sig="$tmp/signature-autopi"
+mkdir -p "$sig/alerts"
+cat > "$sig/config.json" <<'JSON'
+{"bell":{"enabled":true,"notify":false,"auto_supervisor":false},"incident":{"file_min_severity":"critical"}}
+JSON
+printf 'window.DASH={};\n' > "$sig/dashboard.data.js"
+sig_old_time="$(python3 - <<'PY'
+from datetime import datetime, timezone, timedelta
+print((datetime.now(timezone.utc)-timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+PY
+)"
+sig_now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+printf '[%s] jqf error (rc=7) in known_fn: previous occurrence\n[%s] jqf error (rc=7) in known_fn: recurring occurrence\n[%s] ROLLBACK engine candidate -> old: jqf error (rc=3) in new_fn: new occurrence\n' \
+  "$sig_old_time" "$sig_now" "$sig_now" > "$sig/scheduler.log"
+printf '%s\n' '{"units":[]}' > "$sig/units.json"
+printf '%s\n' '{"workers":[]}' > "$sig/workers.json"
+jq -n '{monitor_initialized:true,scheduler_lines:1,alert_mtimes:{},merge_events:{},signatures:{},pending:[]}' > "$sig/bell-state.json"
+BELL_AUTOPI_DIR="$sig" bash "$bell"
+jq -e '[.pending[].raw_signature] == ["sched-jqf-new-fn-rc3"]' "$sig/bell-state.json" >/dev/null \
+  || { echo 'bell-drift-sigs.test.sh: new jqf signature was not emitted alone' >&2; cat "$sig/bell-state.json" >&2; exit 1; }
+grep -Fq 'scheduler signature sched-jqf-new-fn-rc3' "$sig/BELL-QUEUE.md" \
+  || { echo 'bell-drift-sigs.test.sh: stable jqf class missing from event evidence' >&2; exit 1; }
+grep -Fq 'ROLLBACK engine candidate -> old: jqf error (rc=3) in new_fn' "$sig/BELL-QUEUE.md" \
+  || { echo 'bell-drift-sigs.test.sh: canary ROLLBACK evidence did not reach the bell event' >&2; exit 1; }
+! grep -Fq 'sched-jqf-known-fn-rc7' "$sig/BELL-QUEUE.md" \
+  || { echo 'bell-drift-sigs.test.sh: recurring jqf signature emitted again' >&2; exit 1; }
 
 rm "$autopi/dashboard.data.js"
 bash "$bell"
