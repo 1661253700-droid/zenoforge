@@ -1732,9 +1732,17 @@ root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
 # 非产品 PR 不排 CI 名额；同级先按 ready_since，依赖只在 readiness 相同时作 tie-break（maintainer 10-22：非产品尽快）
 CFG="$(jq '.precheck=false' <<<"$CFG_SAVED")"; : > "$wr/cancelled"; GH_RUN_JSON='[]'
 units "{\"units\":[{\"id\":\"pr-40\",\"pr\":40,\"stage\":\"ready-to-merge\",\"branch\":\"c\",\"approved_sha\":\"$H1\",\"ci_wip_wait\":\"$H1\",\"ready_since\":1,\"history\":[]},{\"id\":\"pr-41\",\"pr\":41,\"stage\":\"ready-to-merge\",\"branch\":\"agent/issue-77\",\"approved_sha\":\"$H1\",\"ci_wip_wait\":\"$H1\",\"ready_since\":2,\"history\":[]},{\"id\":\"pr-42\",\"pr\":42,\"stage\":\"ready-to-merge\",\"branch\":\"ci/x\",\"approved_sha\":\"$H1\",\"ready_since\":0,\"history\":[]},{\"id\":\"issue-78\",\"issue\":78,\"stage\":\"blocked-external\",\"blocked_on\":77,\"history\":[]}]}"
-gh() { if [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then case "$3" in 42) printf '.github/workflows/ci.yml\nscripts/agent/x.sh\nREADME.md\n' ;; *) printf 'packages/shared/a.ts\nscripts/b.sh\n' ;; esac; else eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"; fi; }
+gh() {
+  if [[ "$1 $2" == "api graphql" ]]; then
+    printf '%s\n' '{"data":{"repository":{"pr_40":{"files":{"nodes":[{"path":"packages/shared/a.ts"},{"path":"scripts/b.sh"}]}},"pr_42":{"files":{"nodes":[{"path":".github/workflows/ci.yml"},{"path":"scripts/agent/x.sh"},{"path":"README.md"}]}}}}}'
+  elif [[ "$1 $2" == "pr view" && "$*" == *files* ]]; then
+    case "$3" in 42) printf '.github/workflows/ci.yml\nscripts/agent/x.sh\nREADME.md\n' ;; *) printf 'packages/shared/a.ts\nscripts/b.sh\n' ;; esac
+  else
+    eval "${gh_merge_stub/gh ()/gh_m ()}"; gh_m "$@"
+  fi
+}
 TICK_UNFINISHED="[{\"databaseId\":91,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"c\"},{\"databaseId\":92,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"agent/issue-77\"},{\"databaseId\":93,\"status\":\"queued\",\"event\":\"pull_request\",\"headBranch\":\"ci/x\"}]"
-root_saved="$ROOT"; ROOT="$wr"; ci_wip_gate_test; ROOT="$root_saved"
+root_saved="$ROOT"; ROOT="$wr"; GH_REPO=fixture-org/fixture-repo ci_wip_gate_test; ROOT="$root_saved"
 [[ "$(field pr-42 .product_paths):$(field pr-40 .product_paths)" == "false:true" ]] || fail "product paths not classified ($(field pr-42 .product_paths) $(field pr-40 .product_paths))"
 [[ "$(field pr-40 '.history[-1].stage')" == ci-wip-start && "$(field pr-40 '.ci_wip_wait // "none"')" == none ]] \
   || fail "the free slot did not follow same-class readiness ($(field pr-40 '.history[-1].stage // "none"'))"
@@ -2784,13 +2792,24 @@ source <(sed -n '/^main_suites_load() {/,/^}/p;/^suites_run_for() {/,/^}/p' "$sc
 suites_run_for_snap="$(declare -f suites_run_for)"; eval "${suites_run_for_snap/suites_run_for ()/suites_run_for_cached ()}"
 suites_run_for() { MAIN_SUITES_RUNS_LOADED=false; suites_run_for_cached "$@"; }
 gate_eval_sha() { printf '%s' "$M1"; }
+main_suites_probe() {
+  units "$(jq -cn --arg sha "$H1" '{units:[{id:"pr-main-suites",pr:86,stage:"ready-to-merge",lane:"pr",approved_sha:$sha,history:[]}]}')"
+}
+main_suites_probe_with_landed() {
+  units "$(jq -cn --arg land "$M2" --arg sha "$H1" '{units:[
+    {id:"landed-1",stage:"landed",lane:"direct-main",land_sha:$land,history:[]},
+    {id:"pr-main-suites",pr:86,stage:"ready-to-merge",lane:"pr",approved_sha:$sha,history:[]}
+  ]}')"
+}
+GH_CHECKS='[{"name":"Pipeline suites","bucket":"pass"}]'
 # main suites 首红先重跑；CLI 未确认先保留，服务端更高 attempt 能完成对账
 GH_RUNS="[{\"headSha\":\"$M1\",\"conclusion\":\"failure\",\"status\":\"completed\",\"createdAt\":\"t\",\"attempt\":1,\"databaseId\":31}]"
 GH_LOG='[pipeline suites] FAILED suite=engine/x.test.sh exit_code=1 first_error=not ok 2 - boom'
-units '{"units":[]}'
+main_suites_probe
 GH_RERUNS=(); GH_RERUN_FAIL=1; rm -f "$A/gate-net-rerun.json"
 run_merge_lane || :; run_merge_lane || :
-[[ "$(jq '.units | length' "$UNITS")" == 0 && ${#GH_RERUNS[@]} == 1 ]] || fail 'same red or unconfirmed rerun request opened main-red or spent another retry'
+[[ "$(jq '[.units[] | select(.main_red == true)] | length' "$UNITS")" == 0 && "$(field pr-main-suites .stage)" == ready-to-merge && ${#GH_RERUNS[@]} == 1 ]] \
+  || fail "same red or unconfirmed rerun request opened main-red or spent another retry (units=$(jq -c '.units|map(.id)' "$UNITS"), reruns=${GH_RERUNS[*]:-none}, reservation=$(cat "$A/gate-net-rerun.json" 2>/dev/null))"
 GH_RUNS="$(jq '.[0].attempt=2' <<<"$GH_RUNS")"
 run_merge_lane || :; run_merge_lane || :
 GH_RERUN_FAIL=0
@@ -2805,7 +2824,7 @@ main_red_launch() { printf '%s\n' "$MR_REPORT" > "$MAIN_RED_DIR/$1.report"; }
 for mr_case in culprit fallback revert-conflict still-running; do
   rm -rf "$MAIN_RED_DIR"; rm -f "$A/gate-net-rerun.json"; GH_RERUNS=(); MR_REVERTS=(); MR_REVERT_STATUS=0
   GH_RUNS="[{\"headSha\":\"$M1\",\"conclusion\":\"failure\",\"status\":\"completed\",\"createdAt\":\"t\",\"attempt\":1,\"databaseId\":31}]"
-  units "$(jq -cn --arg sha "$M2" '{units:[{id:"landed-1",stage:"landed",lane:"direct-main",land_sha:$sha,history:[]}]}')"
+  main_suites_probe_with_landed
   MR_REPORT="culprit=$M2 suite=engine/x.test.sh first-red-run=31 green=$M3"
   case "$mr_case" in
     fallback) MR_REPORT='fallback=non-pipeline-commit-in-window' ;;
@@ -2835,7 +2854,7 @@ main_red_attribution() { MAIN_RED_REVERTED=0; MAIN_RED_PENDING=0; }
 source <(sed -n '/^revert_squash_merge() {/,/^}/p' "$script_dir/scheduler.d/merge-prep.sh")
 # 未知 attempt / 旧预算没有执行身份 / 不同 run 都不证明同一执行已经重跑失败。
 for unavailable in missing-attempt legacy-reservation different-run; do
-  units '{"units":[]}'; GH_RERUNS=(); rm -f "$A/gate-net-rerun.json"
+  main_suites_probe; GH_RERUNS=(); rm -f "$A/gate-net-rerun.json"
   GH_RUNS="$(jq '.[0].attempt=1 | .[0].databaseId=31' <<<"$GH_RUNS")"
   case "$unavailable" in
     missing-attempt) GH_RUNS="$(jq '.[0] |= del(.attempt)' <<<"$GH_RUNS")" ;;
@@ -2845,7 +2864,8 @@ for unavailable in missing-attempt legacy-reservation different-run; do
       GH_RUNS="$(jq '.[0].databaseId=311 | .[0].attempt=2' <<<"$GH_RUNS")" ;;
   esac
   run_merge_lane || :; run_merge_lane || :
-  [[ "$(jq '.units | length' "$UNITS")" == 0 ]] || fail "$unavailable opened main-red without a later attempt of the reserved run"
+  [[ "$(jq '[.units[] | select(.main_red == true)] | length' "$UNITS")" == 0 && "$(field pr-main-suites .stage)" == ready-to-merge ]] \
+    || fail "$unavailable opened main-red without a later attempt of the reserved run"
   expected_reruns=0; [[ "$unavailable" != different-run ]] || expected_reruns=1
   [[ ${#GH_RERUNS[@]} == "$expected_reruns" ]] || fail "$unavailable reset the retry budget"
 done
@@ -2857,11 +2877,13 @@ not ok 2 - real" || fail 'a real test failure was classified as a timeout'
 GH_LOG="$timeout_log"; GH_RERUNS=(); rm -f "$A/gate-net-rerun.json"
 GH_RUNS="[{\"headSha\":\"$M2\",\"conclusion\":\"failure\",\"status\":\"completed\",\"createdAt\":\"t\",\"attempt\":1,\"databaseId\":32}]"
 gate_eval_sha() { printf '%s' "$M2"; }
-units '{"units":[]}'
+main_suites_probe
 run_merge_lane || :
 [[ "${GH_RERUNS[*]:-}" == *"rerun 32 --failed"* && "$(jq '[.units[] | select(.main_red == true)] | length' "$UNITS")" == 0 ]] || fail 'timeout-only red main was not rerun (or opened a fix unit)'
 GH_RUNS="$(jq '.[0].attempt=2' <<<"$GH_RUNS")"; run_merge_lane || :
-[[ ${#GH_RERUNS[@]} == 1 && "$(jq '.units | length' "$UNITS")" == 0 ]] || fail 'second timeout attempt became a code verdict or reset the retry budget'
+[[ ${#GH_RERUNS[@]} == 1 && "$(jq '[.units[] | select(.main_red == true)] | length' "$UNITS")" == 0 && "$(field pr-main-suites .stage)" == ready-to-merge ]] \
+  || fail 'second timeout attempt became a code verdict or reset the retry budget'
+unset GH_CHECKS
 GH_RUNS="$(jq '.[0].attempt=1' <<<"$GH_RUNS")"
 gate_eval_sha() { printf '%s' "$M1"; }
 GH_RERUNS=()
@@ -2984,7 +3006,7 @@ command git -C "$remote" branch -D agent/pushed >/dev/null
 rm -f "$A/.branch-gc"
 AP_TMPDIR="$fixture/ap-tmp"; mkdir -p "$AP_TMPDIR/stale-test/pg" "$AP_TMPDIR/live-test"
 touch -d '-2 days' "$AP_TMPDIR/stale-test"
-cleanup_tick || :
+AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || :
 ! command git -C "$ROOT" rev-parse -q --verify refs/heads/agent/pushed >/dev/null || fail 'branch with a gone upstream was kept'
 command git -C "$ROOT" rev-parse -q --verify refs/heads/agent/local-only >/dev/null || fail 'never-pushed local branch was deleted'
 [[ ! -e "$AP_TMPDIR/stale-test" && -d "$AP_TMPDIR/live-test" ]] || fail 'worker tmp reap must drop day-old entries and keep fresh ones'
@@ -3047,7 +3069,7 @@ touch "$A/.branch-gc"
 units "$(jq -cn --arg dirty "$cleanup_dirty_id" --arg stash "$cleanup_stash_id" \
   --arg unpushed "$cleanup_unpushed_id" --arg clean "$cleanup_clean_id" --arg tmp_clean "$cleanup_tmp_clean_id" \
   '{units:[$dirty,$stash,$unpushed,$clean,$tmp_clean] | map({id:.,stage:"closed"})}')"
-cleanup_tick || fail 'cleanup tick failed while preserving terminal worktrees'
+AP_SYSTEM_TMP="$fixture/sys-tmp" AP_SYSTEM_TMP_FS=ext4 cleanup_tick || fail 'cleanup tick failed while preserving terminal worktrees'
 [[ -f "$cleanup_dirty_wt/scratch.txt" ]] || fail 'cleanup removed a terminal worktree with uncommitted changes'
 [[ -d "$cleanup_tmp_stash" && -n "$(command git -C "$cleanup_tmp_stash" stash list)" ]] \
   || fail 'cleanup removed a terminal /tmp worktree with a stash'

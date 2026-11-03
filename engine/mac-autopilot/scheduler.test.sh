@@ -2569,25 +2569,38 @@ sched_run_case stuck_worker_disposition
   echo 'not ok - scheduler.test.sh: target model policy did not select every eval stage' >&2; exit 1;
 }
 
+set_pipeline_gate_probe() {
+  local pr_sha
+  pr_sha="$(printf '%040x' 86)"
+  command jq -cn --arg sha "$pr_sha" '{units:[{id:"pr-pipeline-probe",pr:86,branch:"agent/pipeline-probe",lane:"pr",product_paths:false,stage:"ready-to-merge",approved_sha:$sha,history:[]}]}' \
+    > "$TF/supervisor/autopi/units.json"
+  printf '86\n' > "$TF/pipeline-prs"
+  echo 100 > "$TF/dead-through"
+}
+
 sched_case_gate_network() {
 new_tick_fixture gate-network
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+set_pipeline_gate_probe
 echo 'fatal: gnutls_handshake() failed: connection reset' > "$TF/failed.log"
 tick; tick
 [[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
 [[ ! -s "$TF/reverted" ]]
-command jq -e '.units | length==0' "$TF/supervisor/autopi/units.json" >/dev/null
+command jq -e '.units | length==1 and .[0].id=="pr-pipeline-probe" and .[0].stage=="ready-to-merge"' \
+  "$TF/supervisor/autopi/units.json" >/dev/null
 }
 sched_run_case gate_network
 
 sched_case_gate_suite_timeout() {
 new_tick_fixture gate-suite-timeout
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+set_pipeline_gate_probe
 echo '[pipeline suites] FAILED suite=engine/land-queue.test.sh exit_code=137 first_error=suite engine/land-queue.test.sh timed out after 492s' > "$TF/failed.log"
 tick; tick
 [[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
 [[ ! -s "$TF/reverted" ]]
-command jq -e '.units | length==0' "$TF/supervisor/autopi/units.json" >/dev/null
+command jq -e '.units | length==1 and .[0].id=="pr-pipeline-probe" and .[0].stage=="ready-to-merge"' \
+  "$TF/supervisor/autopi/units.json" >/dev/null
 }
 sched_run_case gate_suite_timeout
 
