@@ -1541,8 +1541,12 @@ HOLD_DEAD_RUN="$(AGENT_HOME="$HOLD_DEAD_HOME" ZF_NIGHT_DIR="$HOLD_DEAD_HOME/nigh
     printf "%s\thand-740048-worker\tmodel\teffort\tworktree\tbrief\t\tlog\t0\t1\twork\t%s\t740048\t\n" \
       "$$" "$owner_ticks" > "$ZF_NIGHT_DIR/agents.txt"
     gh() {
+      # #193: hold_sweep reads one batched issue-list snapshot (number/state/
+      # labels/comments per row) instead of per-issue views; OPEN rows are the
+      # live holds, so each fixture issue rides the snapshot like the old
+      # issue-view stub below it.
       if [[ "$1 ${2:-}" == "issue list" ]]; then
-        jq -cn '\''[{number:740040},{number:740041},{number:740046},{number:740048}]'\''
+        jq -cn '\''[740040,740041,740046,740048] | map({number:.,state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"})'\''
       else
         jq -cn '\''{state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"}'\''
       fi
@@ -1591,8 +1595,10 @@ HOLD_AGE_RUN="$(AGENT_HOME="$HOLD_AGE_HOME" ZF_NIGHT_DIR="$HOLD_AGE_HOME/night" 
     set -euo pipefail
     source "$1/lib.sh"
     gh() {
+      # #193 batched snapshot rows: OPEN + on-hold label keeps each aging
+      # fixture a live hold without any per-issue view.
       if [[ "$1 ${2:-}" == "issue list" ]]; then
-        jq -cn '\''[{number:740042},{number:740043},{number:740049}]'\''
+        jq -cn '\''[740042,740043,740049] | map({number:.,state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"})'\''
       else
         jq -cn '\''{state:"OPEN",labels:[{name:"on-hold"}],comments:[],title:"hold fixture"}'\''
       fi
@@ -3569,7 +3575,8 @@ HOLD_EXPIRY_STATE="$(AGENT_HOME="$HOLD_EXPIRY_HOME" REPO=test/repo bash -c '
   roadmap_ensure_issue_parent() { :; }
   gh() {
     if [ "$1 ${2:-}" = "issue list" ]; then
-      printf "%s\\n" '\''[{"number":509988}]'\''
+      # #193 batched snapshot: the row carries the view fields itself.
+      printf "%s\\n" '\''[{"number":509988,"state":"OPEN","labels":[{"name":"on-hold"}],"comments":[],"title":"fixture"}]'\''
     elif [ "$1 ${2:-}" = "issue view" ]; then
       printf "%s\\n" '\''{"state":"OPEN","labels":[{"name":"on-hold"}],"comments":[],"title":"fixture"}'\''
     elif [ "$1 ${2:-}" = "pr list" ]; then
@@ -4144,13 +4151,26 @@ assert_true "read_needs_info_email_replies() keeps applied-default threads eligi
   bash -c 'echo "$1" | grep -qF -- "needs_info_default_applied.thread_id"' _ "$READ_SIDE_FN_BODY"
 
 POST_DISPATCH_MAINTENANCE_BODY="$(sed -n '/^run_post_dispatch_maintenance() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+MAINTENANCE_OPTIONAL_STEP_BODY="$(sed -n '/^maintenance_run_optional_step() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 NEEDS_INFO_RECONCILE_BODY="$(sed -n '/^reconcile_needs_info_issues() {/,/^}/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+# #193 gave maintenance bounded slots with a resume cursor: the needs-info
+# email poll stayed inline required work, while reply reconciliation moved to
+# the optional suffix as the needs-info-loop step dispatched through
+# maintenance_run_optional_step. The ordering contract now pins as: the inline
+# email read precedes the suffix dispatch loop, and needs-info-loop still
+# routes to reconcile_needs_info_issues.
 assert_true "post-dispatch maintenance reads needs-info mail before reply reconciliation" \
   bash -c '
     read_side_line=$(grep -nF "read_needs_info_email_replies" <<< "$1" | head -n1 | cut -d: -f1)
-    reconcile_line=$(grep -nF "reconcile_needs_info_issues" <<< "$1" | head -n1 | cut -d: -f1)
-    [ -n "$read_side_line" ] && [ -n "$reconcile_line" ] && [ "$read_side_line" -lt "$reconcile_line" ]
+    suffix_dispatch_line=$(grep -nF "maintenance_run_optional_step" <<< "$1" | tail -n1 | cut -d: -f1)
+    [ -n "$read_side_line" ] && [ -n "$suffix_dispatch_line" ] && [ "$read_side_line" -lt "$suffix_dispatch_line" ]
   ' _ "$POST_DISPATCH_MAINTENANCE_BODY"
+assert_true "the needs-info-loop suffix step still routes to reply reconciliation" \
+  bash -c '
+    step_line=$(grep -nF "needs-info-loop)" <<< "$1" | head -n1 | cut -d: -f1)
+    reconcile_line=$(grep -nF "reconcile_needs_info_issues" <<< "$1" | head -n1 | cut -d: -f1)
+    [ -n "$step_line" ] && [ -n "$reconcile_line" ] && [ "$step_line" -lt "$reconcile_line" ]
+  ' _ "$MAINTENANCE_OPTIONAL_STEP_BODY"
 
 # 2026-09-15 (restored maintainer verdict): needs-info reconciliation must route an
 # advisor-origin needs-info answer back to needs-advisor (route_to_advisor,
