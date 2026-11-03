@@ -3550,6 +3550,36 @@ sched_case_refill_intake_cap() {
 }
 sched_run_case refill_intake_cap
 
+sched_case_intake_cache_large_rows() {
+# A cache write must stream large candidate rows through stdin, not jq argv.
+  new_tick_fixture intake-cache-large-rows
+  command jq '.issue_intake={enabled:true,max_upstream:8,max_ready:30,labels:[],product_labels:["ready-for-agent"],refill_max:2}' \
+    "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"
+  mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+  command jq -cn '[range(1;301) as $i | {number:(10000+$i),title:("large candidate "+($i|tostring)),body:("x"*8192),state:"OPEN",labels:[{name:"ready-for-agent"}]}]' \
+    > "$TF/intake-issues.json"
+  A="$TF/supervisor/autopi"; CFG="$(cat "$A/config.json")"; LOG="$A/scheduler.log"; STAMP=intake-cache-test; GH_PARALLEL=1
+  : > "$LOG"
+  gh() {
+    [[ "$1 $2" == 'issue list' && " $* " == *' --label ready-for-agent '* ]] || return 97
+    cat "$TF/intake-issues.json"
+  }
+  intake_candidates true > "$TF/printed-rows"
+  [[ -f "$A/intake-candidates.json" ]] \
+    || { echo 'not ok - scheduler.test.sh: large intake candidates were not cached' >&2; exit 1; }
+  command jq -r '.rows' "$A/intake-candidates.json" > "$TF/cached-rows"
+  cmp -s "$TF/printed-rows" "$TF/cached-rows" \
+    || { echo 'not ok - scheduler.test.sh: cached rows differ from printed intake rows' >&2; exit 1; }
+  [[ "$(wc -c < "$TF/printed-rows")" -gt 2097152 ]] \
+    || { echo 'not ok - scheduler.test.sh: intake fixture rows did not exceed 2 MiB' >&2; exit 1; }
+  if grep -Fq 'jqf error' "$LOG"; then
+    cat "$LOG" >&2
+    echo 'not ok - scheduler.test.sh: large intake cache write logged a jqf error' >&2
+    exit 1
+  fi
+}
+sched_run_case intake_cache_large_rows
+
 sched_case_refill_intake_footprint_wait() {
 # A footprint waiter is not startable pending work, so it cannot suppress refill intake.
   new_tick_fixture refill-intake-footprint-wait

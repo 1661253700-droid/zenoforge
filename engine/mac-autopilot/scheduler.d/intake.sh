@@ -25,7 +25,7 @@ issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement �
   jqf -cn --arg task "$task" --argjson body_blocked_by "$body_blocked_by" '{task:$task,body_blocked_by:$body_blocked_by}'
 }
 intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序；refill 复用近 10 分钟的候选缓存，缓存失效时最多查一个标签
-  local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 rows cache_file="$A/intake-candidates.json" cached_at now
+  local refill_mode="${1:-false}" skip_labels candidate_labels query_dir lane label query_file pid index=0 cache_file="$A/intake-candidates.json" cached_at now
   local -a query_files=() query_lanes=() query_pids=()
   if [[ "$refill_mode" == true && -r "$cache_file" ]]; then
     cached_at="$(jqf -r '.created_at // empty' "$cache_file" 2>/dev/null || true)"
@@ -77,15 +77,16 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
       | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels} | @base64)"'
     if (( valid_queries > 0 )); then : >"$cache_file.valid.tmp"; fi
   ) >"$cache_file.rows.tmp"
-  rows="$(cat "$cache_file.rows.tmp" 2>/dev/null || true)"
-  rm -f -- "$cache_file.rows.tmp"
   if [[ -f "$cache_file.valid.tmp" ]]; then
     rm -f -- "$cache_file.valid.tmp"
     now="$(date +%s)"
-    jqf -cn --argjson created_at "$now" --arg rows "$rows" '{created_at:$created_at,rows:$rows}' >"$cache_file.tmp" \
+    jqf -Rs --argjson created_at "$now" '{created_at:$created_at,rows:rtrimstr("\n")}' \
+      <"$cache_file.rows.tmp" >"$cache_file.tmp" \
       && mv -f -- "$cache_file.tmp" "$cache_file" || rm -f -- "$cache_file.tmp"
   fi
-  printf '%s\n' "$rows"
+  cat "$cache_file.rows.tmp" 2>/dev/null || true
+  [[ -s "$cache_file.rows.tmp" ]] || printf '\n'
+  rm -f -- "$cache_file.rows.tmp"
 }
 predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批量拉进来（拓扑顺序）
   local dep issue skip_labels q response start
