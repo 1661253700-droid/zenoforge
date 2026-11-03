@@ -262,11 +262,11 @@ supersede_resolved_main_red_units() {
 # PR 关联 issue 带 hotfix 时也不登记（#4615）：10-29 #4612/#4613 开出来时漏了 PR 标签，被登记成 unit 后
 # ci_wip 掐掉了它们的 CI。关联认分支 agent/issue-<n>-*（含 agent/issue-hf-<n>）和正文 Refs #n。
 hotfix_linked_issue_numbers() { # PR JSON → 关联 issue 号数组
-  jqf -cn --argjson p "$1" '
-    ([($p.headRefName // "") | match("^agent/issue-(hf-)?([0-9]+)(-|$)") | .captures[1].string | tonumber]
-      + [($p.body // "") | match("(?im)^[[:space:]]*[-*]?[[:space:]]*refs[[:space:]:]+#([0-9]+)"; "g") | .captures[0].string | tonumber]
+  jqf -c '
+    ([(.headRefName // "") | match("^agent/issue-(hf-)?([0-9]+)(-|$)") | .captures[1].string | tonumber]
+      + [(.body // "") | match("(?im)^[[:space:]]*[-*]?[[:space:]]*refs[[:space:]:]+#([0-9]+)"; "g") | .captures[0].string | tonumber]
     | unique)
-  '
+  ' <<<"$1"
 }
 is_hotfix_pr() { # PR JSON → success when config, PR label, or linked issue marks it hotfix
   local pr="$1" label branch prefix linked hot
@@ -279,8 +279,8 @@ is_hotfix_pr() { # PR JSON → success when config, PR label, or linked issue ma
   linked="$(hotfix_linked_issue_numbers "$pr")" || return 1
   [[ "$linked" != "[]" ]] || return 1
   if hotfix_issue_numbers >/dev/null; then hot="$TICK_HOTFIX_ISSUES"; else hot='[]'; fi
-  jqf -e --argjson linked "$linked" --argjson hot "$hot" \
-    'any($linked[]; . as $n | $hot | index($n) != null)' <<<"{}" >/dev/null
+  jqf -e --slurpfile linked <(printf '%s' "$linked") --slurpfile hot <(printf '%s' "$hot") \
+    'any($linked[0][]; . as $n | $hot[0] | index($n) != null)' <<<"{}" >/dev/null
 }
 label_hotfix_pr() { # PR number, currently known label names
   local pr="$1" labels="$2" label

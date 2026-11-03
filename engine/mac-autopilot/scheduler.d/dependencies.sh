@@ -184,15 +184,15 @@ release_dependency_blocks() {
     else
       dep_states_json='{}'
     fi
-    jqf -cn --argjson epoch "$NOW_EPOCH" --argjson states "$dep_states_json" \
-      '{epoch:$epoch,states:$states}' > "$dep_cache_file.tmp" && mv "$dep_cache_file.tmp" "$dep_cache_file"
+    jqf -cn --argjson epoch "$NOW_EPOCH" --slurpfile states <(printf '%s' "$dep_states_json") \
+      '{epoch:$epoch,states:$states[0]}' > "$dep_cache_file.tmp" && mv "$dep_cache_file.tmp" "$dep_cache_file"
   fi
   dep_cache="$(jqf_optional_file "$dep_cache_file" -c 'if (.states|type)=="object" then .states else {} end' 2>/dev/null || echo '{}')"
   while IFS=$'\t' read -r id issue; do # 自己的 issue 已关或已交付：单元作废（2026-10-30 issue-3681 等 5 个）
     set_unit "$id" "$(hist issue-closed "issue #$issue already closed on GitHub") | .stage=\"closed\" | del(.blocked_on) | .note=null"
     say "unit=$id issue #$issue already closed on GitHub; retired"
-  done < <(jqf -r --argjson c "$dep_cache" '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .pr == null and (.issue | type)=="number"
-    and ((($c[(.issue | tostring)].state) // "") | IN("CLOSED","MERGED"))) | [.id, .issue] | @tsv' "$UNITS")
+  done < <(jqf -r --slurpfile c <(printf '%s' "$dep_cache") '.units[] | select((.stage=="blocked-external" or .stage=="parked") and .pr == null and (.issue | type)=="number"
+    and ((($c[0][(.issue | tostring)].state) // "") | IN("CLOSED","MERGED"))) | [.id, .issue] | @tsv' "$UNITS")
   while IFS= read -r u; do
     id="$(jqf -r '.id' <<<"$u")"; dep="$(jqf -r '.blocked_on' <<<"$u")"; issue="$(jqf -r '.issue // empty' <<<"$u")"
     [[ "$dep" =~ ^[0-9]+$ ]] || continue

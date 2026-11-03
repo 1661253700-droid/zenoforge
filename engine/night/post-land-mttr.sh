@@ -144,33 +144,43 @@ post_land_mttr_detects() {
 # red that a9c10d350 then fixed).
 post_land_mttr_summary() {
   local repo="$1" since="$2" until="$3" commits candidates red_runs detects scan_start_iso created_since_iso
+  local tmpdir candidates_file red_runs_file detects_file output_rc
   [[ "$since" =~ ^[0-9]+$ && "$until" =~ ^[0-9]+$ && "$until" -gt "$since" ]] || return 1
-  scan_start_iso="$(date -u -d "@$((since - 7200))" +%Y-%m-%dT%H:%M:%SZ)" || return 1
-  commits="$(post_land_mttr_commits "$repo" "$scan_start_iso")" || return 1
-  candidates="$(post_land_mttr_fix_candidates "$repo" "$commits" "$since" "$until")" || return 1
-  red_runs=null
-  if [ "$(jq -r 'length' <<< "$candidates")" -gt 0 ]; then
-    created_since_iso="$(date -u -d "@$(( $(jq -r '[.[].landed_at] | min' <<< "$candidates") - 7200 ))" +%Y-%m-%dT%H:%M:%SZ)" || return 1
-    red_runs="$(post_land_mttr_red_runs "$created_since_iso")" || red_runs=null
+  tmpdir="$(mktemp -d)" || return 1
+  candidates_file="$tmpdir/candidates.json"
+  red_runs_file="$tmpdir/red-runs.json"
+  detects_file="$tmpdir/detects.json"
+  scan_start_iso="$(date -u -d "@$((since - 7200))" +%Y-%m-%dT%H:%M:%SZ)" || { rm -rf -- "$tmpdir"; return 1; }
+  commits="$(post_land_mttr_commits "$repo" "$scan_start_iso")" || { rm -rf -- "$tmpdir"; return 1; }
+  post_land_mttr_fix_candidates "$repo" "$commits" "$since" "$until" > "$candidates_file" \
+    || { rm -rf -- "$tmpdir"; return 1; }
+  printf 'null\n' > "$red_runs_file"
+  if [ "$(jq -r 'length' "$candidates_file")" -gt 0 ]; then
+    created_since_iso="$(date -u -d "@$(( $(jq -r '[.[].landed_at] | min' "$candidates_file") - 7200 ))" +%Y-%m-%dT%H:%M:%SZ)" \
+      || { rm -rf -- "$tmpdir"; return 1; }
+    post_land_mttr_red_runs "$created_since_iso" > "$red_runs_file" || printf 'null\n' > "$red_runs_file"
   fi
+  candidates="$(cat "$candidates_file")"
+  red_runs="$(cat "$red_runs_file")"
   if [ "$red_runs" = null ]; then
-    detects=null
+    printf 'null\n' > "$detects_file"
   else
-    detects="$(post_land_mttr_detects "$repo" "$candidates" "$red_runs")" || return 1
+    post_land_mttr_detects "$repo" "$candidates" "$red_runs" > "$detects_file" \
+      || { rm -rf -- "$tmpdir"; return 1; }
   fi
-  jq -cn --argjson candidates "$candidates" --argjson red_runs "$red_runs" \
-    --argjson detects "$detects" --argjson standard "$(post_land_mttr_standard)" \
+  if jq -cn --slurpfile candidates "$candidates_file" --slurpfile red_runs "$red_runs_file" \
+    --slurpfile detects "$detects_file" --argjson standard "$(post_land_mttr_standard)" \
     --argjson window "{\"from\":$since,\"to\":$until}" '
     def paired($d):
-      [$candidates[] | select(.culprit == $d.culprit and .fixed_at > $d.detected_at)]
+      [$candidates[0][] | select(.culprit == $d.culprit and .fixed_at > $d.detected_at)]
       | sort_by(.fixed_at) | .[0] // null;
-    (if $detects == null then
+    (if $detects[0] == null then
         # gh could not answer: keep the earliest fix per culprit with an
         # unknown detection time rather than dropping the breakage silently.
-        [$candidates | sort_by(.fixed_at) | unique_by(.culprit)[]
+        [$candidates[0] | sort_by(.fixed_at) | unique_by(.culprit)[]
           | {culprit, landed_at, detected_at:null, detected_by:null, fix, fixed_at}]
       else
-        [$detects[] | . as $d | paired($d) as $fix
+        [$detects[0][] | . as $d | paired($d) as $fix
           | select($fix != null)
           | {culprit:$d.culprit, landed_at:$d.landed_at, detected_at:$d.detected_at,
              detected_by:$d.detected_by, fix:$fix.fix, fixed_at:$fix.fixed_at}]
@@ -185,14 +195,20 @@ post_land_mttr_summary() {
           else (($sorted | length) as $n
             | (if ($n % 2) == 1 then $sorted[($n / 2 | floor)]
                else ($sorted[($n / 2 | floor) - 1] + $sorted[$n / 2 | floor]) / 2 end)) end;
-    {window:$window, runs_error:($red_runs == null), events:$events,
+    {window:$window, runs_error:($red_runs[0] == null), events:$events,
      summary:{count:($events | length),
        detect_median_seconds:median([$events[].detect_seconds]),
        fix_median_seconds:median([$events[].fix_seconds]),
        total_median_seconds:median([$events[].total_seconds]),
        total_max_seconds:([$events[].total_seconds] | max // null),
        over_standard:([$events[] | select(.total_seconds > $standard.total_healthy_seconds)] | length)},
-     bounds:$standard}'
+     bounds:$standard}'; then
+    output_rc=0
+  else
+    output_rc=$?
+  fi
+  rm -rf -- "$tmpdir"
+  return "$output_rc"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

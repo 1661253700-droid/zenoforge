@@ -47,13 +47,13 @@ reconcile_orphan_prs() {
   else
     states_by_number='{}'
   fi
-  rows="$(jqf -r --slurpfile u "$UNITS" --argjson b "$blocked" --argjson states "$states_by_number" '
+  rows="$(jqf -r --slurpfile u "$UNITS" --slurpfile b <(printf '%s' "$blocked") --slurpfile states <(printf '%s' "$states_by_number") '
       ($u[0].units | map(.pr) | map(select(. != null))) as $known
       | map(select(.number as $n | $known | index($n) | not))
       | map(((.headRefName | capture("^agent/(auto-)?issue-(?<n>[0-9]+)$").n | tonumber)? // null) as $i
           | . + {issue:$i})
-      | map(.issue as $i | . + {blocks: ($i != null and ($b | index($i)) != null), issue_state: (if $i != null then ($states[($i | tostring)].state // "UNKNOWN") else "UNKNOWN" end),
-          issue_labels: (if $i != null then ($states[($i | tostring)].labels // []) else [] end)})
+      | map(.issue as $i | . + {blocks: ($i != null and ($b[0] | index($i)) != null), issue_state: (if $i != null then ($states[0][($i | tostring)].state // "UNKNOWN") else "UNKNOWN" end),
+          issue_labels: (if $i != null then ($states[0][($i | tostring)].labels // []) else [] end)})
       | sort_by([(if .blocks then 0 else 1 end), .number]) | .[]
       | "\(.number)\t\(.headRefName)\t\(.isDraft)\t\(.issue // "")\t\(.title | gsub("\t"; " "))\t\(.issue_state)\t\(.issue_labels | tojson)"' <<<"$prs")"
   now="$(date -u +%FT%TZ)"

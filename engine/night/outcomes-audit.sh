@@ -1047,7 +1047,7 @@ outcomes_audit() {
   local row issue title closed_at close_epoch labels state_reason comments_json comment_since evidence_status
   local prs_for_issue timeline_json commit_id state_file state pr_number outcome merged_at merged_epoch closed_linked_rows
   local closed_timeline_ids_json closed_timelines_json awaiting_timeline_ids_json awaiting_timelines_json
-  local latest_label_at latest_label_event start_time_reason age detail reconciliation_detail reconciliation_invalid_closures reconciliation_unreadable
+  local latest_label_at latest_label_event start_time_reason age detail reconciliation_detail reconciliation_file reconciliation_invalid_closures reconciliation_unreadable
   local closed_count awaiting_count open_count pr_count closed_observation_detail closed_pending merged_pending merged_ambiguous
   local shared_snapshot_ok=0
   local -a closed_timeline_ids=() awaiting_timeline_ids=() state_label_drift_ids=()
@@ -1371,16 +1371,21 @@ outcomes_audit() {
     detail="$(printf '%s; ' "${problems[@]}")"
     detail="${detail%; }"
     detail_file="$(jq_arg_file "$detail")" || return 2
-    if jq -cn --rawfile detail "$detail_file" --arg reconciliation "$reconciliation_detail" \
+    reconciliation_file="$(jq_arg_file "$reconciliation_detail")" || { rm -f -- "$detail_file"; return 2; }
+    if jq -cn --rawfile detail "$detail_file" --rawfile reconciliation "$reconciliation_file" \
       '{verdict:"BROKEN",detail:($detail + "; merged-pr-reconciliation=" + $reconciliation)}'; then
-      rm -f -- "$detail_file"
+      rm -f -- "$detail_file" "$reconciliation_file"
     else
-      rm -f -- "$detail_file"
+      rm -f -- "$detail_file" "$reconciliation_file"
       return 2
     fi
   else
+    reconciliation_file="$(jq_arg_file "$reconciliation_detail")" || return 2
     jq -cn --argjson closed "$closed_count" --argjson awaiting "$awaiting_count" --argjson open "$open_count" \
-      --argjson prs "$pr_count" --arg state_label_drift "$state_label_detail" --arg reconciliation "$reconciliation_detail" \
+      --argjson prs "$pr_count" --arg state_label_drift "$state_label_detail" --rawfile reconciliation "$reconciliation_file" \
       '{verdict:"OK",detail:"last-24h outcomes clean; closed-sampled=\($closed), awaiting-release=\($awaiting), open-issues=\($open), open-prs=\($prs), release-wait-bound=2h; \($state_label_drift); merged-pr-reconciliation=\($reconciliation)"}'
+    local output_rc=$?
+    rm -f -- "$reconciliation_file"
+    return "$output_rc"
   fi
 }

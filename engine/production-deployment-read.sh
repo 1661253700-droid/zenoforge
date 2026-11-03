@@ -9,7 +9,11 @@ deployments="$(timeout "$timeout_seconds" gh api "repos/$repo/deployments?enviro
 jq -e 'type == "array" and all(.[]; (.id | type == "number") and (.sha | type == "string" and test("^[0-9a-f]{40}$")) and ((.payload // {}) | type == "object"))' \
   <<< "$deployments" >/dev/null || exit 1
 
-records='[]'
+tmpdir="$(mktemp -d)" || exit 1
+trap 'rm -rf -- "$tmpdir"' EXIT
+records_file="$tmpdir/records.jsonl"
+latest_file="$tmpdir/latest-status.json"
+: > "$records_file"
 while IFS= read -r deployment; do
   [[ -n "$deployment" ]] || continue
   id="$(jq -r '.id' <<< "$deployment")"
@@ -19,12 +23,12 @@ while IFS= read -r deployment; do
   # rolled-back release posts `inactive` after its success status, and the
   # newest success would otherwise keep serving a SHA whose images were rolled
   # back as the next release's baseline (release 4061, #4293).
-  latest="$(jq -c 'max_by(.created_at // "") // empty' <<< "$statuses")"
-  [[ -n "$latest" ]] || continue
-  jq -e '.state == "success"' <<< "$latest" >/dev/null || continue
-  record="$(jq -cn --argjson deployment "$deployment" --argjson status "$latest" \
-    '{id:$deployment.id,sha:$deployment.sha,created_at:$deployment.created_at,success_at:$status.created_at,payload:($deployment.payload // {})}')"
-  records="$(jq -cn --argjson records "$records" --argjson record "$record" '$records + [$record]')"
+  jq -c 'max_by(.created_at // "") // empty' <<< "$statuses" > "$latest_file"
+  [[ -s "$latest_file" ]] || continue
+  jq -e '.state == "success"' "$latest_file" >/dev/null || continue
+  jq -c --slurpfile status "$latest_file" \
+    '{id,sha,created_at,success_at:$status[0].created_at,payload:(.payload // {})}' \
+    <<< "$deployment" >> "$records_file"
 done < <(jq -c '.[]' <<< "$deployments")
 
-printf '%s\n' "$records"
+jq -cs '.' "$records_file"

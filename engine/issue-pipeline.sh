@@ -1043,7 +1043,7 @@ dispatch_gitnexus_refresh() {
 # check_gmail_credential()) leaves that message id UNrecorded on purpose,
 # so it's retried next tick instead of being silently dropped.
 read_needs_info_email_replies() {
-  local issue_rows issue_row n state needs_info applied_thread thread_id message_ids processed mid raw parsed \
+  local issue_rows issue_row n state needs_info applied_thread thread_id message_ids processed processed_file mid raw parsed \
     from_email auto_submitted issue_marker body login trimmed comment_body question_thread sent_at \
     first_mid first_resource first_sent_at_ms first_raw first_parsed first_body default_option metadata_patch
 
@@ -1124,7 +1124,11 @@ $trimmed"
       processed="$(echo "$processed" | jq -c --arg m "$mid" '. + [$m]')"
     done
 
-    state_merge "$n" ". + $(jq -n --argjson p "$processed" '{processed_gmail_message_ids: $p}')"
+    processed_file="$(mktemp)" || return 1
+    printf '%s\n' "$processed" > "$processed_file" || { rm -f -- "$processed_file"; return 1; }
+    state_merge "$n" '. + {processed_gmail_message_ids: $state_merge_patch[0]}' '' "$processed_file" \
+      || { rm -f -- "$processed_file"; return 1; }
+    rm -f -- "$processed_file"
   done < <(jq -c '.[]' <<< "$issue_rows")
 }
 
