@@ -89,7 +89,7 @@ required_checks_without_pass() {
   local min have ready_at="${2:-}"
   min="$(jq -r '.min_gh_version // empty' "$REQUIRED_PR_CHECKS_FILE" 2>/dev/null)"
   if [[ -n "$min" ]]; then
-    have="$(command gh --version 2>/dev/null | awk 'NR==1 {print $3}')"
+    have="$(gh_timeout 5s --version 2>/dev/null | awk 'NR==1 {print $3}' || true)"
     if [[ -z "$have" || "$(printf '%s\n%s\n' "$min" "$have" | sort -V | head -1)" != "$min" ]]; then
       echo "gh ${have:-unavailable} is older than required $min"; return 0
     fi
