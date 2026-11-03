@@ -366,21 +366,40 @@ gated_load() { # 一次 open PR 列表读出带门控标签的 PR；读失败或
   return 0
 }
 gated_ready() { # id branch approved_head：批准的 head 占到名额（或属于豁免类）才 ready；head 对不上不翻，已 ready 的退回 draft
-  local pr draft ghead ready_sha ready_at
+  local pr draft ghead ready_sha ready_at census_row
+  local unlabeled=0
   read -r pr draft ghead <<<"${GATED_OF[$2]:-}"
-  [[ -n "$pr" ]] || return 0
+  if [[ -z "$pr" ]]; then
+    # 未挂门控标签的 draft（release-blocker 热修等）：不在标签普查 GATED_OF 里，这里曾静默返回，
+    # ready-to-merge 单元的 PR 永远停在 draft（2026-11-03：5 个 runner 空闲，4 个热修单元饿死数小时）。
+    # 用本拍全量 PR 普查补 draft/head，走同一条 ready 判定；这类 PR 的 draft 状态不由本门控管理，只补证据不降级。
+    unlabeled=1
+    pr="$(unit_field "$1" '.pr // empty')"
+    [[ "$pr" =~ ^[0-9]+$ ]] || return 0
+    census_row="$(jqf -r --argjson pr "$pr" '([.[] | select(.number == $pr)][0] // {}) | "\(.isDraft) \(.headRefOid)"' <<<"$(tick_prs)")" || return 0
+    read -r draft ghead <<<"$census_row"
+    [[ "$ghead" =~ $SHA_RE ]] || return 0
+  fi
   GATED_SLOT["$2"]=1
   if [[ "$draft" == false ]] && jqf -e --arg branch "$2" 'index($branch) != null' <<<"${CI_HOTFIX_BRANCHES:-[]}" >/dev/null 2>&1; then
     return 0
   fi
   if [[ "$ghead" != "$3" ]]; then
-    [[ "$draft" == false ]] && gated_demote_pr "$pr" "$2" "ci deferred; approval no longer on the live head" \
+    [[ "$unlabeled" == 0 && "$draft" == false ]] && gated_demote_pr "$pr" "$2" "ci deferred; approval no longer on the live head" \
       && say "gated unit=$1 PR#$pr demoted: approved ${3:0:9} is not the live head ${ghead:0:9}"
     return 0
   fi
   if [[ "$draft" == false ]]; then
     ready_sha="$(unit_field "$1" '.ci_ready_sha // empty')"
     ready_at="$(unit_field "$1" '.ci_ready_at // empty')"
+    if [[ "$unlabeled" == 1 ]]; then
+      # 非 draft 的未标签 PR：CI 已自然起跑，只补 ready 证据，不做降级/重 ready 的扰动
+      if [[ "$ready_sha" != "$3" || -z "$ready_at" ]]; then
+        set_unit "$1" ".ci_ready_sha=$(js "$3") | .ci_ready_at=$(js "$(date -u +%Y-%m-%dT%H:%M:%SZ)") | del(.ci_wip_wait) | del(.ci_cancel_reruns) | del(.ci_slot_wait_since) | del(.ci_slot_wait_ticks) | del(.ci_slot_starve_alerted)" || :
+        say "gated unit=$1 PR#$pr already ready on ${3:0:9}; ready evidence recorded"
+      fi
+      return 0
+    fi
     [[ "$ready_sha" == "$3" && -n "$ready_at" ]] && return 0
     gated_demote_pr "$pr" "$2" "ci deferred; refreshing ready-event evidence" || return 0
     draft=true
@@ -389,11 +408,16 @@ gated_ready() { # id branch approved_head：批准的 head 占到名额（或属
   ready_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   gh pr ready "$pr" >/dev/null 2>&1 || { tick_prs_changed; return 0; }
   tick_prs_set_draft "$pr" false
-  GATED_OF["$2"]="$pr false $ghead"
+  # 未标签 PR 不进 GATED_OF：标签普查语义不变，豁免类单元本来也不进名额排序
+  [[ "$unlabeled" == 0 ]] && GATED_OF["$2"]="$pr false $ghead"
   READIED_PRS["$pr"]=1
   [[ "$(unit_field "$1" '.ci_wip_wait // empty')" == "$3" ]] && gated_status "$3" success agent/ci-waiting "CI slot granted"
-  set_unit "$1" "$(hist ci-ready "PR#$pr readied on ${3:0:9}") | .ci_ready_sha=$(js "$3") | .ci_ready_at=$(js "$ready_at") | del(.ci_wip_wait) | del(.ci_cancel_reruns)"
-  say "gated unit=$1 PR#$pr readied on ${3:0:9}"
+  set_unit "$1" "$(hist ci-ready "PR#$pr readied on ${3:0:9}") | .ci_ready_sha=$(js "$3") | .ci_ready_at=$(js "$ready_at") | del(.ci_wip_wait) | del(.ci_cancel_reruns) | del(.ci_slot_wait_since) | del(.ci_slot_wait_ticks) | del(.ci_slot_starve_alerted)"
+  if [[ "$unlabeled" == 1 ]]; then
+    say "gated unit=$1 PR#$pr readied on ${3:0:9} (no ci-gated label; census fallback)"
+  else
+    say "gated unit=$1 PR#$pr readied on ${3:0:9}"
+  fi
 }
 gated_wait() { # id branch approved_head：没占到名额的门控 PR 留在 draft 并挂共享 waiting 状态；已 ready 的被挤出名额就退回 draft
   local pr draft ghead
@@ -650,6 +674,12 @@ ci_pr_free_slots() { # → online PR-capable runners minus runners with a job al
     --jq ".runners[] | select(.status == \"online\" and any(.labels[]; .name | IN(\"$ci_label\",\"$ci_label-light\",\"$ci_label-priority\",\"vecta-suites\"))) | .busy")" || return 1
   runner_busy_json="$(jqf -s '.' <<<"$runner_busy")" || return 1
   runner_count="$(jqf -r 'length' <<<"$runner_busy_json")"
+  if (( runner_count == 0 )); then
+    # 前缀配错或 runner 全下线时名额静默算 0（不派 CI 也不告警）：一行日志让它可发现
+    say "ci runners: ZF_CI_RUNNER_PREFIX='${ZF_CI_RUNNER_PREFIX-cihost-ci}' matches no online runner; PR slots counted as 0"
+    printf '0\n'
+    return 0
+  fi
   active="$(jqf '[.[] | select(. == true)] | length' <<<"$runner_busy_json")"
   if (( runner_count > active )); then
     printf '%s\n' "$((runner_count - active))"
