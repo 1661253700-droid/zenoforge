@@ -2995,6 +2995,9 @@ git() {
 dispatch() { dispatched+=("$1:$4"); }
 tick_prs_prime() { census_primes=$((census_primes + 1)); }
 pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
+# This suite checks scheduler behavior; family availability is covered by
+# review-family.test.sh.
+pick_review_for_unit() { PICK_MODEL=fixture-model; PICK_EFFORT=high; return 0; }
 footprint_room() { return 0; }
 unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
 verify_handoff_delivery() { return 0; }
@@ -3086,6 +3089,7 @@ tick_prs_prime() { :; }
 tick_pr_base() { printf 'main\n'; }
 dispatch() { dispatched+=("$1:$4"); }
 pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
+pick_review_for_unit() { PICK_MODEL=fixture-model; PICK_EFFORT=high; return 0; }
 unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
 verify_handoff_delivery() { return 0; }
 ensure_clone() { printf '%s' "$TF/clone"; }
