@@ -3180,8 +3180,12 @@ warn_forbidden_model_config
 [[ "$(grep -c 'config models name forbidden model families' "$LOG")" == "$warns_before" ]] \
   || fail 'config-load warning repeated for an unchanged config state'
 # 全部键都被禁且无可用回退：拒绝派发并说明原因（不是谎报 provider cooldown）
+# #190 之后 implement 先解析 policy 的 work 角色；角色不可用时才落回 models.implement，
+# 所以这里同时清空 policy 角色，在 legacy 配置路径上验证拒绝仍然点名禁用键。
 CFG="$(jq '.models.implement=["claude-haiku-5-5","high"] | del(.models.implement_fallback, .models.implement_hotfix)' <<<"$CFG")"
+sched_policy_saved="$SCHED_MODEL_POLICY_JSON"; SCHED_MODEL_POLICY_JSON='{}'
 if pick implement '{"labels":["bug"]}'; then fail "pick did not refuse a config where every key names a forbidden family ($PICK_MODEL)"; fi
+SCHED_MODEL_POLICY_JSON="$sched_policy_saved"
 grep -q 'no implement model available (implement=claude-haiku-5-5 is forbidden and no allowed key is configured)' "$LOG" \
   || fail 'pick refusal reason did not name the forbidden key'
 MODEL_POLICY_FILE=""; MODEL_POLICY_FORBIDDEN_FILE=""; MODEL_POLICY_FORBIDDEN_WORDS=()

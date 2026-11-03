@@ -200,11 +200,13 @@ $(decision_scope "$u")"
         if [[ "$(jqf -r '.reopen_pr // false' <<<"$u")" == true ]]; then reopen_reverted_pr "$id" "$pr_num"; continue; fi
         room_for "$id" rereview "$u" || continue
         [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
-        pick_review_for_unit "$u" || continue
         target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || continue
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || continue
+        # Delivery verification outranks reviewer selection (#178): an undelivered
+        # handoff must escalate even while the cross-family reviewer wait holds.
         verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || continue
+        pick_review_for_unit "$u" || continue
         prev_sha="$(jqf -r '.reviewed_sha // empty' <<<"$u")"
         prev_pr_head="$(jqf -r '.reviewed_pr_head // empty' <<<"$u")"
         if [[ "$prev_sha" == "$sha" && "$prev_pr_head" == "$pr_head" ]]; then
@@ -271,11 +273,11 @@ $(decision_scope "$u")"
         [[ -n "$pr_num" || "$prless" == 1 ]] || continue
         room_for "$id" review "$u" || continue
         [[ "$local_refill" != true || "$local_refill_prs_primed" == true ]] || { tick_prs_prime; local_refill_prs_primed=true; }
-        pick_review_for_unit "$u" || continue
         target="$(unit_review_target "$id" "$pr_num" "$lane" "$(jqf -r '.branch // empty' <<<"$u")")" || continue
         read -r pr_head sha <<<"$target"
         [[ "$sha" =~ $SHA_RE ]] || continue
         verify_handoff_delivery "$id" "$pr_num" "$(jqf -r '.branch // empty' <<<"$u")" "$sha" || continue
+        pick_review_for_unit "$u" || continue
         wt="$(ensure_clone "$id")" || { say "review-pending unit=$id: clone unavailable"; continue; }
         checkout_pr_head "$wt" "$pr_num" "$sha" "$pr_head" || { say "review-pending unit=$id: PR head $sha unavailable"; continue; }
         rep="review-${key}-${TAG}.md"

@@ -682,7 +682,9 @@ test_expired_unknown_backfill_stays_ownerless() {
   run_sweep
   assert_eq "ownerless hold remains held on later tick" 0 "$LAST_STATUS"
   assert_eq "later tick preserves its state and attempt budget" "$after_state" "$(jq -S '.' "$(state_file 4120)")"
-  assert_contains "ownerless hold is reread for a later durable record" "$(cat "$FAKE_GH_LOG")" 'view 4120'
+  # #193: durable-source rechecks read the batch snapshot, not one view per issue.
+  assert_not_contains "ownerless hold needs no per-issue view on later ticks" "$(cat "$FAKE_GH_LOG")" 'view 4120'
+  assert_eq "later tick still snapshots GitHub hold records" 1 "$(grep -c '^list$' "$FAKE_GH_LOG" || true)"
   assert_eq "ownerless inbox message is recorded once" 1 "$(grep -Fc 'ownerless-hold issue=#4120' "$AGENT_HOME/supervisor-inbox" || true)"
   assert_eq "ownerless idempotency key is recorded once" 1 "$(grep -Fc $'\townerless-hold:#4120' "$AGENT_HOME/supervisor-inbox.once" || true)"
 }
@@ -803,7 +805,10 @@ test_closed_holds_reconcile_once_by_github_reason() {
 test_closed_hold_read_failure_preserves_evidence() {
   local before_issue before_state
   reset_fixture
-  write_issue 4197 '[{"name":"on-hold"}]' '[{"body":"preserve me"}]' 'closed hold read failure'
+  # #193: the sweep batch-reads on-hold issues, so a labelled issue is always in
+  # the snapshot. The unreadable case is a state-only held issue the snapshot
+  # cannot return: closed without the hold label.
+  write_issue 4197 '[]' '[{"body":"preserve me"}]' 'closed hold read failure'
   jq '.state = "CLOSED" | .stateReason = "COMPLETED" | .closedAt = "2026-10-10T14:00:00Z"' \
     "$FAKE_GH_ROOT/issues/4197.json" > "$FAKE_GH_ROOT/issues/4197.tmp"
   mv "$FAKE_GH_ROOT/issues/4197.tmp" "$FAKE_GH_ROOT/issues/4197.json"
@@ -1007,7 +1012,18 @@ test_expired_loop_implement_handoff_keeps_open_pr() {
 }
 
 test_replaced_hold_is_not_released_or_notified() {
-  local kind holder now state
+  local kind holder now state original_age_notice
+  original_age_notice="$(declare -f hold_sweep_age_notice)"
+  # #193: batched details removed the sweep's mid-flight `gh issue view`, so the
+  # concurrent replacement is applied at the next helper the sweep runs after it
+  # sampled the hold -- between its read and the handoff's own re-validation.
+  hold_sweep_age_notice() {
+    if [ -f "$FAKE_GH_ROOT/replacement-$1.json" ]; then
+      cp "$FAKE_GH_ROOT/replacement-$1.json" "$AGENT_HOME/state/$1.json"
+      rm "$FAKE_GH_ROOT/replacement-$1.json"
+    fi
+    return 0
+  }
   for kind in external-deliverable ops-acceptance-after-release label-churn; do
     reset_fixture
     now="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
@@ -1020,7 +1036,9 @@ test_replaced_hold_is_not_released_or_notified() {
     fi
     jq '.hold={holder:"supervisor",kind:"manual",release_condition:"new decision",created_at:(now|todate),expires_at:(now+86400|todate),stage_before:"ready-for-agent",durable_record:true}' \
       "$AGENT_HOME/state/4117.json" > "$FAKE_GH_ROOT/replacement-4117.json"
-    run_sweep
+    # Drive the sweep in-process so the replacement lands inside the race window
+    # the override above targets; `hold.sh --sweep` runs this same function.
+    if hold_sweep > "$test_env_root/hold.out" 2>&1; then LAST_STATUS=0; else LAST_STATUS=$?; cat "$test_env_root/hold.out" >&2; fi
     assert_eq "$kind replaced hold causes a safe retry" 1 "$LAST_STATUS"
     state="$(state_read 4117)"
     assert_eq "$kind leaves replacement on hold" on-hold "$(jq -r .state <<< "$state")"
@@ -1030,6 +1048,7 @@ test_replaced_hold_is_not_released_or_notified() {
     assert_eq "$kind does not post a stale handoff" 0 "$(jq '.comments|length' "$FAKE_GH_ROOT/issues/4117.json")"
     assert_not_contains "$kind does not notify for the replaced hold" "$(cat "$AGENT_HOME/supervisor-inbox")" 'ops-acceptance-after-release issue=#4117'
   done
+  eval "$original_age_notice"
 }
 
 test_supervisor_snapshot_does_not_release_replacement() {
@@ -1357,11 +1376,15 @@ test_settled_holds_skip_issue_reads() {
   run_sweep
   assert_eq "first sweep succeeds" 0 "$LAST_STATUS"
   assert_not_contains "an unexpired owned hold is not read from GitHub" "$(cat "$FAKE_GH_LOG")" 'view 4107'
-  assert_contains "ownerless record is read to find durable source" "$(cat "$FAKE_GH_LOG")" 'view 4108'
+  # #193: ownerless durable-source reads come from the batch snapshot.
+  assert_not_contains "ownerless record needs no per-issue view" "$(cat "$FAKE_GH_LOG")" 'view 4108'
+  assert_contains "ownerless record is read from the batch snapshot" "$(cat "$FAKE_GH_LOG")" 'list'
   : > "$FAKE_GH_LOG"
   run_sweep
   assert_eq "second sweep succeeds" 0 "$LAST_STATUS"
-  assert_contains "ownerless record is rechecked for later durable source" "$(cat "$FAKE_GH_LOG")" 'view 4108'
+  assert_not_contains "ownerless record is rechecked without per-issue views" "$(cat "$FAKE_GH_LOG")" 'view 4108'
+  assert_contains "ownerless record is rechecked via a fresh batch snapshot" "$(cat "$FAKE_GH_LOG")" 'list'
+  assert_eq "ownerless record stays held" on-hold "$(state_read 4108 | jq -r '.state')"
 }
 
 test_supervisor_holds_scans_live_worktrees_once() {
