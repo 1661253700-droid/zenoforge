@@ -67,7 +67,7 @@ CODEX_EXHAUSTED_MARKER_FILE="${CODEX_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/codex-ex
 CODEX_PROVIDER_PROBE_REQUIRED_FILE="${CODEX_PROVIDER_PROBE_REQUIRED_FILE:-$CODEX_EXHAUSTED_MARKER_FILE.probe-required}"
 CODEX_PROBE_MARKER="${CODEX_PROBE_MARKER:-$AGENT_HOME/codex-probe-passed}"
 ZCODE_EXHAUSTED_MARKER_FILE="${ZCODE_EXHAUSTED_MARKER_FILE:-$AGENT_HOME/zcode-exhausted-until}"
-ZCODE_PROVIDER_CONFIG_FILE="${ZCODE_PROVIDER_CONFIG_FILE:-$HOME/.zcode/v2/provider_config.json}"
+ZCODE_PROVIDER_CONFIG_FILE="${ZCODE_PROVIDER_CONFIG_FILE:-${HOME:-}/.zcode/v2/provider_config.json}"
 source "$HERE/../lib.d/codex-budget.sh"
 source "$HERE/../lib.d/model-policy.sh"
 declare -F codex_probe_ok >/dev/null 2>&1 || codex_probe_ok() { [[ -f "$CODEX_PROBE_MARKER" ]]; }
