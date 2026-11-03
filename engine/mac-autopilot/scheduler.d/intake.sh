@@ -185,6 +185,7 @@ intake_footprint_snapshot() { # footprint holders under the shared stage rule: l
   printf '%s\n' "$owners"
 }
 startable_pending_count() { # pending units eligible to start under intake's #153 capacity predicate
+  footprint_waiters_revalidate || return 1
   jqf '[.units[]
     | select(.stage | test("-pending$"))
     | select((.footprint_wait_owner // "") == "")
@@ -553,6 +554,7 @@ register_new_issues() {
               .handoff_worktree = $handoff_all.worktree | .handoff_worktree_sha = $handoff_all.worktree_sha | .handoff_worktree_dirty = $handoff_all.worktree_dirty
             else . end
           end)' "$UNITS" | write_state "$UNITS"
+      footprint_waiters_revalidate || { say "hold handoff issue #$n: could not revalidate footprint waiters after the owner transition"; return 1; }
       say "hold handoff issue #$n resumed existing unit=$existing_id"
     else
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then branch="$handoff_branch"; fi

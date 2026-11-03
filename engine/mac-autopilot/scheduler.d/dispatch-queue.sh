@@ -2,6 +2,7 @@
 dispatch_pending() {
   local local_refill="${1:-false}" local_refill_prs_primed=false u id stage rounds total since allowed branch title pr_num rep wt prompt failure sha pr_head target prev_sha prev_pr_head prev_report task lane hint deliver issue key subject prless stack_branch stack_sha resume_branch resume_sha decision budget hold_cli handoff_status handoff_original budget_started budget_elapsed escalate_started step_started step_elapsed plan_started plan_elapsed ordered
   local TICK_DISPATCH_PENDING_ACTIVE=true
+  footprint_waiters_revalidate || { say 'dispatch held: footprint wait owners could not be revalidated'; return 1; }
   if [[ "$local_refill" != true ]]; then
     tick_prs_changed # Running workers may have pushed since the previous phase.
     # Load the open-PR census in this shell: $(tick_prs) in a subshell cannot cache it, so every lookup re-ran the 300-PR list.
@@ -383,4 +384,5 @@ $deliver"
           "$PICK_MODEL" "$PICK_EFFORT" "$prompt" "" "$wt" "" "$prompt" "$u" false || true ;;
     esac
   done <<<"$ordered"
+  footprint_convoy_alert || say 'footprint-convoy alert check failed'
 }
