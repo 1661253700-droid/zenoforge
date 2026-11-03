@@ -71,6 +71,9 @@ tick_prs() { TICK_PRS=""; tick_prs_real; }
 # The reproduction worker is detached and slow; the older red-main fixtures below do not exercise it.
 main_red_real="$(declare -f main_red_attribution)"
 main_red_attribution() { MAIN_RED_REVERTED=0; MAIN_RED_PENDING=0; }
+# This suite tests scheduler gates and state transitions; reviewer-family
+# availability is covered by review-family.test.sh.
+pick_review_for_unit() { PICK_MODEL="GLM-5.3"; PICK_EFFORT=max; return 0; }
 
 # 合并门评估链：越过 [skip ci] 与只改产品路径的提交，停在第一个改流水线路径的非 skip 提交（含）
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -803,7 +806,7 @@ scheduler_pr_open agent/issue-23 'stack child' 'Refs #23' agent/issue-1
   || fail 'an existing stacked unit PR did not retarget its predecessor branch'
 eval "$stack_gh_real"; eval "$stack_pr_changed_real"; eval "$stack_gated_label_real"
 
-units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"history\":[]}]}"
+units "{\"units\":[{\"id\":\"pr-5\",\"pr\":5,\"stage\":\"rereview-pending\",\"reviewed_sha\":\"$H1\",\"reviewed_pr_head\":\"$H1\",\"review_report\":\"review-5-T1.md\",\"implement_identity\":\"codex:gpt-6-luna:max\",\"history\":[]}]}"
 dispatch_pending || :
 [[ "$(field pr-5 .stage)" == rereview-pending && "$(field pr-5 .arbiter)" == true && ${#DISPATCHED[@]} == 0 ]] || fail 'unchanged head did not turn into one arbiter review'
 dispatch_pending || :
@@ -2646,7 +2649,7 @@ dispatch_pending || :; dispatch_pending || :
   && "${DISPATCHED[0]:-}" == review:pr-70:* && "$DISPATCH_PROMPT" == *'【仲裁评审】'* ]] \
   || fail "third rejection did not dispatch the arbiter review (stage=$(field pr-70 .stage); ${DISPATCHED[*]:-none})"
 [[ "$(field pr-70 '.history[-1].decision.decision')" == 'Route to one arbiter review' \
-  && "$(field pr-70 '.history[-1].decision.why')" == 'no advisor configured' \
+  && "$(field pr-70 '.history[-1].decision.why')" == 'advisor provider unavailable' \
   && "$(field pr-70 '.history[-1].decision.owner')" == scheduler ]] || fail 'missing advisor did not record the arbiter choice'
 CFG="$CFG_SAVED"; DISPATCHED=(); DISPATCH_PROMPT=""
 
@@ -3134,33 +3137,33 @@ wait "$(jq -r '.workers[-1].pid' "$WORKERS")" || :
 [[ ! -e "$SUP/r51.md" ]] || fail 'failed claude run left a harvestable report'
 
 # ---------- 提供方上限：冷却+回退，不计无产出、不转人工 ----------
-# 本段只测冷却机械：给一个不禁用任何在用族的 policy fixture，让 claude/terra 可选（禁用族行为下方专测）
-printf '{"forbidden":["nonexistent-family"]}\n' > "$fixture/permissive-policy.json"
-MODEL_POLICY_FORBIDDEN_FILE="$fixture/permissive-policy.json"; MODEL_POLICY_FORBIDDEN_WORDS=()
+# Use the allowed GLM review role here; the model policy intentionally keeps
+# forbidden families unavailable even when a provider cooldown is under test.
+MODEL_POLICY_FILE=""; MODEL_POLICY_FORBIDDEN_FILE=""; MODEL_POLICY_FORBIDDEN_WORDS=()
 printf 'tokens used\n617,176 20026092214463990\n' > "$fixture/tok.log"
 [[ "$(tokens_of "$fixture/tok.log")" == 617176 ]] || fail 'tokens_of must take only the first number'
 NOW_EPOCH=200000; rm -f "$A/cooldown.json"
-CFG="$(jq '.models.review=["claude-haiku-5-5","xhigh"] | .models.review_fallback=["gpt-6-luna","max","fast"]' <<<"$CFG")"
+CFG="$(jq '.models.review=["GLM-5.3","max"] | .models.review_fallback=["gpt-6-luna","max","fast"]' <<<"$CFG")"
 alive() { return 1; }
 units '{"units":[{"id":"pr-60","pr":60,"stage":"review","history":[{"stage":"worker-no-output"}]}]}'
 printf "You've hit your session limit · resets 5pm\n" > "$sup/rv60.md.partial"
-jq -n '{workers:[{pid:6060,unit:"pr-60",type:"review",log:"rv60.log",report:"rv60.md",model:"claude-haiku-5-5"}]}' > "$WORKERS"
+jq -n '{workers:[{pid:6060,unit:"pr-60",type:"review",log:"rv60.log",report:"rv60.md",model:"GLM-5.3"}]}' > "$WORKERS"
 harvest_workers || :
 [[ "$(field pr-60 .stage)" == review && "$(field pr-60 '.history[-1].stage')" == worker-provider-limit ]] || fail 'provider limit escalated or counted as no-output'
 [[ ! -e "$sup/rv60.md.partial" ]] || fail 'limit partial not removed'
-cooling claude || fail 'claude not cooling after a session-limit death'
-NOW_EPOCH=$((NOW_EPOCH + 301)); cooling claude || fail 'session limit released after 5 minutes'; NOW_EPOCH=$((NOW_EPOCH - 301))
-pick review && [[ "$PICK_MODEL" == gpt-6-luna && "$PICK_EFFORT" == max ]] || fail "review did not fall back while claude cools ($PICK_MODEL)"
+cooling zcode || fail 'zcode not cooling after a session-limit death'
+NOW_EPOCH=$((NOW_EPOCH + 301)); cooling zcode || fail 'session limit released after 5 minutes'; NOW_EPOCH=$((NOW_EPOCH - 301))
+pick review && [[ "$PICK_MODEL" == gpt-6-luna && "$PICK_EFFORT" == max ]] || fail "review did not fall back while zcode cools ($PICK_MODEL)"
 NOW_EPOCH=$((NOW_EPOCH + 1801))
-pick review && [[ "$PICK_MODEL" == gpt-6-luna ]] || fail 'policy-forbidden Claude model became selectable after cooldown'
-CFG="$(jq '.models.implement=["gpt-6-luna","max","fast"] | .models.implement_hotfix=["gpt-6.1-terra","high"]' <<<"$CFG")"
-pick implement '{"labels":["bug","hotfix"]}' && [[ "$PICK_MODEL" == gpt-6.1-terra && "$PICK_EFFORT" == high ]] || fail "hotfix unit did not pick implement_hotfix ($PICK_MODEL)"
+pick review && [[ "$PICK_MODEL" == GLM-5.3 ]] || fail 'allowed GLM reviewer did not recover after its cooldown'
+CFG="$(jq '.models.implement=["gpt-6-luna","max","fast"] | .models.implement_hotfix=["gpt-6-luna","high"]' <<<"$CFG")"
+pick implement '{"labels":["bug","hotfix"]}' && [[ "$PICK_MODEL" == gpt-6-luna && "$PICK_EFFORT" == high ]] || fail "hotfix unit did not pick implement_hotfix ($PICK_MODEL)"
 pick implement '{"labels":["bug"]}' && [[ "$PICK_MODEL" == gpt-6-luna ]] || fail "non-hotfix unit picked $PICK_MODEL"
 build_codex_command review gpt-6-luna max pr-60 'p'
 [[ " ${CODEX_COMMAND[*]} " == *' --config service_tier="fast" '* ]] || fail 'fallback codex review lost its service tier'
 
 # ---------- 模型解析：配置点名 model policy 禁用族 → 确定性跳过 + 日志告警（11-03：models.review=claude-haiku-5-5） ----------
-MODEL_POLICY_FORBIDDEN_FILE=""; MODEL_POLICY_FORBIDDEN_WORDS=()   # 回到引擎默认 policy（禁 claude/terra/...）
+MODEL_POLICY_FILE=""; MODEL_POLICY_FORBIDDEN_FILE=""; MODEL_POLICY_FORBIDDEN_WORDS=()   # 回到引擎默认 policy（禁用的模型族）
 CFG="$(jq '.models.review=["claude-haiku-5-5","high"] | .models.review_fallback=["gpt-6-luna","max","fast"] | .models.implement_hotfix=["gpt-6.1-terra","high"] | .models.implement=["gpt-6-luna","max","fast"]' <<<"$CFG")"
 rm -f "$A/.models-policy-warned"
 pick review && [[ "$PICK_MODEL" == gpt-6-luna && "$PICK_EFFORT" == max ]] \
@@ -3181,7 +3184,7 @@ CFG="$(jq '.models.implement=["claude-haiku-5-5","high"] | del(.models.implement
 if pick implement '{"labels":["bug"]}'; then fail "pick did not refuse a config where every key names a forbidden family ($PICK_MODEL)"; fi
 grep -q 'no implement model available (implement=claude-haiku-5-5 is forbidden and no allowed key is configured)' "$LOG" \
   || fail 'pick refusal reason did not name the forbidden key'
-MODEL_POLICY_FORBIDDEN_FILE="$fixture/permissive-policy.json"; MODEL_POLICY_FORBIDDEN_WORDS=()   # 还给冷却段语义
+MODEL_POLICY_FILE=""; MODEL_POLICY_FORBIDDEN_FILE=""; MODEL_POLICY_FORBIDDEN_WORDS=()
 CFG="$(jq '.models.review=["claude-haiku-5-5","xhigh"] | .models.review_fallback=["gpt-6-luna","max","fast"] | .models.implement=["gpt-6-luna","max","fast"] | .models.implement_hotfix=["gpt-6.1-terra","high"]' <<<"$CFG")"
 
 # 日志里的普通文字（技能说明 "an overloaded word"）不能触发冷却；真实的 codex 错误行可以

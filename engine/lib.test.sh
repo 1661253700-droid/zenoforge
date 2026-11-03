@@ -3186,9 +3186,9 @@ assert_true "untrusted title/reporter text passes through as literal plain text"
 # --- persistent model policy: shared roles and one escalation ladder -------
 assert_eq "work role identity resolves from policy model and effort" "$POLICY_WORK_IDENTITY" "$(model_policy identity work)"
 assert_eq "production role identity resolves from policy model and effort" "$POLICY_PRODUCTION_IDENTITY" "$(model_policy identity production)"
-assert_true "default work, review, and production roles preserve Luna primaries and have no fallbacks" jq -e '
+assert_true "default review role uses an independent family with no configured fallbacks" jq -e '
   .roles.work.provider == "codex" and .roles.work.model == "gpt-6-luna" and .roles.work.effort == "max"
-  and .roles.review.provider == "codex" and .roles.review.model == "gpt-6-luna" and .roles.review.effort == "max"
+  and .roles.review.provider == "zcode" and .roles.review.model == "GLM-5.3" and .roles.review.effort == "max"
   and .roles.production.provider == "codex" and .roles.production.model == "gpt-6-luna" and .roles.production.effort == "high"
   and ([.roles.work, .roles.review, .roles.production] | all((has("fallback_model") | not) and (has("fallback_identity") | not)))
   and (.forbidden | index("sol") != null)

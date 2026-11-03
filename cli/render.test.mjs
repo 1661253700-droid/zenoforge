@@ -28,17 +28,19 @@ test('capacity env and recipients stay safe by default', () => {
   assert.deepEqual(JSON.parse(renderRecipients()), { maintainer_login: '', recipients: {} });
 });
 
-test('config template: caps, kill switches for unshipped parts, review provider', () => {
+test('config template: caps, kill switches, and family-independent review candidates', () => {
   const tpl = read('mac-autopilot/config.template.json');
   const base = { maxWorkers: 2, dailyTokenBudget: 1000, autoMerge: false };
-  const claude = JSON.parse(renderConfigTemplate(tpl, { ...base, reviewProvider: 'claude' }));
-  assert.equal(claude.max_workers, 2);
-  assert.equal(claude.implement_cap, 2);
-  assert.equal(claude.daily_token_budget, 1000);
-  assert.equal(claude.auto_merge, false);
-  assert.equal(claude.release_train.enabled, false);
-  assert.equal(claude.supervisor_arbiter.enabled, false);
-  assert.match(claude.models.review[0], /^claude-/);
+  const familyRouted = JSON.parse(renderConfigTemplate(tpl, { ...base, reviewProvider: 'claude' }));
+  assert.equal(familyRouted.max_workers, 2);
+  assert.equal(familyRouted.implement_cap, 2);
+  assert.equal(familyRouted.daily_token_budget, 1000);
+  assert.equal(familyRouted.auto_merge, false);
+  assert.equal(familyRouted.release_train.enabled, false);
+  assert.equal(familyRouted.supervisor_arbiter.enabled, false);
+  assert.deepEqual(familyRouted.models.review, ['gpt-6-luna', 'max', 'fast']);
+  assert.deepEqual(familyRouted.models.review_cross, ['GLM-5.3', 'max']);
+  assert.deepEqual(familyRouted.models.review_fallback, ['claude-sonnet-4-5', 'high']);
   const codex = JSON.parse(renderConfigTemplate(tpl, { ...base, reviewProvider: 'codex', autoMerge: true }));
   assert.deepEqual(codex.models.review, codex.models.implement);
   assert.equal(codex.auto_merge, true);

@@ -33,7 +33,7 @@ worker_rules() { # unit-json type provider
 
 # models.<role> = [model, effort, service_tier?]；provider selects codex, claude, or zcode CLI.
 build_codex_command() { # type model effort unit cold-prompt [new-failure] [workdir] [provider]
-  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-$ROOT}" provider="${8:-$(provider_of "$2")}" session_id="" usage prompt_arg role tier self_fix prior config_arg
+  local type="$1" model="$2" effort="$3" unit="$4" prompt="$5" failure="${6-$5}" workdir="${7:-${ROOT:-$PWD}}" provider="${8:-$(provider_of "$2")}" session_id="" usage prompt_arg role tier self_fix prior config_arg
   local -a tier_args=() codex_config_args=()
   CODEX_MODE=fresh
   CODEX_SESSION_ID=""
