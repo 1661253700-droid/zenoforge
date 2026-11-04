@@ -16,7 +16,8 @@
   },
   "auto_merge": true,
   "merge_gate": {
-    "pipeline_suites": "auto"
+    "pipeline_suites": "auto",
+    "main_workflow": "Pipeline suites"
   },
   "auto_dispatch_new_prs": true,
   "issue_intake": {
