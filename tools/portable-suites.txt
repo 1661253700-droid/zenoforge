@@ -21,6 +21,7 @@ engine/mac-autopilot/scheduler-gates.test.sh
 engine/mac-autopilot/scheduler-gates-required-checks.test.sh
 engine/mac-autopilot/scheduler-gates-priority.test.sh
 engine/mac-autopilot/scheduler-gates-git.test.sh
+engine/mac-autopilot/scheduler-gates-ci-slots.test.sh
 engine/bin/worker.test.sh
 engine/call-profile.test.sh
 engine/dispatch-codex.test.sh
