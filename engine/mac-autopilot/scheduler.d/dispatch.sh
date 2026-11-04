@@ -3,6 +3,11 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census
   local -a launcher=() worker_env=()
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) && cache_fresh=true
+  if [[ "$provider" == codex ]] && codex_pacing_should_hold_unit "$unit"; then
+    codex_pacing_log_hold_once
+    say "dispatch held unit=$unit reason=codex-pacing"
+    return 1
+  fi
   if [[ "$(unit_field "$unit" '.lane // empty')" == direct-main ]]; then
     worker_env=(env ZF_NON_PRODUCT_UNIT=1 "ZF_PIPELINE_UNIT=$unit" \
       "PATH=${ZF_ENGINE_DIR:-$ROOT/engine}/non-product-test-shim:$PATH")
