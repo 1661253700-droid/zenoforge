@@ -745,12 +745,21 @@ def admission_inner(mode, command, attempt=None):
                 pass
         if mode == "run-unit" and Path(command[0]).name == "setsid" and not any(arg in ("-w", "--wait") for arg in command[1:]):
             command = [command[0], "--wait", *command[1:]]
-        child = subprocess.Popen(command, env=os.environ, start_new_session=(mode == "run-unit"))
+        child = None
+        pending_signals = []
         def forward(signum, _frame):
-            if child.poll() is None:
-                child.send_signal(signum)
+            if child is None:
+                pending_signals.append(signum)
+            elif child.poll() is None:
+                try:
+                    child.send_signal(signum)
+                except ProcessLookupError:
+                    pass  # The worker exited between poll and delivery.
         previous = {sig: signal.signal(sig, forward) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
         try:
+            child = subprocess.Popen(command, env=os.environ, start_new_session=(mode == "run-unit"))
+            for signum in pending_signals:
+                forward(signum, None)
             if attempt:
                 attempt.fields["execution_started"] = True
                 attempt.decision("admit", "capacity-and-resources-approved")

@@ -698,6 +698,41 @@ try:sys.exit"""))
         self.assertTrue(receipt.exists())
         self.assertEqual(self.run_guard("run", "true").returncode, 0)
 
+    def test_guardian_forwards_signal_during_worker_start(self):
+        ready = self.home / "startup-ready"
+        receipt = self.home / "startup-cleanup"
+        worker = ("import signal;from pathlib import Path;"
+                  f"signal.signal(signal.SIGTERM,lambda *args:(Path({str(receipt)!r}).touch(),exit(143)));"
+                  "signal.alarm(10);"
+                  f"Path({str(ready)!r}).touch();signal.pause()")
+        driver = self.home / "startup-driver.py"
+        driver.write_text(
+            "import importlib.util,os,signal,subprocess,sys,time\n"
+            "from pathlib import Path\n"
+            f"s=importlib.util.spec_from_file_location('guard',{str(ROOT / 'execution-admission.py')!r})\n"
+            "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
+            "g.occupied=lambda proc:set()\n"
+            "g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}\n"
+            "original=subprocess.Popen\n"
+            f"command=[sys.executable,'-c',{worker!r}]\n"
+            "def start(args,*a,**kw):\n"
+            "    child=original(args,*a,**kw)\n"
+            "    if args == command:\n"
+            f"        ready=Path({str(ready)!r})\n"
+            "        deadline=time.monotonic()+10\n"
+            "        while not ready.exists():\n"
+            "            if time.monotonic()>deadline: raise RuntimeError('worker did not start')\n"
+            "            time.sleep(.01)\n"
+            "        os.kill(os.getpid(),signal.SIGTERM)\n"
+            "    return child\n"
+            "g.subprocess.Popen=start\n"
+            "sys.exit(g.admission_inner('run',command))\n"
+        )
+        result = subprocess.run([sys.executable, str(driver)], env=self.env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        self.assertEqual(result.returncode, 143)
+        self.assertTrue(receipt.exists(), "signal during worker start was not forwarded")
+
     def test_held_unknown_or_reused_pid_fails_closed(self):
         locks = self.home / "locks"
         locks.mkdir()
