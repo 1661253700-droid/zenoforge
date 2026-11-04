@@ -809,7 +809,7 @@ const STEPS = ["开发","质检","返工","待合并","已合并","已上线"];
 const stepOf = j => ({develop:0, check:j.rounds?2:1, merge:3, waiting:-1, parked:-1, blocked:-1, "awaiting-release":4, reverted:4, released:5, live:5}[j.status]);
 const PAGE = 12;
 const UN = {tokens:["用量",""], worker_minutes:["员工用时","分"], rounds:["返工轮数","轮"], age_hours:["存在时长","时"]};
-let view = {f:"active", p:0, s:"age"};
+let view = {f:"active", p:0, s:"age", rf:"all", rp:0};
 try { view = Object.assign(view, JSON.parse(sessionStorage.getItem("unitsView2")||"{}")); } catch (e) {}
 const journeyOf = u => u.journey || {status:"closed", age_min:0, since_min:0, split_min:{}, rounds:0};
 function sumOrders(D) {
@@ -1243,18 +1243,30 @@ function trendPanel(D) {
     <div class="lg"><span><i style="background:var(--hairline-strong);width:2px"></i>引擎里程碑（悬停看内容）</span><span><i style="background:var(--ok)"></i>比前 7 天好</span><span><i style="background:var(--bad)"></i>比前 7 天差</span></div>`);
 }
 const OWNER_CN = {pipeline:"流水线", "supervisor-review":"主管评审", hotfix:"热修", advisor:"顾问"};
+// 需求排序 = 先看要人处理的：卡点 → 待真人验收（创始人动作）→ 进行中（越接近完成越靠前，停得越久越靠前）→ 已验收（最近的在前）
+const REQ_PAGE = 8;
+const REQ_GROUPS = [["blocked","卡点"], ["accept","待验收"], ["active","进行中"], ["done","已验收"]];
+function reqSorted(items, last) {
+  const g = x => x.blocker && x.stage !== last ? 0 : x.stage === last ? 3 : x.stage === last - 1 ? 1 : 2, t = x => x.verified_epoch == null ? Infinity : x.verified_epoch;
+  return items.map(x => [g(x), x]).sort(([ga, a], [gb, b]) => ga - gb || (ga === 2 ? b.stage - a.stage : 0) || (ga === 3 ? t(b) - t(a) : t(a) - t(b)) || b.issue - a.issue).map(([gi, x]) => Object.assign({}, x, {grp: REQ_GROUPS[gi][0]}));
+}
 function founderPanel(D) {
   const R = D.founder_reqs;
   if (!R || R.error || !Array.isArray(R.items)) return panel("orders", "创始人需求", emptyMsg("需求台账不可用" + (R && R.error ? "：" + R.error : "")));
   const st = R.stages || [], nowS = Math.floor(Date.now()/1000), last = st.length - 1;
-  const chips = st.map((n, i) => `<span class="chip s-${i===last?"ok":"none"}">${esc(n)} ${R.items.filter(x => x.stage === i).length}</span>`).join(" ");
-  const rows = R.items.map(x => { const c = x.stage === last ? "var(--ok)" : x.blocker ? "var(--bad)" : "var(--hairline-strong)";
-    return `<div class="frq"><i class="ad ${x.stage === last ? "s-ok" : x.blocker ? "s-bad" : "s-none"}"></i><a href="${repoUrl()}/issues/${esc(x.issue)}" target="_blank" rel="noopener">#${esc(x.issue)}</a>
+  const all = reqSorted(R.items, last), cnt = k => all.filter(x => x.grp === k).length;
+  if (view.rf !== "all" && !REQ_GROUPS.some(([k]) => k === view.rf)) view.rf = "all";
+  const list = view.rf === "all" ? all : all.filter(x => x.grp === view.rf);
+  const pages = Math.max(1, Math.ceil(list.length / REQ_PAGE)); view.rp = Math.min(Math.max(0, view.rp || 0), pages - 1);
+  const ctl = `<div class="bar-ctl">${[["all","全部",all.length], ...REQ_GROUPS.map(([k, n]) => [k, n, cnt(k)])].map(([k, n, c]) => `<button class="ghost ${view.rf===k?"on":""}" data-rf="${k}">${esc(n)} ${c}</button>`).join("")}
+    <span style="flex:1"></span><button class="ghost" data-rp="${view.rp-1}" ${view.rp?"":"disabled"}>${ic("chev","flip")}</button><span class="sub num">${view.rp+1} / ${pages}</span><button class="ghost" data-rp="${view.rp+1}" ${view.rp<pages-1?"":"disabled"}>${ic("chev")}</button></div>`;
+  const rows = list.slice(view.rp * REQ_PAGE, (view.rp + 1) * REQ_PAGE).map(x => {
+    return `<div class="frq"><i class="ad ${x.stage === last ? "s-ok" : x.blocker ? "s-bad" : x.grp === "accept" ? "s-warn" : "s-none"}"></i><a href="${repoUrl()}/issues/${esc(x.issue)}" target="_blank" rel="noopener">#${esc(x.issue)}</a>
       <span class="fq-w" title="${esc((x.from_ruling ? "创始人原话：" : "issue 标题：") + x.text)}">${esc(x.text)}</span>
       <span class="fq-trk" title="${esc(st.join(" → "))}">${st.map((n, i) => `<i class="${i<=x.stage?"on":""}"></i>`).join("")}${esc(st[x.stage])}</span>
       <span class="fq-x" title="负责人">${esc(OWNER_CN[x.owner] || x.owner)}</span><span class="fq-x" title="卡点">${esc(x.blocker || "—")}</span>
       <span class="fq-x" title="本阶段由流水线事件或验收结果确认的时间">${x.verified_epoch ? fDur(Math.max(0, nowS - x.verified_epoch)) + "前" : "未确认"}</span></div>`; }).join("");
-  return panel("orders", "创始人需求", `<div class="lwbar"><span class="lwlg">${chips}</span></div>${R.items.length ? `<div class="frq-list">${rows}</div>` : emptyMsg("没有未完成的创始人需求")}`,
+  return panel("orders", "创始人需求", `${ctl}${list.length ? `<div class="frq-list">${rows}</div>` : emptyMsg(R.items.length ? "该分类下没有需求" : "没有未完成的创始人需求")}`,
     R.partial ? stChip("bad", "GitHub 不可用，仅列 units") : "");
 }
 function roiLinePanel(D) {
@@ -1429,12 +1441,14 @@ function renderModule(id) {
 function go(id) { current = id; lsSet(LS_MOD, id); renderModule(id); window.scrollTo(0, 0); }
 
 document.addEventListener("click", ev => {
-  const el = ev.target.closest("[data-m],[data-f],[data-s],[data-p],[data-o]");
+  const el = ev.target.closest("[data-m],[data-f],[data-s],[data-p],[data-o],[data-rf],[data-rp]");
   if (!el || el.disabled) return;
   if (el.closest("a")) return;
   if (el.dataset.m) return go(el.dataset.m);
   if (el.dataset.f) { view.f = el.dataset.f; view.p = 0; }
   if (el.dataset.o) view.o = el.dataset.o;
+  if (el.dataset.rf) { view.rf = el.dataset.rf; view.rp = 0; }
+  if (el.dataset.rp != null) view.rp = Number(el.dataset.rp);
   if (el.dataset.s) { view.s = el.dataset.s; view.p = 0; }
   if (el.dataset.p != null) view.p = Number(el.dataset.p);
   try { sessionStorage.setItem("unitsView2", JSON.stringify(view)); } catch (e) {}

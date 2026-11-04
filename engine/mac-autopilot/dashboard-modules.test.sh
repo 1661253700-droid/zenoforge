@@ -196,6 +196,16 @@ if ((rq.match(/class="frq"/g)||[]).length !== 2 || !rq.includes("founder words h
   throw new Error("requirements module lacks the founder rows, overview still has them, or the ROI module lacks the daily ROI line");
 const frBadAll = renderAll("founder-roi-bad", {founder_reqs: {error: "x"}, factory: {error: "y"}}).out;
 if (!frBadAll.reqs.includes("需求台账不可用") || !frBadAll.roi.includes("ROI 数据不可用")) throw new Error("founder ledger / ROI line error state missing");
+// 需求分页 + 排序：每页 8 条；卡点在最前，其次待验收（上线），再按阶段从近完成到刚提出，已验收垫底
+const pg = renderAll("reqs-paged", {founder_reqs: {stages: ["提出","热修生效","进 main","上线","真人验收"], partial: false, items: [
+  ...[1,2,3,4,5,6,7,8].map(n => ({issue: 100 + n, title: "t", text: "plain-" + n, from_ruling: false, labels: [], stage: 0, owner: "pipeline", blocker: "", verified_epoch: null})),
+  {issue: 200, title: "t", text: "done-one", from_ruling: false, labels: [], stage: 4, owner: "pipeline", blocker: "", verified_epoch: 5},
+  {issue: 201, title: "t", text: "accept-one", from_ruling: false, labels: [], stage: 3, owner: "pipeline", blocker: "", verified_epoch: 5},
+  {issue: 202, title: "t", text: "blocked-one", from_ruling: false, labels: [], stage: 1, owner: "pipeline", blocker: "等 #9", verified_epoch: 5},
+  {issue: 203, title: "t", text: "main-one", from_ruling: false, labels: [], stage: 2, owner: "pipeline", blocker: "", verified_epoch: 5}]}}).out.reqs;
+const ord = [...pg.matchAll(/class="fq-w"[^>]*>([^<]+)</g)].map(m => m[1]);
+if (ord.length !== 8 || ord.slice(0, 3).join() !== "blocked-one,accept-one,main-one" || pg.includes("done-one") || !pg.includes("1 / 2") || !pg.includes('data-rp="1"'))
+  throw new Error("requirements list is not paged to 8 or not sorted blocked > accept > near-done > done: " + ord.join());
 // 自动事故单标题白话化；原文留在 raw_task；自进化任务用中文名，且和产线分组显示
 const pt = renderAll("plain-titles", {live_workers: {items: [
   {owner: "pipeline", task: "Incident: scheduler.log: refill done live=5 secs=43 gh_calls", backend: "cx", steps: ["a"], step: 0, kind: "implement", started_epoch: 1, typical_s: 1800, health: "ok"},
