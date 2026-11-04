@@ -1,7 +1,7 @@
 
 dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head] [new-failure] [provider] [hard] [route-reason]
   local type="${1:-}" model="${2:-}" effort="${3:-}" unit="${4:-}" log="${5:-}" report="${6:-}" prompt="${7:-}" sha="${8:-}" workdir="${9:-$ROOT}" pr_head="${10:-}" provider="${12:-$(provider_of "${2:-}")}" hard_escalation="${13:-false}" route_reason="${14:-configured}" pid cache_fresh=false cache_until="$LIVE_WORKER_CACHE_UNTIL" started=$SECONDS elapsed issue claim_key claim_owner claim_status pr_census
-  local -a launcher=() worker_env=()
+  local -a launcher=() worker_env=() launch_command=()
   (( SECONDS < LIVE_WORKER_CACHE_UNTIL )) && cache_fresh=true
   if [[ "$provider" == codex ]] && codex_pacing_should_hold_unit "$unit"; then
     codex_pacing_log_hold_once
@@ -51,16 +51,23 @@ dispatch() { # type model effort unit log report prompt [sha] [workdir] [pr-head
   fi
   if [[ "${WORKER_STDOUT_REPORT:-0}" == 1 ]]; then
     # stdout 即报告：只有成功退出且非空才落盘，失败/中断不会留下可被回收的半截报告。
-    (cd "$workdir" && GIT_PAGER=cat PAGER=cat exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash -c 'out="$1"; shift; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out"' \
-      autopilot-worker "$SUP/$report" "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+    launch_command=(env GIT_PAGER=cat PAGER=cat bash -c 'out="$1"; shift; "$@" > "$out.partial" && [ -s "$out.partial" ] && mv -f "$out.partial" "$out"' \
+      autopilot-worker "$SUP/$report" "${CODEX_COMMAND[@]}")
   elif [[ "$type" == repair && "$CODEX_MODE" == resume ]]; then
-    (cd "$workdir" && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} bash "$CODEX_REPAIR_RUNNER" "$SUP/$log" "$CODEX_SESSION_ID" \
-      "${#CODEX_FRESH_COMMAND[@]}" "${CODEX_FRESH_COMMAND[@]}" "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+    launch_command=(bash "$CODEX_REPAIR_RUNNER" "$SUP/$log" "$CODEX_SESSION_ID" \
+      "${#CODEX_FRESH_COMMAND[@]}" "${CODEX_FRESH_COMMAND[@]}" "${CODEX_COMMAND[@]}")
   else
-    (cd "$workdir" && jq -cn --arg mode "$CODEX_MODE" --arg reason "$CODEX_PATH_REASON" --arg model "$model" \
-      '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' && exec ${worker_env[@]+"${worker_env[@]}"} ${launcher[@]+"${launcher[@]}"} "${CODEX_COMMAND[@]}") > "$SUP/$log" 2>&1 < /dev/null &
+    launch_command=(bash -c 'jq -cn --arg mode "$1" --arg reason "$2" --arg model "$3" "$4" \
+      && shift 4 && exec "$@"' autopilot-worker "$CODEX_MODE" "$CODEX_PATH_REASON" "$model" \
+      '{type:"pipeline.execution",mode:$mode,reason:$reason,model:$model}' "${CODEX_COMMAND[@]}")
   fi
-  pid=$!
+  local worker_pid_file
+  worker_pid_file="$(mktemp "$A/.worker-start.XXXXXX")" || return 1
+  rm -f -- "$worker_pid_file"
+  worker_scope_launch "$worker_pid_file" "$workdir" "$SUP/$log" "${launcher[@]}" -- \
+    "${worker_env[@]}" "${launch_command[@]}" || { rm -f -- "$worker_pid_file"; return 1; }
+  pid="$WORKER_SCOPE_PID"
+  rm -f -- "$worker_pid_file"
   local pid_started
   pid_started="$(coord_process_start_ticks "$pid" 2>/dev/null)" || {
     stuck_worker_stop "$pid" || :
