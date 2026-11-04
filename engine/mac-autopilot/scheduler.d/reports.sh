@@ -33,19 +33,33 @@ write_state() { # 用法: jqf ... "$1" | write_state "$1"   stdin=新内容 $1=�
   fi
 }
 
-# 评审结论只认整行 `VERDICT: X`；旧报告别名规范化为 review-contract.md 的 verdict。
+# 评审结论：整文件扫「VERDICT token + 取值」并规范化旧别名（review-contract.md 的 verdict）。
+# 11-04 根因（一晚 9 个单元两次转 supervisor）：结论行写法带加粗/前缀/行内备注——`**VERDICT: READY**（备注）`、
+# `## 结论：VERDICT: READY`、复原终答里的 `结论 **VERDICT: READY**。`——整行锚定正则一概不认。取值只在含
+# VERDICT 的行内计数，且该行必须有一个紧跟 token 的锚定取值（散文里的裸取值不产生结论）；锚定行上
+# 取值只从 VERDICT 后面开始计数；同行第二个状态词（如 `VERDICT: READY（…否则应改判 NOT_READY）`）仍是真歧义。
 verdict_of() {
   local found findings
-  found="$(grep -E '^[[:space:]>#*-]*(\*\*)?VERDICT:[[:space:]]*(READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK)(\*\*)?[[:space:]]*$' "$1" 2>/dev/null \
-    | grep -oE 'READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK' \
+  found="$(awk '
+    {
+      line = toupper($0)
+      if (!match(line, /VERDICT[[:space:]]*:[[:space:]]*/)) next
+      line = substr(line, RSTART + RLENGTH)
+      if (line !~ /^(READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK)([^A-Z0-9_-]|$)/) next
+      while (match(line, /(READY|NOT_READY|INPUT_INCOMPLETE|APPROVE|REQUEST-CHANGES|BLOCK)([^A-Z0-9_-]|$)/)) {
+        value = substr(line, RSTART, RLENGTH)
+        sub(/[^A-Z0-9_-]$/, "", value)
+        print value; line = substr(line, RSTART + RLENGTH)
+      }
+    }' "$1" 2>/dev/null \
     | sed -e 's/^APPROVE$/READY/' -e 's/^REQUEST-CHANGES$/NOT_READY/' -e 's/^BLOCK$/INPUT_INCOMPLETE/' | sort -u)"
   if [[ -n "$found" ]]; then
     [[ "$(wc -l <<<"$found")" -eq 1 ]] && { printf '%s' "$found"; return 0; }
     return 1
   fi
   # 10-28：约 1/5 的评审写「## Verdict」标题、下一行裸写 NOT_READY，缺 `VERDICT:` 前缀，被当成无结论重跑。
-  found="$(awk 'h && NF { gsub(/[*`]/, ""); if ($0 ~ /^[[:space:]]*(READY|NOT_READY|INPUT_INCOMPLETE)[[:space:]]*$/) print $1; exit }
-    /^#+[[:space:]]*Verdict[[:space:]]*$/ { h = 1 }' "$1" 2>/dev/null)"
+  found="$(awk 'h && NF { line=toupper($0); gsub(/[*`]/, "", line); if (line ~ /^[[:space:]]*(READY|NOT_READY|INPUT_INCOMPLETE)[[:space:]]*$/) { gsub(/[[:space:]]/, "", line); print line }; exit }
+    toupper($0) ~ /^#+[[:space:]]*VERDICT[[:space:]]*$/ { h = 1 }' "$1" 2>/dev/null)"
   if [[ -n "$found" ]]; then
     [[ "$(wc -l <<<"$found")" -eq 1 ]] && { printf '%s' "$found"; return 0; }
     return 1
@@ -129,6 +143,15 @@ findings_reask_rule() { # unit-json → prompt 片段
   local prev
   prev="$(jqf -r '.review_report // empty' <<<"$1")"
   printf '\n【发现块重问】上一份评审报告 %s 的结论是打回，但其 review-findings 块缺失或不符合 schema，流水线无法把发现交给修复，请重做这次评审并重新交付完整报告。机器可读块是报告最后一个 fence、恰好一个，正文与块所述一致；每个 finding 的字段与取值以 %s 为准：line 必须是正整数（文件级发现写 1，不是 0），file 用仓库相对路径，severity 取 P0-P3，introduced_by 与 base_evidence 必填非空；发现 ID 沿用上一份报告的编号。\n' \
+    "${prev:-上一份报告}" "$REVIEW_CONTRACT_MD"
+}
+# 结论行不可解析时的同 head 格式重问段（harvest 的 verdict-missing 路径派发时附带）。
+# 11-04 根因：结论行格式不合契约时旧路径整场重评，重评照样写歪，两次后转 supervisor——每个格式失败烧一个人工槽。
+# 重问只谈格式：评审员读回自己的上一份报告，原样重交并补一行独立 VERDICT 行，不重新展开评审。
+verdict_reask_rule() { # unit-json → prompt 片段
+  local prev
+  prev="$(jqf -r '.review_report // empty' <<<"$1")"
+  printf '\n【结论行重问】上一份评审报告 %s 没有单一可解析的 VERDICT 行。请读取该报告并把它原样重交为一份完整报告（沿用其中的结论、发现与 review-findings 块，不重新评审），只把结论改为一行独立结论行：整行仅有 `VERDICT: READY`、`VERDICT: NOT_READY` 或 `VERDICT: INPUT_INCOMPLETE` 三者之一——不加粗、不写成标题、不带「结论：」之类前缀、同一行不写任何备注或第二个取值。取值沿用你上一份报告的结论。结论行格式以 %s 为准。\n' \
     "${prev:-上一份报告}" "$REVIEW_CONTRACT_MD"
 }
 # 一次打回在 .review_findings 里追加一条：round 是它在 history 里的第几次打回，findings 只含阻断级（P0/P1，
