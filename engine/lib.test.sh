@@ -4767,8 +4767,8 @@ assert_contains "...and returns non-zero instead of falling through to success" 
 # confirmed negative.
 # =============================================================================
 
-# A transient 60s-class proxy stall gets one bounded retry through the shared
-# gh() wrapper, so a recovered API read does not become a fail-closed skip.
+# A transient 60s-class proxy stall retries through the shared gh() wrapper,
+# within its configured attempt cap, so recovery does not become a fail-closed skip.
 GH_RETRY_BIN="$(mktemp -d)"
 GH_RETRY_COUNT_FILE="$(mktemp)"
 cat > "$GH_RETRY_BIN/gh" <<'FAKE_GH'
@@ -4789,7 +4789,7 @@ GH_RETRY_OUT="$(PATH="$GH_RETRY_BIN:$PATH" GH_CALL_TIMEOUT_SEC=1 GH_RETRY_COUNT_
   gh issue view 999
 ' "$SCRIPT_DIR" 2>&1)"
 assert_eq "gh(): retries one timed-out API read exactly once" "2" "$(cat "$GH_RETRY_COUNT_FILE")"
-assert_contains "gh(): reports the transient timeout before retry" "$GH_RETRY_OUT" "retrying once after 2s backoff"
+assert_contains "gh(): reports the transient timeout before retry" "$GH_RETRY_OUT" "retrying after 2s backoff (attempt 2/3)"
 assert_contains "gh(): returns the recovered API result" "$GH_RETRY_OUT" "GH_RETRY_OK"
 
 : > "$GH_RETRY_COUNT_FILE"
@@ -4798,7 +4798,7 @@ GH_GATEWAY_OUT="$(PATH="$GH_RETRY_BIN:$PATH" GH_CALL_TIMEOUT_SEC=1 GH_RETRY_COUN
   gh issue view 999
 ' "$SCRIPT_DIR" 2>&1)"
 assert_eq "gh(): retries a transient Gateway Timeout read exactly once" "2" "$(cat "$GH_RETRY_COUNT_FILE")"
-assert_contains "gh(): reports the Gateway Timeout retry" "$GH_GATEWAY_OUT" "retrying once after 2s backoff"
+assert_contains "gh(): reports the Gateway Timeout retry" "$GH_GATEWAY_OUT" "retrying after 2s backoff (attempt 2/3)"
 assert_contains "gh(): returns the recovered Gateway Timeout read" "$GH_GATEWAY_OUT" "GH_RETRY_OK"
 
 : > "$GH_RETRY_COUNT_FILE"

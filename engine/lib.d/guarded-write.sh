@@ -32,9 +32,11 @@ comment_is_bot() {
 
 guarded_write() {
   reject_native_auto_merge "$@" || return $?
-  local issue_number lane caller create_repo="${REPO:-}" has_lane_add=0 has_hold_remove=0 has_ready_add=0 has_edit=0 child_status i
+  local issue_number lane caller="${FUNCNAME[1]:-main}" create_repo="${REPO:-}" has_lane_add=0 has_hold_remove=0 has_ready_add=0 has_edit=0 child_status i
+  local transition_rest_fallback=0 transition_only=1 transition_remove_hold=0 transition_remove_evidence=0
+  local transition_stderr transition_stderr_file
   local status profile_source="" profile_function="" profile_line=0
-  local -a command_args=("$@") filtered_args=()
+  local -a command_args=("$@") filtered_args=() transition_add_labels=()
   if [ "${ROADMAP_ISSUE_CREATE_INNER:-0}" != 1 ] \
     && [ "${command_args[0]:-}" = gh ] && [ "${command_args[1]:-}" = issue ] \
     && [ "${command_args[2]:-}" = create ]; then
@@ -61,9 +63,13 @@ guarded_write() {
         if [ "${command_args[i]:-}" = --remove-label ] \
           && [ "${command_args[i + 1]:-}" = on-hold ]; then
           has_hold_remove=1
+          transition_remove_hold=1
         fi
+        if [ "${command_args[i]:-}" = --remove-label ] \
+          && [ "${command_args[i + 1]:-}" = evidence-gate ]; then transition_remove_evidence=1; fi
         [ "${command_args[i]:-}" = --add-label ] || continue
         lane="${command_args[i + 1]:-}"
+        [ "$caller" != issue_transition ] || transition_add_labels+=("$lane")
         case "$lane" in
           ready-for-agent|needs-advisor|needs-triage|needs-recut|awaiting-release)
             has_lane_add=1
@@ -71,6 +77,19 @@ guarded_write() {
         esac
         [ "$lane" = ready-for-agent ] && has_ready_add=1
       done
+      if [ "$caller" = issue_transition ]; then
+        # The REST fallback rewrites only labels, so it is eligible only when
+        # the edit carries no other field a fallback would silently drop.
+        for ((i = 4; i < ${#command_args[@]}; i++)); do
+          case "${command_args[i]:-}" in
+            --repo) i=$((i + 1)) ;;
+            --repo=*) ;;
+            --add-label|--remove-label) i=$((i + 1)) ;;
+            *) transition_only=0 ;;
+          esac
+        done
+        [ "$transition_only" != 1 ] || transition_rest_fallback=1
+      fi
       # Suppress only a hold that was actually read. is_on_hold fails closed on
       # an unreadable label (right for dispatch), but dropping awaiting-release
       # or ready-for-agent on a GitHub read hiccup strands the ticket off every lane.
@@ -151,14 +170,38 @@ guarded_write() {
       fi
     fi
   fi
-  if [ "$DRY_RUN" = "1" ]; then
+  if [ "$DRY_RUN" = 1 ]; then
     echo "[dry-run] $*" >&2
     if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ]; then
       _call_profile_guarded_dry_run "${command_args[@]}" || true
     fi
     return 0
-  fi
-  if [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ] \
+  elif [ "$transition_rest_fallback" = 1 ]; then
+    # gh issue edit stays the primary label write; only a deterministic
+    # GraphQL refusal (per-query resource limit, validation) retries the same
+    # transition through the REST labels API, so a GraphQL-only outage cannot
+    # strand the ticket while transient errors keep the ordinary failure path.
+    transition_stderr_file="$(mktemp)" || return 1
+    if "$@" 2>"$transition_stderr_file"; then
+      status=0
+    else
+      status=$?
+    fi
+    transition_stderr="$(cat "$transition_stderr_file")"
+    rm -f -- "$transition_stderr_file"
+    [ -z "$transition_stderr" ] || printf '%s\n' "$transition_stderr" >&2
+    if [ "$status" -ne 0 ] && gh_failure_is_non_retryable_graphql "$transition_stderr"; then
+      echo "guarded_write: GraphQL label edit refused for #$issue_number; falling back to the REST label write" >&2
+      if issue_transition_rest_label_write "$issue_number" "$transition_remove_hold" \
+        "$transition_remove_evidence" "${transition_add_labels[@]}"; then
+        status=0
+        issue_label_cache_invalidate || true
+        ticket_stage_record_labels "$issue_number" "${command_args[@]:4}" || status=$?
+      else
+        status=$?
+      fi
+    fi
+  elif [ "${ZF_PIPELINE_CALL_PROFILE_ENABLED:-0}" = 1 ] \
     && [ "${command_args[0]:-}" = systemd-run ]; then
     profile_source="${BASH_SOURCE[1]:-}"
     profile_function="${FUNCNAME[1]:-main}"
