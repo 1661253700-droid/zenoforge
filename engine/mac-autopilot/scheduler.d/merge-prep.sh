@@ -108,10 +108,14 @@ main_red_attribution() { # sha run-id attempt；置 MAIN_RED_REVERTED（已回�
     return 0
   fi
   : > "$dir/$sha.reverted"; MAIN_RED_REVERTED=1
-  if merge_gate_suites_active; then
+  if ! merge_gate_suites_active; then
+    say "main red $sha: Pipeline suites dispatch skipped (gate retired for this repo); main CI verifies the revert"
+  elif [[ "$(main_gate_workflow)" == "Pipeline suites" ]]; then
     gh workflow run pipeline-suites.yml --ref main >/dev/null 2>&1 || say "main red $sha: Pipeline suites dispatch on the revert failed"
   else
-    say "main red $sha: Pipeline suites dispatch skipped (gate retired for this repo); main CI verifies the revert"
+    # 替代门禁工作流不代派 pipeline-suites.yml（vecta 的 ci.yml 只吃带 source_sha 的 workflow_dispatch）：
+    # 回退本身推上 main 就触发它的 push run，验证由那次 run 完成。
+    say "main red $sha: $(main_gate_workflow) run on the revert push verifies it; no pipeline-suites dispatch"
   fi
   say "main red $sha: reverted $culprit (parent passes, candidate fails $suite)"
   echo "[$STAMP] MAIN-RED-REVERTED main=$sha culprit=$culprit suite=$suite run=$run" >> "$A/alerts/gate.md"
@@ -121,18 +125,23 @@ main_red_attribution() { # sha run-id attempt；置 MAIN_RED_REVERTED（已回�
 }
 
 ci_classify_run() { # exact run metadata + failed-step logs; retry budget is deliberately separate
-  local run="$1" expected_sha="$2" run_sha status conclusion failed_log judge_input judge_output judged_class
+  local run="$1" expected_sha="$2" run_sha status conclusion failed_log failed_checks judge_input judge_output judged_class
   CI_CLASS=unknown; CI_RUN_ID="$(jqf -r '.databaseId // empty' <<<"$run")"
   CI_RUN_ATTEMPT="$(jqf -r '.attempt | select(type=="number" and .>0 and floor==.)' <<<"$run")"
   run_sha="$(jqf -r '.headSha // empty' <<<"$run")"
   status="$(jqf -r '.status // empty' <<<"$run")"
   conclusion="$(jqf -r '.conclusion // empty' <<<"$run")"
-  CI_REASON="Pipeline suites ${status:-missing}/${conclusion:-no-verdict} on $expected_sha"
+  CI_REASON="$(main_gate_workflow) ${status:-missing}/${conclusion:-no-verdict} on $expected_sha"
   [[ "$run_sha" == "$expected_sha" && "$expected_sha" =~ ^[0-9a-f]{40}$ ]] || return 0
   [[ "$status" == completed ]] || return 0
   if [[ "$conclusion" == success ]]; then CI_CLASS=pass; return 0; fi
   # Cancelled, timed out, skipped and missing verdicts do not establish a regression.
   [[ "$conclusion" == failure && "$CI_RUN_ID" =~ ^[0-9]+$ ]] || return 0
+  # 红 main 的告警要能点名失败的 job（2026-11-04 vecta：384831fce1 的 "Postsubmit validate" 只在
+  # run 页面可见，alerts/gate.md 一条 SHA 之外什么都不说，工厂因此整下午没被叫醒）。check-runs 按
+  # SHA 汇总该提交最新的失败检查名；读不出来只少一段文本，不影响分类。
+  failed_checks="$(main_red_failed_checks "$expected_sha" 2>/dev/null | jqf -r '.[]?' 2>/dev/null | sort -u | paste -sd ';' - || true)"
+  if [[ -n "$failed_checks" ]]; then CI_REASON="$CI_REASON; failing checks: $failed_checks"; fi
   if [[ ! "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
     CI_REASON="$CI_REASON; run attempt unavailable, supervisor reconciliation required"
     return 0
@@ -180,11 +189,11 @@ ci_failure_retry_status() { # exact SHA, current run, existing reservation (null
     return 0
   fi
   if [[ "$reserved" == null ]]; then
-    CI_RETRY_RECORD="$(jqf -cn --arg sha "$sha" --arg run "$CI_RUN_ID" --argjson attempt "$CI_RUN_ATTEMPT" --arg at "$STAMP" \
-      '{sha:$sha,workflow:"Pipeline suites",run_id:$run,attempt:$attempt,requested_at:$at}')"
+    CI_RETRY_RECORD="$(jqf -cn --arg sha "$sha" --arg wf "$(main_gate_workflow)" --arg run "$CI_RUN_ID" --argjson attempt "$CI_RUN_ATTEMPT" --arg at "$STAMP" \
+      '{sha:$sha,workflow:$wf,run_id:$run,attempt:$attempt,requested_at:$at}')"
     CI_RETRY_ACTION=request
-  elif jqf -e --arg sha "$sha" --arg run "$CI_RUN_ID" --argjson attempt "$CI_RUN_ATTEMPT" '
-    type=="object" and .sha==$sha and .workflow=="Pipeline suites" and (.run_id|tostring)==$run
+  elif jqf -e --arg sha "$sha" --arg run "$CI_RUN_ID" --arg wf "$(main_gate_workflow)" --argjson attempt "$CI_RUN_ATTEMPT" '
+    type=="object" and .sha==$sha and .workflow==$wf and (.run_id|tostring)==$run
     and (.attempt | type=="number" and .>0 and floor==.) and .attempt < $attempt
   ' <<<"$reserved" >/dev/null 2>&1; then
     # Server evidence reconciles even an unconfirmed rerun request; polling the old red does not.
@@ -202,17 +211,31 @@ suites_timeout_only() { # log-failed text
   ! grep -qE 'not ok [0-9]+ -' <<<"$1" && ! grep -E 'FAILED suite=' <<<"$1" | grep -vq 'timed out after'
 }
 
+# main 门禁读 run 的工作流名（2026-11-04 vecta：产品仓库 #4860 删掉 pipeline-suites.yml 后，main 红
+# （384831fce1 TS2769）整个下午无人发现——门禁只读 "Pipeline suites" 的 run，工作流没了红就看不见）。
+# merge_gate.main_workflow 按仓库配置（目标仓库 .zenoforge/mac-autopilot/config.template.json，如 vecta
+# 配它必需的 "CI"，取自 ci.yml 的 name 与分支保护必需检查）；未配置保持 "Pipeline suites"。
+main_gate_workflow() { # → 门禁取 main run 的工作流名（gh run list --workflow 的实参）
+  local w
+  w="$(jqf -r '.merge_gate.main_workflow // "" | select(type == "string") | gsub("^\\s+|\\s+$"; "") | select(length > 0)' <<<"${CFG:-}" 2>/dev/null)" || w=""
+  printf '%s\n' "${w:-Pipeline suites}"
+}
+
 # main-suites 门禁的仓库适用性（2026-11-04：产品仓库 PR #4860 删掉 .github/workflows/pipeline-suites.yml 后，
 # verdict 永远不会到来，门禁每个 main 提交刷一条 GATE unknown 并把流水线 PR 永久挂起）。流水线套件已随
 # 仓库迁走（Zenoforge 的 merge-pr/engine shards），这里退不掉的等待没有对应信号。merge_gate.pipeline_suites=off
 # 显式退役；auto（默认）以 origin/main 是否还有该工作流为准（与 land-direct-main 落地派发同一检查）——
 # 还有的仓库照旧门禁，没有的退役并只告警一次。origin/main 读不出来算没有退役证据，保持原门禁。
+# 配置了替代门禁工作流（merge_gate.main_workflow ≠ Pipeline suites）的仓库不随 pipeline-suites.yml 的消失
+# 退役：操作者已点名接替者；该工作流若也不在了，gh run list 不返 run，走既有 missing 处理（GATE unknown、
+# 流水线 PR 挂起），而不是退役后的静默放行。
 merge_gate_suites_active() { # → 0=门禁适用本仓库；非 0=退役（MERGE_GATE_SUITES_NOTE 为一次性告警文本）
   MERGE_GATE_SUITES_NOTE=""
   if [[ "$(jqf -r '.merge_gate.pipeline_suites // "auto"' <<<"${CFG:-}" 2>/dev/null)" == off ]]; then
     MERGE_GATE_SUITES_NOTE="GATE pipeline-suites retired by config (merge_gate.pipeline_suites=off); pipeline PRs merge on their own head checks, main CI verifies after merge"
     return 1
   fi
+  [[ "$(main_gate_workflow)" == "Pipeline suites" ]] || return 0
   git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 || return 0
   git -C "$ROOT" cat-file -e "refs/remotes/origin/main:.github/workflows/pipeline-suites.yml" 2>/dev/null && return 0
   MERGE_GATE_SUITES_NOTE="GATE pipeline-suites retired: .github/workflows/pipeline-suites.yml absent from origin/main, no suites verdict can arrive; pipeline PRs merge on their own head checks, main CI verifies after merge; restore the workflow or set merge_gate.pipeline_suites in config if this is unexpected"
@@ -222,6 +245,8 @@ merge_gate_suites_active() { # → 0=门禁适用本仓库；非 0=退役（MERG
 # 门禁候选：从 origin/main HEAD 往回，直到第一个非 [skip ci] 提交为止（含）。
 # [skip ci] 提交通常没有 suites run（L7），但 land-direct-main 会为落地提交手动派发一次，有 run 就用它。
 pipeline_path_re() { # pipeline-suites.yml 的 paths → 正则（** 任意，* 不跨目录）
+  # 替代门禁工作流按 push 触发、每个 main 提交都有 run：没有 suites 路径过滤，eval 链停在第一个非 [skip ci] 提交。
+  [[ "$(main_gate_workflow)" == "Pipeline suites" ]] || return 0
   sed -n "/^  pull_request:/,/^  [a-z_]*:\$/p" "$ROOT/.github/workflows/pipeline-suites.yml" 2>/dev/null \
     | sed -nE "s/^ *- '([^']+)'.*/\\1/p" \
     | sed -E 's/[.]/\\./g; s/[*][*]/@@/g; s/[*]/[^\/]*/g; s/@@/.*/g; s/^/^/; s/$/$/' | paste -sd'|'
@@ -242,7 +267,7 @@ main_suites_load() {
   [[ "$MAIN_SUITES_RUNS_LOADED" != true ]] || return 0
   MAIN_SUITES_RUNS_LOADED=true
   local query_seconds started=$SECONDS
-  MAIN_SUITES_RUNS="$(gh run list --workflow "Pipeline suites" --branch main --limit 100 \
+  MAIN_SUITES_RUNS="$(gh run list --workflow "$(main_gate_workflow)" --branch main --limit 100 \
     --json conclusion,status,createdAt,headSha,databaseId,attempt 2>/dev/null)" || MAIN_SUITES_RUNS=""
   jqf -e 'type=="array"' <<<"$MAIN_SUITES_RUNS" >/dev/null || MAIN_SUITES_RUNS=""
   query_seconds=$((SECONDS - started))

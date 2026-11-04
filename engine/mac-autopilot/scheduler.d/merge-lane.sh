@@ -178,7 +178,7 @@ run_merge_lane() {
     retry_record="$(jqf_optional_file "$A/gate-net-rerun.json" -c --arg sha "$eval_sha" 'if has($sha) then .[$sha] else null end' 2>/dev/null)" || retry_record='{}'
     ci_failure_retry_status "$eval_sha" "$gate_run" "$retry_record"
     if (( MAIN_RED_REVERTED )); then
-      CI_REASON="$CI_REASON; culprit reverted, awaiting Pipeline suites on the revert"
+      CI_REASON="$CI_REASON; culprit reverted, awaiting $(main_gate_workflow) on the revert"
     elif [[ "$CI_RETRY_ACTION" == request ]]; then
       if jqf --arg sha "$eval_sha" --argjson record "$CI_RETRY_RECORD" \
         '.[$sha]=$record' "$A/gate-net-rerun.json" | write_state "$A/gate-net-rerun.json"; then

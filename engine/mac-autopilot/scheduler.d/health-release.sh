@@ -92,9 +92,10 @@ main_red_lane_ready() { # unit-id new-red-sha；rc 0 = 可以开新单元
   return 0
 }
 
-# main 的 Pipeline suites 红：立即开一个修 main 的直落单元（不等 supervisor 5 小时一查；2026-10-19 门禁因此关了 6 小时）。
+# main 的门禁工作流红（默认 Pipeline suites；配置了 merge_gate.main_workflow 的仓库是它）：立即开一个修 main 的直落单元（不等 supervisor 5 小时一查；2026-10-19 门禁因此关了 6 小时）。
 open_main_red_unit() { # sha run-id attempt (a repeated, classified code failure)
-  local id="main-red-${1:0:9}" failed task attempt="${3:-}"
+  local id="main-red-${1:0:9}" failed task attempt="${3:-}" gate_wf
+  gate_wf="$(main_gate_workflow)"
   local recovery_session="${AGENT_HOME:-${HOME:-}/.zenoforge}/main-red/$1.json"
   [[ "$attempt" =~ ^[1-9][0-9]*$ ]] || return 0
   if jqf -e --arg sha "$1" '
@@ -107,12 +108,12 @@ open_main_red_unit() { # sha run-id attempt (a repeated, classified code failure
   fi
   main_red_lane_ready "$id" "$1" || return 0
   failed="$(gh run view "$2" --attempt "$attempt" --log-failed 2>/dev/null | grep -oE 'FAILED suite=[^ ]+ exit_code=[^ ]+ first_error=.{0,160}' | sort -u | head -10)"
-  task="你是 the product 流水线的实现 subagent。main 的 Pipeline suites 在 $1 上失败（run $2 attempt ${attempt}），产品合并门禁因此关闭，这是最高优先级。
+  task="你是 the product 流水线的实现 subagent。main 的 ${gate_wf} 在 $1 上失败（run $2 attempt ${attempt}），产品合并门禁因此关闭，这是最高优先级。
 失败 suite：
 ${failed:-（日志里没解析出 FAILED suite= 行，用 gh run view $2 --attempt $attempt --log-failed 自查）}
 用 gh run view $2 --attempt $attempt --log-failed 看完整失败；本地跑失败的 suite 复现。判断是测试/fixture 跟不上新改动、真实回归，还是 CI 负载下的超时（超时看 engine/run-ci-suites.sh 的 suite_weight_seconds：超时 = 3×权重，按实测刷新）。修根因，不弱化断言、不删测试。"
-  units_update --arg id "$id" --arg sha "$1" --arg task "$task" --arg run "$2" --argjson attempt "$attempt" \
-    '.units += [{id:$id, main_red:true, critical:true, ci_sha:$sha, ci_run_id:$run, ci_run_attempt:$attempt, title:("fix red main Pipeline suites at "+$sha[0:9]), stage:"implement-pending", lane:"direct-main", branch:("agent/"+$id), task:$task, history:[]}]'
+  units_update --arg id "$id" --arg sha "$1" --arg task "$task" --arg run "$2" --argjson attempt "$attempt" --arg wf "$(main_gate_workflow)" \
+    '.units += [{id:$id, main_red:true, critical:true, ci_sha:$sha, ci_run_id:$run, ci_run_attempt:$attempt, title:("fix red main "+$wf+" at "+$sha[0:9]), stage:"implement-pending", lane:"direct-main", branch:("agent/"+$id), task:$task, history:[]}]'
   say "main suites red at $1 (run $2) -> opened $id"
   echo "[$STAMP] MAIN-RED unit=$id main=$1 run=$2" >> "$A/alerts/gate.md"
 }
