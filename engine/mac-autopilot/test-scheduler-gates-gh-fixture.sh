@@ -133,4 +133,3 @@ gh() {
     "run view") printf '%s\n' "$*" >> "$fixture/run-view.calls"; echo "$GH_LOG" ;;
   esac
 }
-

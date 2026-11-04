@@ -67,4 +67,3 @@ main_red_attribution() { MAIN_RED_REVERTED=0; MAIN_RED_PENDING=0; }
 # This suite tests scheduler gates and state transitions; reviewer-family
 # availability is covered by review-family.test.sh.
 pick_review_for_unit() { PICK_MODEL="GLM-5.3"; PICK_EFFORT=max; return 0; }
-
