@@ -187,6 +187,8 @@ class ExecutionAdmission(unittest.TestCase):
         source = self.driver.read_text()
         self.driver.write_text(source.replace("try:sys.exit", """from pathlib import Path
 import os
+from types import SimpleNamespace
+g.time=SimpleNamespace(monotonic=lambda:float(os.environ['FIXTURE_MONOTONIC']))
 read=Path.read_text
 def fixture_read(path,*args,**kwargs):
  if path==Path('/proc/stat') and os.environ.get('FIXTURE_STAT_FAILURE')=='1':raise FileNotFoundError('fixture stat')
@@ -196,6 +198,7 @@ try:sys.exit"""))
         start = self.home / "locks/execution-cpu-start.json"
         for initially_unknown in (False, True):
             with self.subTest(initially_unknown=initially_unknown):
+                self.env["FIXTURE_MONOTONIC"] = "100"
                 start.unlink(missing_ok=True)
                 self.env["FIXTURE_STAT_FAILURE"] = "1" if initially_unknown else "0"
                 self.assertEqual(self.run_guard("run", "true").returncode, 0)
@@ -206,6 +209,8 @@ try:sys.exit"""))
                 self.env["FIXTURE_STAT_FAILURE"] = "0"
                 self.assertEqual(self.run_guard("run", "true").returncode, 75)
                 self.assertEqual(json.loads(start.read_text()), record)
+                self.env["FIXTURE_MONOTONIC"] = "106"
+                self.assertEqual(self.run_guard("run", "true").returncode, 0)
 
     def test_cpu_interval_missing_corrupt_permission_and_real_boot_change(self):
         (self.home / "capacity.env").write_text("AGENT_GLOBAL_EXECUTION_CAP=16\nAGENT_EXECUTION_CPU_TARGET_PERCENT=90\n")
@@ -587,11 +592,14 @@ try:sys.exit"""))
         def lane(name):
             ready = self.home / f"dynamic-{name}"
             personal = self.home / f"dynamic-{name}-release"
-            code = ("from pathlib import Path\nimport time\n"
+            code = ("from pathlib import Path\nimport fcntl,os,time\n"
                     f"mem=Path({str(proc / 'meminfo')!r});ld=Path({str(proc / 'loadavg')!r})\n"
                     "def shift(kb,load):\n"
-                    " cur=int(mem.read_text().split()[1]);mem.write_text(f'MemAvailable: {cur+kb} kB\\n')\n"
-                    " l1=float(ld.read_text().split()[0]);ld.write_text(f'{l1+load} 0 0 1/2 3\\n')\n"
+                    " with (mem.parent/'lock').open('a') as lock:\n"
+                    "  fcntl.flock(lock,fcntl.LOCK_EX)\n"
+                    "  cur=int(mem.read_text().split()[1]);l1=float(ld.read_text().split()[0])\n"
+                    "  for path,data in ((mem,f'MemAvailable: {cur+kb} kB\\n'),(ld,f'{l1+load} 0 0 1/2 3\\n')):\n"
+                    "   tmp=path.with_name(f'{path.name}.{os.getpid()}');tmp.write_text(data);tmp.replace(path)\n"
                     "shift(-1572864,2)\n"
                     f"Path({str(ready)!r}).touch()\n"
                     f"while not Path({str(personal)!r}).exists():time.sleep(0.01)\n"
@@ -608,12 +616,12 @@ try:sys.exit"""))
         self.assertEqual(self.run_guard("run", "true").returncode, 75)
         # One worker exits and frees its share: the next admission passes again.
         releases[1].touch()
-        self.children[1].wait(timeout=5)
+        self.assertEqual(self.children[1].wait(timeout=5), 0)
         lane("fifth")
         for path in (releases[0], releases[2], releases[3], self.home / "dynamic-fifth-release"):
             path.touch()
-        for child in self.children[4:]:
-            child.wait(timeout=5)
+        for child in self.children:
+            self.assertEqual(child.wait(timeout=5), 0)
 
     def test_isolated_test_home_skips_host_census_only_inside_test_root(self):
         test_root = self.home / "isolated"
@@ -692,6 +700,41 @@ try:sys.exit"""))
         self.assertEqual(child.wait(timeout=15), 143)
         self.assertTrue(receipt.exists())
         self.assertEqual(self.run_guard("run", "true").returncode, 0)
+
+    def test_guardian_forwards_signal_during_worker_start(self):
+        ready = self.home / "startup-ready"
+        receipt = self.home / "startup-cleanup"
+        worker = ("import signal;from pathlib import Path;"
+                  f"signal.signal(signal.SIGTERM,lambda *args:(Path({str(receipt)!r}).touch(),exit(143)));"
+                  "signal.alarm(10);"
+                  f"Path({str(ready)!r}).touch();signal.pause()")
+        driver = self.home / "startup-driver.py"
+        driver.write_text(
+            "import importlib.util,os,signal,subprocess,sys,time\n"
+            "from pathlib import Path\n"
+            f"s=importlib.util.spec_from_file_location('guard',{str(ROOT / 'execution-admission.py')!r})\n"
+            "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
+            "g.occupied=lambda proc:set()\n"
+            "g.resources=lambda *args:{'available_mb':9999999,'load1':0.0}\n"
+            "original=subprocess.Popen\n"
+            f"command=[sys.executable,'-c',{worker!r}]\n"
+            "def start(args,*a,**kw):\n"
+            "    child=original(args,*a,**kw)\n"
+            "    if args == command:\n"
+            f"        ready=Path({str(ready)!r})\n"
+            "        deadline=time.monotonic()+10\n"
+            "        while not ready.exists():\n"
+            "            if time.monotonic()>deadline: raise RuntimeError('worker did not start')\n"
+            "            time.sleep(.01)\n"
+            "        os.kill(os.getpid(),signal.SIGTERM)\n"
+            "    return child\n"
+            "g.subprocess.Popen=start\n"
+            "sys.exit(g.admission_inner('run',command))\n"
+        )
+        result = subprocess.run([sys.executable, str(driver)], env=self.env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        self.assertEqual(result.returncode, 143)
+        self.assertTrue(receipt.exists(), "signal during worker start was not forwarded")
 
     def test_held_unknown_or_reused_pid_fails_closed(self):
         locks = self.home / "locks"

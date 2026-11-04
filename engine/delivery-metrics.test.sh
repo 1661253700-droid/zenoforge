@@ -17,6 +17,19 @@ metrics="$AGENT_HOME/metrics/efficiency-2023-11.jsonl"
 delivery_metrics_observe land-enqueued "$request"
 delivery_metrics_observe land-enqueued "$request"
 check 'length == 2 and (unique_by(.event_id)|length) == 1' 'duplicate enqueue has one analytical identity'
+# The bounded observer needs only the sink, not full lib initialization.
+light="$test_env_root/light-engine"
+mkdir -p "$light/lib.d" "$test_env_root/light-agent"
+cp "$SCRIPT_DIR"/{delivery-metrics.sh,efficiency-metrics-sink.sh,config.sh,write-guard.sh} "$light/"
+cp "$SCRIPT_DIR/lib.d/issue-state.sh" "$light/lib.d/"
+printf 'exit 99\n' > "$light/lib.sh"
+AGENT_HOME="$test_env_root/light-agent" bash "$light/delivery-metrics.sh" land-enqueued "$request" || fail 'observer unnecessarily initialized full library'
+jq -e '.event_type == "land-enqueued"' "$test_env_root/light-agent/metrics/efficiency-2023-11.jsonl" >/dev/null || fail 'light observer did not append'
+if AGENT_HOME="${test_env_root}-outside" bash "$light/delivery-metrics.sh" land-enqueued "$request" 2>/dev/null; then
+  fail 'light observer bypassed the test write guard'
+fi
+[[ ! -e "${test_env_root}-outside" ]] || fail 'light observer wrote outside the isolated root'
+echo 'ok - bounded observer uses guarded metrics sink without full library initialization'
 queue_refresh_health_summary() { :; }
 eval "$(sed -n '/^queue_update_request() {/,/^}/p' "$SCRIPT_DIR/land-queue.sh")"
 queue_update_request "$request" running '' '' '' '' 1700000001

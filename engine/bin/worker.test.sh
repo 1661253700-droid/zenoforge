@@ -52,14 +52,16 @@ if [[ $mode == builtin_info ]]; then
   mode=success
 fi
 [[ $mode == gated ]] && { sleep 3; mode=success; }   # queued at the capacity gate past the stall threshold
-echo $$ > "$d/codex.pid"   # real backends write it once past the capacity gate
+[[ $mode == hang || $mode == builtin_noise ]] || echo $$ > "$d/codex.pid"   # real backends write it once past the capacity gate
 case "$mode" in
   hang|builtin_noise)
     : > "$d/events.jsonl"
     printf 'partial from %s\n' "$backend" > "$cwd/.partial-from-$backend"
-    bash -c 'trap '\''touch "$1"; exit 143'\'' TERM; while :; do read -r -t 0.05 _ || true; done' _ "$d/hang-child-terminated" &
+    bash -c 'trap '\''touch "$1"; exit 143'\'' TERM; touch "$2"; while :; do read -r -t 0.05 _ || true; done' _ "$d/hang-child-terminated" "$d/hang-child-ready" &
     echo $! > "$d/hang-child.pid"
     trap 'touch "$d/hang-terminated"; wait; exit 143' TERM
+    while [[ ! -e $d/hang-child-ready ]]; do read -r -t 0.05 _ || true; done
+    echo $$ > "$d/codex.pid"
     while :; do
       if [[ $mode == builtin_noise ]]; then
         printf 'ZCode Built-in synced\n' >> "$d/stderr.log"

@@ -7,13 +7,13 @@ fi
 # Same setting lib.sh resolves; the shim runs without sourcing it.
 UNIT_PREFIX_TRANSIENT="${ZF_UNIT_PREFIX:-zf}"
 args=("$@")
-unit=; command_at=-1
+unit=; command_at=-1; separator_at=-1
 for ((i=0; i<${#args[@]}; i++)); do
   arg="${args[i]}"
   case "$arg" in
     --unit=*) unit="${arg#*=}" ;;
     --unit|-u) i=$((i+1)); unit="${args[i]:-}" ;;
-    --) command_at=$((i+1)); break ;;
+    --) separator_at=$i; command_at=$((i+1)); break ;;
     -p|--property|-E|--setenv|--description|--working-directory|--service-type|--slice|--uid|--gid|--machine|--host)
       i=$((i+1)) ;;
     -*) ;;
@@ -68,7 +68,12 @@ if ((execution)); then
     execution_env+=(-E LUNA_PRIORITY=release)
   fi
   if ((${#execution_env[@]})); then
-    args=("${args[@]:0:command_at}" "${execution_env[@]}" "${args[@]:command_at}")
+    # systemd-run stops parsing options at `--`, so an env pass inserted after
+    # the separator would be resolved as the executable (owner dispatches use
+    # `-- cmd`). Insert into the option region instead; the command shifts right.
+    insert_at=$command_at
+    ((separator_at < 0)) || insert_at=$separator_at
+    args=("${args[@]:0:insert_at}" "${execution_env[@]}" "${args[@]:insert_at}")
     command_at=$((command_at+${#execution_env[@]}))
   fi
   guard="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/execution-admission.py"

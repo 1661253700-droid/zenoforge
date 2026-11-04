@@ -143,7 +143,7 @@ class AttemptMetrics:
             result = subprocess.run(
                 ["timeout", "--signal=TERM", "--kill-after=1s", "2s", "bash", "-c",
                  'source "$1" 2>/dev/null || exit 1; efficiency_metrics_append_rows "$(cat)"',
-                 "execution-metrics", str(Path(__file__).with_name("lib.sh"))],
+                 "execution-metrics", str(Path(__file__).with_name("efficiency-metrics-sink.sh"))],
                 input=json.dumps(row, allow_nan=False) + "\n", text=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
             if result.returncode:
@@ -745,12 +745,21 @@ def admission_inner(mode, command, attempt=None):
                 pass
         if mode == "run-unit" and Path(command[0]).name == "setsid" and not any(arg in ("-w", "--wait") for arg in command[1:]):
             command = [command[0], "--wait", *command[1:]]
-        child = subprocess.Popen(command, env=os.environ, start_new_session=(mode == "run-unit"))
+        child = None
+        pending_signals = []
         def forward(signum, _frame):
-            if child.poll() is None:
-                child.send_signal(signum)
+            if child is None:
+                pending_signals.append(signum)
+            elif child.poll() is None:
+                try:
+                    child.send_signal(signum)
+                except ProcessLookupError:
+                    pass  # The worker exited between poll and delivery.
         previous = {sig: signal.signal(sig, forward) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
         try:
+            child = subprocess.Popen(command, env=os.environ, start_new_session=(mode == "run-unit"))
+            for signum in pending_signals:
+                forward(signum, None)
             if attempt:
                 attempt.fields["execution_started"] = True
                 attempt.decision("admit", "capacity-and-resources-approved")

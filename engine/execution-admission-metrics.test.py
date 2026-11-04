@@ -48,12 +48,6 @@ class AdmissionMetrics(unittest.TestCase):
             "    with (self.home/'locks/execution-0.lock').open('r') as f:fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
             "  original_append(self,event,*args)\n"
             "g.AttemptMetrics.append=append\n"
-            # The sink sources the whole lib.sh under a 2 s bound (about 1 s on a 12-core dev host); a 4-vCPU runner needs longer, so only the sink bound is lifted here.
-            "sink_run=g.subprocess.run\n"
-            "def run(cmd,**kw):\n"
-            "  if cmd[0]=='timeout':cmd=[*cmd[:3],'10s',*cmd[4:]];kw['timeout']=14\n"
-            "  return sink_run(cmd,**kw)\n"
-            "g.subprocess.run=run\n"
             "try:sys.exit(g.admission(sys.argv[1],sys.argv[2:]))\n"
             "except (g.Deferred,OSError,ValueError,KeyError,StopIteration,IndexError):sys.exit(75)\n"
         )
@@ -81,6 +75,17 @@ class AdmissionMetrics(unittest.TestCase):
         f = (locks / "execution-0.lock").open("a+")
         fcntl.flock(f, fcntl.LOCK_EX)
         return f
+
+    def test_sink_does_not_initialize_full_engine_library(self):
+        engine = self.home / "light-engine"
+        (engine / "lib.d").mkdir(parents=True)
+        for name in ("execution-admission.py", "efficiency-metrics-sink.sh", "config.sh", "write-guard.sh", "lib.d/issue-state.sh"):
+            (engine / name).write_bytes((ROOT / name).read_bytes())
+        (engine / "lib.sh").write_text("exit 99\n")
+        with patch.object(guard, "__file__", str(engine / "execution-admission.py")), patch.dict(os.environ, self.env):
+            attempt = guard.AttemptMetrics("run", self.home)
+            attempt.append("execution-release", "success", 0, "")
+        self.assertEqual([row["event_type"] for row in self.rows()], ["execution-release"])
 
     def test_multiple_actual_attempts_admit_release_and_private_projection(self):
         self.assertEqual(self.invoke("run", sys.executable, "-c", "pass", "PRIVATE_SENTINEL").returncode, 0)

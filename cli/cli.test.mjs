@@ -121,6 +121,8 @@ test('init: files, modes, checkout, engine link, labels, variables and units', a
 
 test('the real engine scripts work through the checkout link (write guard, runtime sync, config)', async () => {
   const s = sandbox();
+  // Installed versions may live below an unrelated Git checkout.
+  execFileSync('git', ['init', '-q', s.root]);
   await cmd.init({ repo: REPO, yes: true, noScheduler: true }, s.io);
   const sh = (script) => execFileSync('bash', ['-c', script], { env: { ...s.env, ZF_REPO_DIR: s.checkout, MAC_AUTOPILOT_ROOT: s.checkout }, stdio: 'pipe' }).toString();
   assert.match(sh(`source "${s.checkout}/engine/lib.sh" && echo "repo=$REPO"`), /repo=example-maintainer\/example-repo/);

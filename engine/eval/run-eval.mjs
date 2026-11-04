@@ -33,8 +33,9 @@ export function loadEvalCaseSet(stage) {
   return set;
 }
 function command(argv, cwd = repo, options = {}) {
+  const { env: optionEnv = {}, ...spawnOptions } = options;
   const child = spawnSync(argv[0], argv.slice(1), { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-    env: { ...process.env, GH_TOKEN: '', GITHUB_TOKEN: '', ...options.env }, ...options });
+    ...spawnOptions, env: { ...process.env, GH_TOKEN: '', GITHUB_TOKEN: '', ...optionEnv } });
   if (child.error && child.error.code !== 'ETIMEDOUT') throw child.error;
   return child;
 }

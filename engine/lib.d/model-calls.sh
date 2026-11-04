@@ -876,7 +876,7 @@ run_codex_text() {
 run_codex_implement() {
   local cwd="$1" model="$2" effort="$3" prompt_file="$4" log_file="$5" timeout_minutes="${6:-120}" caller="${7:-unknown}" status=0 service_tier
   local -a service_tier_args=()
-  local started_at elapsed timeout_detail out_file transcript_empty=true diagnostic signal_name issue stage model_identity
+  local started_at elapsed timeout_detail out_file guard_log transcript_empty=true diagnostic signal_name issue stage model_identity
   MODEL_CALL_EXIT_STATUS=""
   MODEL_CALL_EXIT_CLASS=""
   MODEL_CALL_LOG_PATH="$log_file"
@@ -889,6 +889,8 @@ run_codex_implement() {
   service_tier="$(model_policy tier "codex:$model:$effort")" || return $?
   [ -z "$service_tier" ] || service_tier_args=(-c "service_tier=\"$service_tier\"")
   out_file="$(mktemp)"
+  guard_log="$(mktemp)"
+  : > "$log_file"
   # `|| status=$?`, not `set +e; ...; set -e` -- see run_codex_json()'s own
   # comment above for why: this function is always called as a bare
   # statement (it has no meaningful stdout to capture via command
@@ -901,15 +903,20 @@ run_codex_implement() {
   # from codex's own child environment -- this function's caller, and this
   # shell, keep them.
   started_at="$(date +%s)"
-  pipeline_execution_run timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN codex exec \
+  # Admission diagnostics are not model output. Capture them separately until
+  # transcript emptiness is determined, then retain them in the same log.
+  pipeline_execution_run bash -c 'log=$1; shift; exec "$@" > "$log" 2>&1' _ "$log_file" \
+    timeout "${timeout_minutes}m" env -u GH_TOKEN -u GITHUB_TOKEN codex exec \
     --sandbox "$CODEX_SANDBOX_MODE" --cd "$cwd" --skip-git-repo-check --ephemeral \
     -m "$model" -c model_reasoning_effort="$effort" "${service_tier_args[@]}" \
     -c sandbox_workspace_write.network_access=true \
     -c mcp_servers.gitnexus.enabled=false \
     --output-last-message "$out_file" \
-    - < "$prompt_file" > "$log_file" 2>&1 || status=$?
+    - < "$prompt_file" 2> "$guard_log" || status=$?
   elapsed=$(( $(date +%s) - started_at ))
   if [ -s "$log_file" ] || [ -s "$out_file" ]; then transcript_empty=false; fi
+  cat "$guard_log" >> "$log_file"
+  rm -f "$guard_log"
   [ "$status" -eq 0 ] || printf 'codex-exec-elapsed-seconds=%s\n' "$elapsed" >> "$log_file"
   MODEL_CALL_EXIT_STATUS="$status"
   MODEL_CALL_EXIT_CLASS="$(model_call_exit_class "$status")"

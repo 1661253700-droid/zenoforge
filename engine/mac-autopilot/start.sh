@@ -21,13 +21,13 @@ mkdir -p "$A/alerts" "$VERSIONS"
 # (untracked), so git has nothing to archive. CLI_LINK pins by that version's directory name and copies the linked version.
 ENGINE_REPO="$MAC_AUTOPILOT_ROOT" ENGINE_REL=engine IMMUTABLE=0 CLI_LINK=0
 engine_dir="${ZF_ENGINE_DIR:-$(cd "$SRC/.." && pwd -P)}"
-if ! git -C "$engine_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  if [[ -L "$MAC_AUTOPILOT_ROOT/engine" && -z "${ZF_ENGINE_DIR:-}" ]]; then
-    CLI_LINK=1
-  else
-    IMMUTABLE=1 ENGINE_REL=. ZF_ENGINE_DIR="$engine_dir"
-    export ZF_ENGINE_DIR
-  fi
+if [[ -L "$MAC_AUTOPILOT_ROOT/engine" && -z "${ZF_ENGINE_DIR:-}" ]]; then
+  # The installed version can itself sit below an unrelated Git checkout.
+  # The checkout's engine link is authoritative, not Git's ancestor discovery.
+  CLI_LINK=1
+elif ! git -C "$engine_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  IMMUTABLE=1 ENGINE_REL=. ZF_ENGINE_DIR="$engine_dir"
+  export ZF_ENGINE_DIR
 elif [[ -n "${ZF_ENGINE_DIR:-}" ]]; then
   ENGINE_REPO="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-toplevel)"
   ENGINE_REL="$(git -C "$ZF_ENGINE_DIR" rev-parse --show-prefix)"; ENGINE_REL="${ENGINE_REL%/}"

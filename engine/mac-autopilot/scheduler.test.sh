@@ -4,7 +4,8 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 # Output contract (#4480): a green run prints one summary line; a failing run
 # prints the failing check's message, or the ERR trap's "not ok - ... line N"
 # naming the failing command. Run one case with SCHED_TEST_CASE=<case> (names:
-# the sched_run_case calls below); the shared prelude always runs.
+# the sched_run_case calls below); the shared prelude always runs. The default
+# run executes partition 0; scheduler-part-*.test.sh execute partitions 1–7.
 set -E
 trap 'printf "not ok - scheduler.test.sh line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -1070,12 +1071,16 @@ tick() (
 )
 
 # Single-case filter (#4480): SCHED_TEST_CASE=<case> runs only that case and
-# prints one summary line; without it every case runs in file order. The
-# prelude above (shared fixtures, helpers, static checks) always runs.
+# prints one summary line; otherwise this partition runs its cases in file order.
+# The prelude above (shared fixtures, helpers, static checks) always runs.
 sched_case_names=""
+sched_case_index=0
 sched_run_case() {
   local name="$1"
   sched_case_names="$sched_case_names ${name//_/-}"
+  local index=$sched_case_index
+  sched_case_index=$((sched_case_index + 1))
+  if [ -z "${SCHED_TEST_CASE:-}" ] && (( index % 8 != ${SCHED_TEST_PART:-0} )); then return 0; fi
   if [ -n "${SCHED_TEST_CASE:-}" ] && [ "${SCHED_TEST_CASE//-/_}" != "$name" ]; then return 0; fi
   sched_case_$name
   if [ -n "${SCHED_TEST_CASE:-}" ]; then
@@ -2569,25 +2574,38 @@ sched_run_case stuck_worker_disposition
   echo 'not ok - scheduler.test.sh: target model policy did not select every eval stage' >&2; exit 1;
 }
 
+set_pipeline_gate_probe() {
+  local pr_sha
+  pr_sha="$(printf '%040x' 86)"
+  command jq -cn --arg sha "$pr_sha" '{units:[{id:"pr-pipeline-probe",pr:86,branch:"agent/pipeline-probe",lane:"pr",product_paths:false,stage:"ready-to-merge",approved_sha:$sha,history:[]}]}' \
+    > "$TF/supervisor/autopi/units.json"
+  printf '86\n' > "$TF/pipeline-prs"
+  echo 100 > "$TF/dead-through"
+}
+
 sched_case_gate_network() {
 new_tick_fixture gate-network
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+set_pipeline_gate_probe
 echo 'fatal: gnutls_handshake() failed: connection reset' > "$TF/failed.log"
 tick; tick
 [[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
 [[ ! -s "$TF/reverted" ]]
-command jq -e '.units | length==0' "$TF/supervisor/autopi/units.json" >/dev/null
+command jq -e '.units | length==1 and .[0].id=="pr-pipeline-probe" and .[0].stage=="ready-to-merge"' \
+  "$TF/supervisor/autopi/units.json" >/dev/null
 }
 sched_run_case gate_network
 
 sched_case_gate_suite_timeout() {
 new_tick_fixture gate-suite-timeout
 command jq '.auto_merge=true' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+set_pipeline_gate_probe
 echo '[pipeline suites] FAILED suite=engine/land-queue.test.sh exit_code=137 first_error=suite engine/land-queue.test.sh timed out after 492s' > "$TF/failed.log"
 tick; tick
 [[ "$(command grep -c '^rerun ' "$TF/actions")" == 1 ]]
 [[ ! -s "$TF/reverted" ]]
-command jq -e '.units | length==0' "$TF/supervisor/autopi/units.json" >/dev/null
+command jq -e '.units | length==1 and .[0].id=="pr-pipeline-probe" and .[0].stage=="ready-to-merge"' \
+  "$TF/supervisor/autopi/units.json" >/dev/null
 }
 sched_run_case gate_suite_timeout
 
@@ -2894,7 +2912,11 @@ printf 'NEEDS-PR: fixture touches a product path\n' > "$TF/supervisor/impl-8801.
 cat > "$TF/bin/codex" <<'SH'
 #!/usr/bin/env bash
 [[ -f "$TF/allow-dispatch" ]] || { echo 'unexpected worker dispatch' >&2; exit 97; }
-sleep 3
+# Hold the worker slot for the whole refill tick: a loaded host stretches the
+# tick past a short sleep, and the worker exiting early frees max_workers
+# capacity mid-tick (11-03 full local run). The case kills this process group
+# right after its tick assertions.
+sleep 300
 SH
 chmod +x "$TF/bin/codex"
 touch "$TF/allow-dispatch"
@@ -2995,6 +3017,9 @@ git() {
 dispatch() { dispatched+=("$1:$4"); }
 tick_prs_prime() { census_primes=$((census_primes + 1)); }
 pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
+# This suite checks scheduler behavior; family availability is covered by
+# review-family.test.sh.
+pick_review_for_unit() { PICK_MODEL=fixture-model; PICK_EFFORT=high; return 0; }
 footprint_room() { return 0; }
 unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
 verify_handoff_delivery() { return 0; }
@@ -3086,6 +3111,7 @@ tick_prs_prime() { :; }
 tick_pr_base() { printf 'main\n'; }
 dispatch() { dispatched+=("$1:$4"); }
 pick() { PICK_MODEL=fixture-model; PICK_EFFORT=high; }
+pick_review_for_unit() { PICK_MODEL=fixture-model; PICK_EFFORT=high; return 0; }
 unit_review_target() { printf '%s %s' 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567; }
 verify_handoff_delivery() { return 0; }
 ensure_clone() { printf '%s' "$TF/clone"; }
@@ -3281,7 +3307,9 @@ sched_case_pause_phases() {
   done
   eval "$(command sed -n '/^main() {/,/^}/p' "$scheduler")"
   main
-  [[ "$(command cat "$pause_dir/phases")" == $'harvest_workers\nreconcile_size_recuts\nself_check_harvest\nprecheck_harvest\nrecover_orphans\nrecover_orphan_landing\nlive_event_watch\nrun_release_train' ]] \
+  # #186 wraps the open-PR census prime in phase_yield_lock, so it records as a
+  # phase before the pause branch; the census itself predates that wrapping.
+  [[ "$(command cat "$pause_dir/phases")" == $'tick_prs_prime\nharvest_workers\nreconcile_size_recuts\nself_check_harvest\nprecheck_harvest\nrecover_orphans\nrecover_orphan_landing\nlive_event_watch\nrun_release_train' ]] \
     || { echo 'PAUSE must allow harvest and release train phases only' >&2; exit 1; }
 )
 }
@@ -4924,10 +4952,15 @@ sched_case_hold_handoff_delivery() {
   for mode in no-push delivered; do
     new_tick_fixture "hold-handoff-delivery-$mode"
     command jq '.max_workers=2 | .implement_cap=0 | .supervisor_arbiter.enabled=false' "$TF/supervisor/autopi/config.json" > "$TF/config.tmp"; mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
+    # #178 cross-family review: a GLM handoff author is reviewed by the codex work
+    # role, which this fixture's probed fake codex serves; the sandbox has no
+    # zcode/claude runtime, so a codex author would only wait for a reviewer.
+    mkdir -p "$TF/agent-home"; touch "$TF/agent-home/codex-probe-passed"
     sha="$(printf '%040x' 779)"; original="$sha"
     [[ "$mode" != delivered ]] || original="$(printf '%040x' 778)"
     command jq -n --arg sha "$sha" --arg original "$original" --arg integrated "$(printf '%040x' 100)" '{units:[{
       id:"issue-779",issue:779,pr:779,branch:"agent/issue-779",lane:"pr",stage:"rereview-pending",history:[],
+      implement_identity:"zcode:GLM-5.3:max",
       handoff_worktree_sha:$integrated,handoff_worktree_dirty:true,handoff_worktree_applied:true,
       handoff_integration_sha:$integrated,handoff_original_pr_head:$original,self_check_sha:$sha,self_check_status:"pass",self_check_lane:"pr",self_check_base:"main"}]}' > "$TF/supervisor/autopi/units.json"
     printf '%s\n' "$sha" > "$TF/fetched-head"
@@ -4977,11 +5010,19 @@ command jq '.max_workers=2 | .supervisor_arbiter.enabled=true | .supervisor_arbi
 mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
 # This tick exercises supervisor label transitions; its issue is already a roadmap leaf.
 export ZF_ROADMAP_TREE_CACHE_FILE="$TF/roadmap-tree.json"
-command jq -cn '{roots:[502] | map({number:.,title:("fixture issue " + tostring),state:"open",labels:[],children:[]})}' \
+command jq -cn '{roots:[{number:503,title:"fixture root",state:"open",labels:[],children:[
+  {number:501,title:"fixture issue 501",state:"open",labels:[],children:[]},
+  {number:502,title:"fixture issue 502",state:"open",labels:[],children:[]}]}]}' \
   > "$ZF_ROADMAP_TREE_CACHE_FILE"
 mkdir -p "$TF/repo/engine/prompts"
 cp "$repo_root/engine/prompts/supervisor-arbiter.md" "$TF/repo/engine/prompts/supervisor-arbiter.md"
 export ZF_EXECUTION_MODULE_DIR="$TF/repo/engine"
+# #188: an arbiter requeue first refreshes and transitions the issue, so the
+# fixture must serve that issue view and carry the leaf issue state its
+# transition guards verify (recut_children marks a non-parent leaf).
+command jq -n '{number:501,title:"arbiter fixture",body:"finish the work",labels:[{name:"ready-for-agent"}]}' > "$TF/intake-issue.json"
+mkdir -p "$TF/agent-home/state"
+command jq -n '{state:"needs-advisor",recut_children:[],recut_comment_scanned:true}' > "$TF/agent-home/state/501.json"
 printf 'VERDICT: REQUEST-CHANGES\nF1 缺回归测试\n' > "$TF/supervisor/review-501.md"
 command jq -n '{units:[
   {id:"pr-501",issue:501,pr:501,lane:"pr",branch:"agent/issue-501",stage:"supervisor-review",
