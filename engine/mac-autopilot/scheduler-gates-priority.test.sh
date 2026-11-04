@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/scheduler-gates-fixture.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/test-scheduler-gates-fixture.sh"
 fail() { echo "scheduler-gates.test.sh: $*" >&2; exit 1; }
 units() { printf '%s\n' "$1" > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"; }
 field() { jq -r --arg id "$1" ".units[] | select(.id==\$id) | $2" "$UNITS"; }
@@ -10,7 +10,7 @@ H2=2222222222222222222222222222222222222222
 M1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 M2=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 M3=cccccccccccccccccccccccccccccccccccccccc
-source "$script_dir/scheduler-gates-gh-fixture.sh"
+source "$script_dir/test-scheduler-gates-gh-fixture.sh"
 CFG_SAVED="$CFG"
 # ---------- 热修优先（统一准入，#4625 起挡板退役）：热修分支的 run 不被任何准入取消；census 不可用时不做取消决定 ----------
 ph="$fixture/prio-root"; mkdir -p "$ph/engine/night"

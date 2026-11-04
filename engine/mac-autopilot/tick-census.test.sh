@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-scratch="$(mktemp -d "$script_dir/.tick-census-test.XXXXXX")"
-trap 'rm -rf -- "$scratch"' EXIT
-export HOME="$scratch"
 source "$script_dir/test-env.sh"
+trap 'rm -rf -- "$test_env_root"' EXIT
+[[ "$test_env_root" != "$script_dir/"* ]] || { echo "tick-census.test.sh: scratch must be outside the source tree" >&2; exit 1; }
 
 fixture="$test_env_root/tick"
 mkdir -p "$fixture/repo" "$fixture/sup/autopi"
