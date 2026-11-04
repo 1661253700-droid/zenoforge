@@ -426,6 +426,9 @@ AGENT_HOME="$BLOCKED_CHECKS_HOME" AGENT_DRY_RUN=0 DRY_RUN=0 REPO=test/repo \
   bash -c '
     source "$0/lib.sh"
     ensure_state_labels() { :; }
+    # This case is about repeat escalation, not a live GitHub label read.
+    # Keep the issue unheld so CI without GH_TOKEN exercises the intended path.
+    gh() { [[ "${1:-} ${2:-}" == "issue list" ]] || return 99; return 0; }
     for transition_state in "${ALL_STATE_LABELS[@]}" on-hold tracker untracked; do
       issue_transition_state_is_valid "$transition_state" || exit 13
     done
@@ -514,9 +517,11 @@ MERGED_PR_GUARD_OUT="$(AGENT_HOME="$MERGED_PR_GUARD_HOME" REPO=test/repo bash -c
   set -euo pipefail
   source "$1/lib.sh"
   gh() { printf "%s\n" '\''{"number":796,"state":"MERGED","baseRefName":"agent/issue-795","mergeCommit":{"oid":"feature-sha"}}'\''; }
-  if conclude_merged_run 510008 796; then echo accepted; else echo rejected; fi
+  conclude_status=0
+  conclude_merged_run 510008 796 || conclude_status=$?
+  if [ "$conclude_status" -eq 0 ]; then echo accepted; else echo rejected; fi
   jq -c . "$STATE_DIR/510008.json"
-' _ "$SCRIPT_DIR")"
+' _ "$SCRIPT_DIR")" || :
 assert_eq 'feature-branch merge leaves ticket state untouched' \
   $'rejected\n{"state":"implement","attempts":1}' "$MERGED_PR_GUARD_OUT"
 rm -rf "$MERGED_PR_GUARD_HOME"

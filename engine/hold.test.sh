@@ -53,10 +53,23 @@ case "$command:$subcommand" in
         echo "fixture issue snapshot failure" >&2
         exit 1
       fi
+      snapshot="$(
       for file in "$FAKE_GH_ROOT"/issues/*.json; do
         [ -f "$file" ] || continue
+        number="$(jq -r '.number' "$file")"
+        [[ " ${FAKE_HOLD_SNAPSHOT_OMIT:-} " == *" $number "* ]] && continue
         jq -c 'select(any(.labels[]?; .name == "on-hold"))' "$file"
       done | jq -s '.'
+      )"
+      for replacement in "$FAKE_GH_ROOT"/replacement-*.json; do
+        [ -f "$replacement" ] || continue
+        number="${replacement##*/}"
+        number="${number#replacement-}"
+        number="${number%.json}"
+        cp "$replacement" "$AGENT_HOME/state/$number.json"
+        rm "$replacement"
+      done
+      printf '%s\n' "$snapshot"
     fi
     ;;
   issue:view)
@@ -162,7 +175,7 @@ reset_fixture() {
   mkdir -p "$FAKE_GH_ROOT/issues" "$AGENT_HOME/state" "$AGENT_HOME/locks" "$AGENT_HOME/night" "$ZF_WORKTREE_ROOT"
   : > "$AGENT_HOME/supervisor-inbox"
   FAKE_PR_LIST_RESPONSE='[]'
-  unset FAKE_HOLD_OPEN_PRS FAKE_HOLD_MERGED_PRS FAKE_HOLD_PR_CHECKS FAKE_HOLD_PR_CHECKS_STATUS FAKE_HOLD_ISSUE_LIST_FAILURE FAKE_HOLD_VIEW_FAILURES FAKE_GH_VIEW_FAILURES FAKE_HOLD_EDIT_FAILURE FAKE_HOLD_COMMENT_FAILURE
+  unset FAKE_HOLD_OPEN_PRS FAKE_HOLD_MERGED_PRS FAKE_HOLD_PR_CHECKS FAKE_HOLD_PR_CHECKS_STATUS FAKE_HOLD_ISSUE_LIST_FAILURE FAKE_HOLD_SNAPSHOT_OMIT FAKE_HOLD_VIEW_FAILURES FAKE_GH_VIEW_FAILURES FAKE_HOLD_EDIT_FAILURE FAKE_HOLD_COMMENT_FAILURE
   : > "$FAKE_GH_LOG"
 }
 write_issue() {
@@ -815,7 +828,7 @@ test_closed_hold_read_failure_preserves_evidence() {
   write_state 4197 '{"state":"on-hold","hold":{"holder":"manual","release_condition":"review","expires_at":"2026-10-12T00:00:00Z","stage_before":"ready-for-human"}}'
   before_issue="$(jq -S '.' "$FAKE_GH_ROOT/issues/4197.json")"
   before_state="$(jq -S '.' "$AGENT_HOME/state/4197.json")"
-  FAKE_GH_VIEW_FAILURES=4197 run_sweep
+  FAKE_HOLD_SNAPSHOT_OMIT=4197 FAKE_GH_VIEW_FAILURES=4197 run_sweep
   assert_eq "failed GitHub read fails the sweep" 1 "$LAST_STATUS"
   assert_eq "failed GitHub read leaves closed issue untouched" "$before_issue" "$(jq -S '.' "$FAKE_GH_ROOT/issues/4197.json")"
   assert_eq "failed GitHub read preserves local hold evidence" "$before_state" "$(jq -S '.' "$AGENT_HOME/state/4197.json")"
@@ -1018,9 +1031,9 @@ test_replaced_hold_is_not_released_or_notified() {
   # concurrent replacement is applied at the next helper the sweep runs after it
   # sampled the hold -- between its read and the handoff's own re-validation.
   hold_sweep_age_notice() {
-    if [ -f "$FAKE_GH_ROOT/replacement-$1.json" ]; then
-      cp "$FAKE_GH_ROOT/replacement-$1.json" "$AGENT_HOME/state/$1.json"
-      rm "$FAKE_GH_ROOT/replacement-$1.json"
+    if [ -f "$FAKE_GH_ROOT/race-replacement-$1.json" ]; then
+      cp "$FAKE_GH_ROOT/race-replacement-$1.json" "$AGENT_HOME/state/$1.json"
+      rm "$FAKE_GH_ROOT/race-replacement-$1.json"
     fi
     return 0
   }
@@ -1035,7 +1048,7 @@ test_replaced_hold_is_not_released_or_notified() {
       jq -n --arg wt "$ZF_WORKTREE_ROOT/hand-4117" '{ticket:"00000000000000004117",owner:"hand-4117",worktree:$wt,state:"queued"}' > "$AGENT_HOME/land-queue/requests/00000000000000004117.json"
     fi
     jq '.hold={holder:"supervisor",kind:"manual",release_condition:"new decision",created_at:(now|todate),expires_at:(now+86400|todate),stage_before:"ready-for-agent",durable_record:true}' \
-      "$AGENT_HOME/state/4117.json" > "$FAKE_GH_ROOT/replacement-4117.json"
+      "$AGENT_HOME/state/4117.json" > "$FAKE_GH_ROOT/race-replacement-4117.json"
     # Drive the sweep in-process so the replacement lands inside the race window
     # the override above targets; `hold.sh --sweep` runs this same function.
     if hold_sweep > "$test_env_root/hold.out" 2>&1; then LAST_STATUS=0; else LAST_STATUS=$?; cat "$test_env_root/hold.out" >&2; fi
