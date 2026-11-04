@@ -10,7 +10,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
       if [[ "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == pr ]]; then
         # Finished PR-lane worker: harvest now so its footprint frees without waiting for the slow tick.
         # At most 2 per refill: harvest_pr_implement makes GitHub calls and the REST quota is shared with releases.
-        [[ -s "$rep" ]] && ! alive "$pid" && (( pr_harvested < 2 )) || continue
+        [[ -s "$rep" ]] && ! harvest_worker_alive "$w" && (( pr_harvested < 2 )) || continue
         pr_harvested=$((pr_harvested + 1))
       else
         [[ "$wtype" == implement && "$(unit_field "$unit" '.lane // empty')" == direct-main ]] || continue
@@ -35,7 +35,7 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
     tk="$(jqf -r '.fresh // empty' <<<"$stream")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk="$(tokens_of "$lg")"
     [[ "$tk" =~ ^[0-9]+$ ]] || tk=""  # 读不出来就是 unavailable，不当 0
-    if alive "$pid"; then
+    if harvest_worker_alive "$w"; then
       started="$(jqf -r .started <<<"$w")"
       s="$(ap_iso_epoch "$started")"; [[ "$s" =~ ^[0-9]+$ ]] || s="$NOW_EPOCH"
       mins=$(( (NOW_EPOCH - s) / 60 ))
@@ -48,6 +48,19 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
         echo "[$STAMP] BURN worker pid=$pid unit=$unit tokens=$tk no-output" >> "$A/alerts/waste.md"
       fi
       continue
+    fi
+
+    # Older stdout-report workers launched their backend in a separate session,
+    # whose group was not recorded. Recheck after a grace period, even if a
+    # report has appeared: it might still be in the middle of being written.
+    if [[ "$(jqf -r '.process_group // empty' <<<"$w")" == "" && "$(jqf -r '.provider // empty' <<<"$w")" =~ ^(zcode|claude)$ ]]; then
+      s="$(jqf -r '.no_output_check_after // 0' <<<"$w")"
+      if [[ ! "$s" =~ ^[0-9]+$ ]] || (( s == 0 )); then
+        jqf --argjson pid "$pid" --arg unit "$unit" --argjson after "$((NOW_EPOCH + 300))" \
+          '(.workers[] | select(.pid==$pid and .unit==$unit and .harvested != true) | .no_output_check_after)=$after' "$WORKERS" | write_state "$WORKERS"
+        continue
+      fi
+      (( NOW_EPOCH >= s )) || continue
     fi
 
     if [[ "$local_only" != true || "$wtype" != implement || "$(unit_field "$unit" '.lane // empty')" != direct-main ]]; then
@@ -352,6 +365,26 @@ harvest_workers() { # [local-only]: fast refill completes direct-main implement 
   done < <(jqf -c '.workers[]' "$WORKERS")
 }
 
+harvest_worker_alive() { # worker JSON; group survives its leader, and zombies cannot write reports
+  local w="$1" pid pgid expected current state processes
+  pid="$(jqf -r '.pid // empty' <<<"$w")"
+  pgid="$(jqf -r '.process_group // empty' <<<"$w")"
+  expected="$(jqf -r '.pid_start // empty' <<<"$w")"
+  if [[ "$expected" =~ ^[0-9]+$ ]]; then
+    current="$(coord_process_start_ticks "$pid" 2>/dev/null || true)"
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [[ "$current" == "$expected" && -n "$state" && "$state" != Z* ]] && return 0
+    # A reused leader PID must not make an unrelated group look like this worker.
+    [[ -z "$current" || "$current" == "$expected" ]] || return 1
+  fi
+  if [[ "$pgid" =~ ^[1-9][0-9]*$ ]]; then
+    processes="$(ps -eo pgid=,stat=)" || return 0
+    awk -v pgid="$pgid" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }' <<<"$processes"
+  else
+    alive "$pid"
+  fi
+}
+
 # ---------- 1b. 孤儿自愈：worker stage 无未收割 worker 记录时回对应 pending ----------
 # 只看记录、不看进程：worker 在 harvest_workers 判活之后、本阶段之前退出（中间隔几十秒），按进程判会再派一个，
 # 下一拍又收割原报告，同一单元两条评审/修复链并行（pr-2350 01:30、热修 pr-3588 02:44）。死了未收割的记录交给下一拍收割。
@@ -389,9 +422,9 @@ stuck_worker_progress_fp() { # worker-json → "<log字节>|<HEAD>|<工作区内
   fi
   printf '%s|%s|%s' "$size" "$head" "$dirty"
 }
-stuck_worker_stop() { # pid; dispatch() gives model workers their own process group via setsid
-  local pid="$1" pgid
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+stuck_worker_stop() { # pid [recorded process group]
+  local pid="$1" pgid="${2:-}"
+  [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
   if [[ "$pgid" == "$pid" ]]; then
     kill -TERM -- "-$pid" 2>/dev/null || true
     for _ in {1..10}; do
@@ -415,16 +448,23 @@ coord_scheduler_live_worker() { # unit issue -> true if an unharvested worker fo
     worker_issue="$(jqf -r '.issue // empty' <<<"$worker")"
     if [[ -z "$worker_issue" && -n "$issue" ]]; then worker_issue="$(unit_field "$worker_unit" '.issue // empty')"; fi
     [[ "$worker_unit" == "$unit" || ( -n "$issue" && "$worker_issue" == "$issue" ) ]] || continue
+    harvest_worker_in_grace "$worker" && return 0
     pid="$(jqf -r '.pid // empty' <<<"$worker")"
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     expected_start="$(jqf -r '.pid_start // empty' <<<"$worker")"
-    if [[ "$expected_start" =~ ^[0-9]+$ ]]; then
+    if [[ "$expected_start" =~ ^[0-9]+$ && -z "$(jqf -r '.process_group // empty' <<<"$worker")" ]]; then
       current_start="$(coord_process_start_ticks "$pid" 2>/dev/null || true)"
       [[ "$current_start" == "$expected_start" ]] || continue
     fi
-    alive "$pid" && return 0
+    harvest_worker_alive "$worker" && return 0
   done < <(jqf -cr '.workers[] | select(.harvested != true and .lease_expired != true)' "$WORKERS")
   return 1
+}
+
+harvest_worker_in_grace() {
+  local after
+  after="$(jqf -r '.no_output_check_after // 0' <<<"$1")"
+  [[ "$after" =~ ^[0-9]+$ ]] && (( after > NOW_EPOCH ))
 }
 
 coord_on_expire() { # claim JSON; called under that ticket's claim lock
@@ -436,12 +476,35 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
   worker="$(jqf -c --arg owner "$owner" '[.workers[] | select(.claim_owner==$owner and .harvested!=true)][0] // empty' "$WORKERS")"
   if [[ -n "$worker" ]]; then
     pid="$(jqf -r '.pid // empty' <<<"$worker")"
+    if [[ "$(jqf -r '.process_group // empty' <<<"$worker")" == "" && "$(jqf -r '.provider // empty' <<<"$worker")" =~ ^(zcode|claude)$ ]]; then
+      if harvest_worker_alive "$worker"; then
+        say "claim expiry cannot stop untracked backend owner=$owner pid=$pid; retaining claim"
+        return 1
+      fi
+      if [[ "$(jqf -r '.no_output_check_after // 0' <<<"$worker")" == 0 ]]; then
+        jqf --arg owner "$owner" --argjson after "$((NOW_EPOCH + 300))" \
+          '(.workers[] | select(.claim_owner==$owner and .harvested != true) | .no_output_check_after)=$after' "$WORKERS" | write_state "$WORKERS" || return 1
+        say "claim expiry awaiting worker recheck owner=$owner pid=$pid; retaining claim"
+        return 1
+      fi
+    fi
   else
     pid="$(jqf -r '.pid // empty' <<<"$claim")"
   fi
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || { say "claim expiry cannot find worker pid owner=$owner; retaining claim"; return 1; }
   expected_start="$(jqf -r '.pid_start // empty' <<<"$claim")"
   [[ "$expected_start" =~ ^[0-9]+$ ]] || expected_start="$(jqf -r '.pid_start // empty' <<<"$worker")"
+  if [[ -n "$worker" ]]; then
+    if harvest_worker_in_grace "$worker"; then
+      say "claim expiry awaiting worker recheck owner=$owner pid=$pid; retaining claim"
+      return 1
+    fi
+    current_start="$(coord_process_start_ticks "$pid" 2>/dev/null || true)"
+    if [[ "$current_start" != "$expected_start" ]] && harvest_worker_alive "$worker"; then
+      say "claim expiry backend still alive owner=$owner pid=$pid; retaining claim"
+      return 1
+    fi
+  fi
   if [[ "$expected_start" =~ ^[0-9]+$ ]]; then
     current_start="$(coord_process_start_ticks "$pid" 2>/dev/null || true)"
     if [[ -n "$current_start" && "$current_start" == "$expected_start" ]]; then
@@ -479,7 +542,7 @@ coord_on_expire() { # claim JSON; called under that ticket's claim lock
 }
 
 coord_reconcile_scheduler_workers() { # renew active owners and release claims already harvested
-  local worker key owner unit pid harvested expired expected_start current_start
+  local worker key owner unit pid harvested expired
   while IFS= read -r worker; do
     key="$(jqf -r '.claim_key // empty' <<<"$worker")"
     owner="$(jqf -r '.claim_owner // empty' <<<"$worker")"
@@ -491,14 +554,8 @@ coord_reconcile_scheduler_workers() { # renew active owners and release claims a
       coord_release "$key" "$owner" >/dev/null 2>&1 || :
     elif [[ "$expired" != true ]]; then
       pid="$(jqf -r '.pid // empty' <<<"$worker")"
-      if [[ "$pid" =~ ^[0-9]+$ ]] && alive "$pid"; then
-        expected_start="$(jqf -r '.pid_start // empty' <<<"$worker")"
-        current_start="$(coord_process_start_ticks "$pid" 2>/dev/null || true)"
-        if [[ "$expected_start" =~ ^[0-9]+$ && "$current_start" != "$expected_start" ]]; then
-          say "claim not renewed unit=$unit reason=worker-pid-reused"
-        else
-          coord_renew "$key" "$owner" || say "claim renewal lost unit=$unit"
-        fi
+      if [[ "$pid" =~ ^[0-9]+$ ]] && { harvest_worker_alive "$worker" || harvest_worker_in_grace "$worker"; }; then
+        coord_renew "$key" "$owner" || say "claim renewal lost unit=$unit"
       fi
     fi
   done < <(jqf -c '.workers[]' "$WORKERS")
@@ -579,8 +636,9 @@ stuck_worker_disposition() {
   # 把所有日志静默超过 slow_worker_minutes 的活 worker 也并入同一个探测输入，走同一条停止路径。
   local slow_min widened
   slow_min="$(jqf -r '.waste.slow_worker_minutes // 60' <<<"$CFG")"
-  widened="$(jqf -r '.workers[] | select(.harvested != true and (.type | test("^(implement|repair|review|rereview|land)$"))) | [.unit, .pid, .log] | @tsv' "$WORKERS" 2>/dev/null | while IFS=$'\t' read -r wunit wpid wlog; do
-    [[ "$wpid" =~ ^[0-9]+$ ]] && alive "$wpid" || continue
+  widened="$(jqf -c '.workers[] | select(.harvested != true and (.type | test("^(implement|repair|review|rereview|land)$")))' "$WORKERS" 2>/dev/null | while IFS= read -r slow_worker; do
+    harvest_worker_alive "$slow_worker" || continue
+    wunit="$(jqf -r '.unit' <<<"$slow_worker")"; wlog="$(jqf -r '.log' <<<"$slow_worker")"
     mt="$(stat -c %Y "$SUP/$wlog" 2>/dev/null || true)"
     if [[ "$mt" =~ ^[0-9]+$ ]] && (( NOW_EPOCH - mt > slow_min * 60 )); then echo "$wunit"; fi
   done || true)"
@@ -595,7 +653,7 @@ stuck_worker_disposition() {
       continue
     fi
     pid="$(jqf -r .pid <<<"$w")"; wtype="$(jqf -r .type <<<"$w")"
-    if ! [[ "$wtype" =~ ^(implement|repair|review|rereview|land)$ ]] || ! alive "$pid"; then
+    if ! [[ "$wtype" =~ ^(implement|repair|review|rereview|land)$ ]] || ! harvest_worker_alive "$w"; then
       no_live_worker=$((no_live_worker + 1))
       continue
     fi
@@ -609,7 +667,7 @@ stuck_worker_disposition() {
         continue
       fi
       unchanged_confirmed=$((unchanged_confirmed + 1))
-      stuck_worker_stop "$pid"
+      stuck_worker_stop "$pid" "$(jqf -r '.process_group // empty' <<<"$w")"
       killed_count=$((killed_count + 1))
       jqf --argjson pid "$pid" --arg unit "$id" --arg finished "$STAMP" \
         '(.workers[] |= (if .pid==$pid and .unit==$unit and .harvested != true then (.harvested=true | .finished_at=$finished | .stuck_killed=true) else . end))' \
