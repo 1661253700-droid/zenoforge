@@ -14,6 +14,20 @@ gh_query_resource_limit_error() { # stdin: gh stderr → 0 when the query was re
   grep -q 'Resource limits for this query exceeded'
 }
 
+# gh stderr on failure, bounded: the per-path limit block repeats one message
+# ~296 times, so never re-emit raw stderr — first three distinct lines, then a
+# suppressed-line count. Single-line auth/network errors pass through verbatim.
+gh_bound_stderr_dump() { # $1: err file → stderr
+  awk '{
+    total++
+    if (seen[$0]++) next
+    if (++distinct <= 3) { print; shown++ }
+  } END {
+    if (total > shown)
+      printf "gh_bound_query_run: %d further stderr lines suppressed (per-path repeats collapse to one)\n", (total - shown) > "/dev/stderr"
+  }' "$1"
+}
+
 gh_bound_query_run() { # prefix page-size -- gh-args; exactly one arg contains the literal __ZF_QUERY_PAGE__
   local prefix="$1" page_size="$2" half="$(( $2 / 2 ))" out rc arg placeholders=0
   local -a first=() retry=()
@@ -43,7 +57,7 @@ gh_bound_query_run() { # prefix page-size -- gh-args; exactly one arg contains t
     rc=$?
   fi
   if ! gh_query_resource_limit_error < "$err_file"; then
-    cat -- "$err_file" >&2
+    gh_bound_stderr_dump "$err_file" >&2
     rm -f -- "$err_file"
     return "$rc"
   fi
@@ -58,7 +72,9 @@ gh_bound_query_run() { # prefix page-size -- gh-args; exactly one arg contains t
       "$prefix" "$page_size" "$half" >&2
     # A different failure on the retry (auth, network) must stay visible; the
     # limit message itself is not re-emitted, that spam is what this bounds.
-    gh_query_resource_limit_error < "$err_file" || cat -- "$err_file" >&2
+    # Even when the refusal message drifts out of the grep above, the dump
+    # collapses the per-path repeats instead of re-emitting the whole block.
+    gh_query_resource_limit_error < "$err_file" || gh_bound_stderr_dump "$err_file" >&2
   fi
   rm -f -- "$err_file"
   return "$rc"
@@ -117,9 +133,21 @@ roadmap_fetch_for_admission() {
 # the tree. The 2026-10-11 nested four-level query requested 1,000,000 possible nodes and GitHub refused
 # it (MAX_NODE_LIMIT_EXCEEDED), so the roadmap node read failed on every tick. 2026-11-03 recurrence:
 # the flat page itself grew past the per-query limit once the open-issue graph grew, so the page size
-# is a bound (ZF_ROADMAP_QUERY_PAGE_SIZE, default 50) and gh_bound_query_run halves it once on the
+# is a bound (ZF_ROADMAP_QUERY_PAGE_SIZE, default 20) and gh_bound_query_run halves it once on the
 # refusal. Shrinking the per-issue connections (labels/blocking/blockedBy/subIssues) instead would
 # flip the truncation flags roadmap_tree_is_valid rejects, so the page size is the only safe lever.
+#
+# Page-size arithmetic (2026-11-04): one page requests
+#   1 + pageSize × (1 issue + 30 labels + 100 blocking + 30 blockedBy + 100 subIssues)
+#   = 1 + 261 × pageSize possible nodes — 26,101 at 100, 13,051 at 50, 6,526 at 25, 5,221 at 20.
+# The classic 500,000-node cap never binds; the refusals come from GitHub's 2025-09
+# execution-resource limits, which reject large first/last values spread across multiple
+# connections and scale with the requested node potential (they are load-dependent: the
+# same pageSize=100 query served cleanly hours later). 2026-11-03/04 observed: 100 refused
+# persistently, 50 and 25 refused in the 2026-11-04 16:5xZ window, 20 served cleanly at
+# 17:02Z. gh_bound_query_run retries once at half, which only rescues the fetch when BOTH
+# sizes fit, so the default must sit inside the observed-accepted band with its half still
+# inside it: 20 → 10 is 5,221 → 2,611. ZF_ROADMAP_QUERY_PAGE_SIZE remains the lever to move it.
 roadmap_tree_graphql_query() {
   cat <<'GRAPHQL'
 query($owner:String!, $name:String!, $endCursor:String, $pageSize:Int!) {
@@ -186,8 +214,8 @@ roadmap_fetch_tree() {
   name="${repo#*/}"
   [[ -n "$owner" && -n "$name" && "$name" != "$repo" ]] || return 64
   query="$(roadmap_tree_graphql_query)" || return 1
-  page_size="${ZF_ROADMAP_QUERY_PAGE_SIZE:-50}"
-  [[ "$page_size" =~ ^[1-9][0-9]{0,3}$ ]] || page_size=50
+  page_size="${ZF_ROADMAP_QUERY_PAGE_SIZE:-20}"
+  [[ "$page_size" =~ ^[1-9][0-9]{0,3}$ ]] || page_size=20
   raw="$(gh_bound_query_run roadmap "$page_size" -- \
     timeout "${ZF_ROADMAP_QUERY_TIMEOUT_SECONDS:-60}s" gh api graphql --paginate --slurp \
     -f query="$query" -F owner="$owner" -F name="$name" -F pageSize=__ZF_QUERY_PAGE__)" || return 1
