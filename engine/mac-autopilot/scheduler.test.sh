@@ -4,7 +4,8 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 # Output contract (#4480): a green run prints one summary line; a failing run
 # prints the failing check's message, or the ERR trap's "not ok - ... line N"
 # naming the failing command. Run one case with SCHED_TEST_CASE=<case> (names:
-# the sched_run_case calls below); the shared prelude always runs.
+# the sched_run_case calls below); the shared prelude always runs. The default
+# run executes partition 0; scheduler-part-*.test.sh execute partitions 1–7.
 set -E
 trap 'printf "not ok - scheduler.test.sh line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -1070,12 +1071,16 @@ tick() (
 )
 
 # Single-case filter (#4480): SCHED_TEST_CASE=<case> runs only that case and
-# prints one summary line; without it every case runs in file order. The
-# prelude above (shared fixtures, helpers, static checks) always runs.
+# prints one summary line; otherwise this partition runs its cases in file order.
+# The prelude above (shared fixtures, helpers, static checks) always runs.
 sched_case_names=""
+sched_case_index=0
 sched_run_case() {
   local name="$1"
   sched_case_names="$sched_case_names ${name//_/-}"
+  local index=$sched_case_index
+  sched_case_index=$((sched_case_index + 1))
+  if [ -z "${SCHED_TEST_CASE:-}" ] && (( index % 8 != ${SCHED_TEST_PART:-0} )); then return 0; fi
   if [ -n "${SCHED_TEST_CASE:-}" ] && [ "${SCHED_TEST_CASE//-/_}" != "$name" ]; then return 0; fi
   sched_case_$name
   if [ -n "${SCHED_TEST_CASE:-}" ]; then

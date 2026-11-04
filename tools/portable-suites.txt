@@ -10,6 +10,13 @@ engine/execution-admission.test.sh
 engine/execution-admission-metrics.test.sh
 engine/mac-autopilot/start.test.sh
 engine/mac-autopilot/scheduler.test.sh
+engine/mac-autopilot/scheduler-part-1.test.sh
+engine/mac-autopilot/scheduler-part-2.test.sh
+engine/mac-autopilot/scheduler-part-3.test.sh
+engine/mac-autopilot/scheduler-part-4.test.sh
+engine/mac-autopilot/scheduler-part-5.test.sh
+engine/mac-autopilot/scheduler-part-6.test.sh
+engine/mac-autopilot/scheduler-part-7.test.sh
 engine/mac-autopilot/scheduler-gates.test.sh
 engine/bin/worker.test.sh
 engine/call-profile.test.sh
