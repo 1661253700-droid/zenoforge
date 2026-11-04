@@ -49,14 +49,14 @@ roadmap_fetch_for_admission() {
 
 # Large JSON (the flattened tree, open issues) reaches jq through --slurpfile: as --argjson it
 # exceeded the per-argument limit on 2026-10-11 ("Argument list too long").
-# One flat page per 100 open issues, each with its parent link and ordered child numbers; jq rebuilds
+# One bounded page per 10 open issues, each with its parent link and ordered child numbers; jq rebuilds
 # the tree. The 2026-10-11 nested four-level query requested 1,000,000 possible nodes and GitHub refused
 # it (MAX_NODE_LIMIT_EXCEEDED), so the roadmap node read failed on every tick.
 roadmap_tree_graphql_query() {
   cat <<'GRAPHQL'
 query($owner:String!, $name:String!, $endCursor:String) {
   repository(owner:$owner, name:$name) {
-    issues(first:100, after:$endCursor, states:[OPEN]) {
+    issues(first:10, after:$endCursor, states:[OPEN]) {
       nodes {
         number title state createdAt updatedAt
         labels(first:30) { nodes { name } }
