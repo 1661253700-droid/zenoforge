@@ -74,10 +74,21 @@ record_advisor_lease_decision() {
     "$(date -u +%Y%m%dT%H%M%SZ)" "$N" "$outcome" >&2
 }
 cleanup() {
+  # Capture the exit status before any other command overwrites $?. A non-zero
+  # exit AFTER Apply started means this run's Apply failed partway (a hard
+  # issue_transition/label-write refusal, a failed notify, the atomic
+  # completion write itself) -- the verdict is still stored as pending, so
+  # mark it apply-failed for the scheduler's resume disposition (2026-11-04;
+  # before this, only the batch leg's in-memory gate ever saw apply failures).
+  # Exits BEFORE Apply are dispatch/reasoning failures, not apply failures.
+  local exit_rc=$?
   # unlock_fd() (lib.sh) is a safe no-op on an unset/never-acquired/already-
   # closed fd, so this runs identically whether this run got past lock
   # acquisition or not.
   [ -n "$ADVISOR_TICKET_LOCK_FD" ] && unlock_fd "$ADVISOR_TICKET_LOCK_FD"
+  if [ "$exit_rc" -ne 0 ] && [ "${ADVISOR_APPLY_REACHED:-0}" = "1" ]; then
+    advisor_record_apply_failure "$N" "run-advisor exited $exit_rc during Apply" || true
+  fi
   worktree_lifecycle_finish "$WT" "$REPO_DIR" || true
 }
 trap cleanup EXIT
@@ -926,6 +937,10 @@ if [ -z "$PENDING_VERDICT_RESULT" ]; then
 fi
 
 # --- Apply ------------------------------------------------------------------
+# From here on, a non-zero exit is an APPLY failure for the still-stored
+# pending verdict: cleanup's EXIT trap (see its own comment) marks it
+# apply_failed_at so the scheduler re-asks instead of resuming it forever.
+ADVISOR_APPLY_REACHED=1
 
 case "$EFFECTIVE_VERDICT" in
   misclassified)

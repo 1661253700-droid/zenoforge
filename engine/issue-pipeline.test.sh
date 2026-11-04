@@ -127,7 +127,7 @@ for dispatch_gate in \
   'ensure_issue_roadmap_parent_for_dispatch "$next_triage" needs-triage' \
   'ensure_issue_roadmap_parent_for_dispatch "$next_measure" ready-for-agent' \
   'ensure_issue_roadmap_parent_for_dispatch "$next_poll" needs-advisor' \
-  'ensure_issue_roadmap_parent_for_dispatch "$next_orphan" needs-advisor' \
+  'ensure_issue_roadmap_parent_for_dispatch "$next_verdict" needs-advisor' \
   'ensure_issue_roadmap_parent_for_dispatch "$n" awaiting-release'; do
   assert_eq "pipeline dispatch route has roadmap gate: $dispatch_gate" true \
     "$(grep -Fq -- "$dispatch_gate" "$PIPELINE_SRC" && echo true || echo false)"
@@ -1398,10 +1398,10 @@ assert_cond "advisor polls gate before dispatch and slot decrement" "$(awk '
   inside && /advisor_slots=\$\(\(advisor_slots - 1\)\)/ { if (gate && gate < dispatch && dispatch < NR) found=1; inside=0 }
   END { print found ? 1 : 0 }
 ' "$PIPELINE_SRC")"
-assert_cond "advisor orphan resumes gate before dispatch and slot decrement" "$(awk '
-  /^advisor_dispatch_orphan_pool\(\) \{/ { inside=1 }
+assert_cond "advisor stored-verdict resumes gate before dispatch and slot decrement" "$(awk '
+  /^advisor_dispatch_stored_verdict_pool\(\) \{/ { inside=1 }
   inside && /agent_memory_floor_allows advisor/ { gate=NR }
-  inside && /dispatch advisor "\$next_orphan"/ { dispatch=NR }
+  inside && /dispatch advisor "\$next_verdict"/ { dispatch=NR }
   inside && /advisor_slots=\$\(\(advisor_slots - 1\)\)/ { if (gate && gate < dispatch && dispatch < NR) found=1; inside=0 }
   END { print found ? 1 : 0 }
 ' "$PIPELINE_SRC")"
@@ -1423,13 +1423,21 @@ else
 fi
 if grep -qF 'dispatch_advisor_batch' <<< "$SELECTION_BODY" \
   && grep -qF 'advisor_dispatch_pending_job_pool' <<< "$SELECTION_BODY" \
-  && grep -qF 'advisor_dispatch_orphan_pool' "$PIPELINE_SRC"; then
-  echo 'ok - selector keeps batch, sent-job polling, and stored-verdict recovery paths'
+  && grep -qF 'advisor_dispatch_stored_verdict_pool' <<< "$SELECTION_BODY"; then
+  echo 'ok - selector keeps batch, sent-job polling, and the one stored-verdict resume pool'
 else
-  printf 'not ok - advisor selector is missing a required work path (batch=%s pending=%s orphan=%s)\n' \
+  printf 'not ok - advisor selector is missing a required work path (batch=%s pending=%s stored-verdict=%s)\n' \
     "$(grep -qF 'dispatch_advisor_batch' <<< "$SELECTION_BODY" && echo yes || echo no)" \
     "$(grep -qF 'advisor_dispatch_pending_job_pool' <<< "$SELECTION_BODY" && echo yes || echo no)" \
-    "$(grep -qF 'advisor_dispatch_orphan_pool' "$PIPELINE_SRC" && echo yes || echo no)"
+    "$(grep -qF 'advisor_dispatch_stored_verdict_pool' <<< "$SELECTION_BODY" && echo yes || echo no)"
+  FAILED=1
+fi
+if [ "$(grep -cF 'for next_verdict in $(advisor_pending_orphan_candidates)' "$PIPELINE_SRC")" = 1 ] \
+  && ! grep -qF 'advisor_dispatch_orphan_pool' "$PIPELINE_SRC" \
+  && ! grep -qF 'advisor_dispatch_roadmap_parent_pending_pool' "$PIPELINE_SRC"; then
+  echo 'ok - exactly one dispatch pool iterates stored-verdict candidates'
+else
+  echo 'not ok - stored-verdict candidates have zero or several owning pools'
   FAILED=1
 fi
 if grep -qF 'if stage_unit_active advisor batch; then' "$PIPELINE_SRC"; then
@@ -1438,10 +1446,10 @@ else
   echo 'not ok - batch activity probe bypasses stage_unit_active'
   FAILED=1
 fi
-if grep -qF 'dispatch advisor "$next_orphan" -E ADVISOR_RESUME_ONLY=1' "$PIPELINE_SRC"; then
-  echo 'ok - orphan recovery cannot open a new single-ticket dialogue'
+if grep -qF 'dispatch advisor "$next_verdict" -E ADVISOR_RESUME_ONLY=1' "$PIPELINE_SRC"; then
+  echo 'ok - stored-verdict recovery cannot open a new single-ticket dialogue'
 else
-  echo 'not ok - orphan recovery can open a new single-ticket dialogue'
+  echo 'not ok - stored-verdict recovery can open a new single-ticket dialogue'
   FAILED=1
 fi
 
@@ -1486,7 +1494,8 @@ run_advisor_selection() (
     echo batch-dispatch
   }
   advisor_dispatch_pending_job_pool() { echo pending-poll; }
-  advisor_dispatch_orphan_pool() { echo orphan-resume; }
+  advisor_dispatch_stored_verdict_pool() { echo stored-verdict-resume; }
+  advisor_stored_verdict_stuck_sweep() { :; }
   eval "$DECISION_BODY"
   eval "$SELECTION_BODY"
 )
@@ -1498,10 +1507,10 @@ assert_eq 'advisor caller explicitly propagates real launch failure' 1 "$ADVISOR
 assert_cond 'advisor failed caller has no completed batch claim' \
   "$([[ "$ADVISOR_CALL_FAILURE_OUT" != *batch-dispatch* ]] && echo 1 || echo 0)"
 if [[ "$SINGLE_QUEUE_SELECTION" == *'batch-dispatch'* ]] \
-  && [[ "$SINGLE_QUEUE_SELECTION" != *'orphan-resume'* ]]; then
-  echo 'ok - one fresh question starts a batch dialogue'
+  && [[ "$SINGLE_QUEUE_SELECTION" == *'stored-verdict-resume'* ]]; then
+  echo 'ok - one fresh question resumes stored verdicts first, then starts a batch dialogue'
 else
-  echo 'not ok - one fresh question does not start a batch dialogue'
+  echo 'not ok - one fresh question does not run both stored-verdict resume and the batch dialogue'
   FAILED=1
 fi
 
@@ -1536,12 +1545,12 @@ assert_eq "live pending decision names blocking issue" \
   "1539" "$(jq -r '.object' <<< "$LIVE_PENDING_RECORD")"
 
 NO_QUESTION_SELECTION="$(run_advisor_selection '' '' 0 0 2>&1)"
-assert_contains "orphan recovery runs when no fresh batch queue exists" \
-  "$NO_QUESTION_SELECTION" 'orphan-resume'
+assert_contains "stored-verdict recovery runs when no fresh batch queue exists" \
+  "$NO_QUESTION_SELECTION" 'stored-verdict-resume'
 UNKNOWN_QUEUE_SELECTION="$(run_advisor_selection '' '' 0 0 1 2>&1)"
 if [[ "$UNKNOWN_QUEUE_SELECTION" != *'batch-dispatch'* ]] \
   && [[ "$UNKNOWN_QUEUE_SELECTION" != *'pending-poll'* ]] \
-  && [[ "$UNKNOWN_QUEUE_SELECTION" != *'orphan-resume'* ]]; then
+  && [[ "$UNKNOWN_QUEUE_SELECTION" != *'stored-verdict-resume'* ]]; then
   echo 'ok - unknown queue snapshot skips all advisor dispatch for this tick'
 else
   echo 'not ok - unknown queue snapshot still dispatches advisor work'
@@ -1550,7 +1559,7 @@ fi
 ACTIVE_BATCH_SELECTION="$(run_advisor_selection '' '' 1 1 2>&1)"
 if [[ "$ACTIVE_BATCH_SELECTION" != *'batch-dispatch'* ]] \
   && [[ "$ACTIVE_BATCH_SELECTION" != *'pending-poll'* ]] \
-  && [[ "$ACTIVE_BATCH_SELECTION" != *'orphan-resume'* ]]; then
+  && [[ "$ACTIVE_BATCH_SELECTION" != *'stored-verdict-resume'* ]]; then
   echo 'ok - active batch unit owns its scheduler tick'
 else
   echo 'not ok - active batch shares its tick with another advisor path'

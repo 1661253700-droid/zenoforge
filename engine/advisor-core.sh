@@ -551,6 +551,31 @@ advisor_persist_pending() {
   state_merge "$n" "$filter"
 }
 
+# advisor_record_apply_failure <n> <detail> -- stamps the CURRENT pending
+# verdict's Apply as failed (.pending_advisor_verdict.apply_failed_at), so the
+# scheduler's stored-verdict disposition (issue-pipeline.sh, 2026-11-04) can
+# refuse to resume a verdict whose own Apply already failed once and re-ask
+# the ticket instead. Recorded at the apply sites (run-advisor.sh's Apply
+# failure exits, run-advisor-batch.sh's apply_one_ruling failure loop) --
+# before 2026-11-04 a failed Apply left no marker anywhere (#5298/#5302: both
+# verdicts failed through issue_transition at 2026-11-03 19:27Z and their
+# state still showed attempts=0, no failure reason, nothing). First failure
+# only: the timestamp anchors the verdict's failure age, so repeated failures
+# of the same verdict do not slide it forward; a discarded and re-computed
+# verdict is a fresh object and records its own failure afresh. A transient
+# gh write (apply_gh_write's env-fault path) is NOT an apply failure -- the
+# verdict stays resumable and the resume age bound covers a persistent one.
+advisor_record_apply_failure() {
+  local n="$1" detail="${2:-}"
+  if state_merge "$n" 'if has("pending_advisor_verdict") and (.pending_advisor_verdict.apply_failed_at == null) then .pending_advisor_verdict.apply_failed_at = (now | todate) else . end'; then
+    echo "run-advisor: #$n -- stored verdict Apply failed and was marked apply_failed_at${detail:+ ($detail)}; it will not be resumed" >&2
+  else
+    echo "run-advisor: #$n -- could not record the failed Apply for its stored verdict${detail:+ ($detail)}" >&2
+    return 1
+  fi
+  return 0
+}
+
 # advisor_apply_comment_with_receipt <n> <effect_name> <body> <issue_json>
 # -- posts a `gh issue comment` for the CURRENT pending verdict's Apply
 # step as a tracked, reconciled side-effect instead of a bare apply_gh_

@@ -1862,6 +1862,12 @@ for line in "${RULING_LINES[@]}"; do
     APPLIED=$((APPLIED + 1))
   else
     BATCH_SELECTION_GATES["$n"]=apply-failed
+    # Mark the ticket's own state, not just this run's in-memory gate report:
+    # the scheduler's stored-verdict disposition refuses to resume a verdict
+    # whose Apply already failed (2026-11-04; #5298/#5302 failed exactly here
+    # through issue_transition and nothing recorded it, so their never-applied
+    # verdicts stayed resumable-looking forever).
+    advisor_record_apply_failure "$n" "batch apply_one_ruling failed" || true
     SKIPPED=$((SKIPPED + 1))
   fi
 done

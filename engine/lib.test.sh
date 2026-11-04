@@ -3889,34 +3889,41 @@ assert_contains "#1608: repeated quarantine edges queue one supervisor notice" \
   "$QUARANTINE_FLAP_OUT" "QUARANTINE-NOTICES:1"
 assert_contains "#1608: quarantine notice names scope and edge" \
   "$QUARANTINE_FLAP_OUT" "pipeline-quarantine scope=implement edge=open"
-# --- (b2-orphan): the pending-recovery advisor candidate source -----------
-# (2026-09-19, advisor execution locking task). No dynamic harness exists
-# for issue-pipeline.sh's own dispatch loop (systemd-run, live gh calls) --
-# same level of testing already established for this file just above
+# --- (b2-stored): the stored-verdict resume advisor candidate source -------
+# (2026-09-19, advisor execution locking task; ONE owning pool since
+# 2026-11-04 -- see issue-pipeline.sh's ownership comment). No dynamic harness
+# exists for issue-pipeline.sh's own dispatch loop (systemd-run, live gh
+# calls) -- same level of testing already established for this file just above
 # (DISPATCH_BODY/STAGE_ACTIVE_LINE, further down) and the ROUTE_TEST_HOME
 # fixture above, which instead runs the underlying primitive
 # (advisor_pending_orphan_candidates itself) directly and for real -- see
 # that function's own dedicated tests near advisor_current_brief_md's,
-# above.
+# above. advisor-stored-verdict.test.sh runs the filter+pool pair itself
+# against fixtures.
 # This recovery path only resumes an already-produced verdict; changed input
 # is returned to the batch queue by run-advisor.sh.
-ORPHAN_LOOP_BODY="$(sed -n '/^advisor_dispatch_orphan_pool() {/,/^}$/p' "$SCRIPT_DIR/issue-pipeline.sh")"
-assert_true "issue-pipeline.sh: the (b2-orphan) loop is actually present (fixture sanity check)" \
-  test -n "$ORPHAN_LOOP_BODY"
+STORED_VERDICT_LOOP_BODY="$(sed -n '/^advisor_dispatch_stored_verdict_pool() {/,/^}$/p' "$SCRIPT_DIR/issue-pipeline.sh")"
+assert_true "issue-pipeline.sh: the (b2-stored) resume pool is actually present (fixture sanity check)" \
+  test -n "$STORED_VERDICT_LOOP_BODY"
 assert_contains "...calls advisor_pending_orphan_candidates() as its candidate source" \
-  "$ORPHAN_LOOP_BODY" 'for next_orphan in $(advisor_pending_orphan_candidates)'
-assert_contains "...dedups against the SAME needs-advisor id list the ordinary loop already fetched (never a fresh gh query per orphan)" \
-  "$ORPHAN_LOOP_BODY" 'grep -qx "$next_orphan" <<< "$NEEDS_ADVISOR_IDS" && continue'
-assert_contains "...still respects is_on_hold" "$ORPHAN_LOOP_BODY" 'is_on_hold "$next_orphan" && continue'
-assert_contains "...still respects stage_unit_active(advisor)" "$ORPHAN_LOOP_BODY" 'stage_unit_active advisor "$next_orphan" && continue'
-assert_contains "...still respects stage_dispatch_allowed(advisor) and records quarantined wait" "$ORPHAN_LOOP_BODY" 'if ! stage_dispatch_allowed advisor; then'
-assert_contains "...records why the advisor rung waits" "$ORPHAN_LOOP_BODY" 'record_advisor_decision skipped quarantine'
+  "$STORED_VERDICT_LOOP_BODY" 'for next_verdict in $(advisor_pending_orphan_candidates)'
+assert_contains "...dedups against the SAME needs-advisor id list the ordinary loop already fetched (never a fresh gh query per candidate)" \
+  "$STORED_VERDICT_LOOP_BODY" 'grep -qx "$next_verdict" <<< "$NEEDS_ADVISOR_IDS" && continue'
+assert_contains "...refuses to resume a verdict past its age bound or after a failed apply, and discards it instead" \
+  "$STORED_VERDICT_LOOP_BODY" 'advisor_discard_stored_verdict "$next_verdict" "$verdict_disposition"'
+assert_contains "...still respects is_on_hold" "$STORED_VERDICT_LOOP_BODY" 'is_on_hold "$next_verdict" && continue'
+assert_contains "...still respects stage_unit_active(advisor)" "$STORED_VERDICT_LOOP_BODY" 'stage_unit_active advisor "$next_verdict" && continue'
+assert_contains "...still respects stage_dispatch_allowed(advisor) and records quarantined wait" \
+  "$STORED_VERDICT_LOOP_BODY" 'if ! stage_dispatch_allowed advisor; then'
+assert_contains "...records why the advisor rung waits" "$STORED_VERDICT_LOOP_BODY" 'record_advisor_decision skipped quarantine'
 assert_contains "...dispatches with resume-only mode, so stale input returns to the batch queue" \
-  "$ORPHAN_LOOP_BODY" 'dispatch advisor "$next_orphan" -E ADVISOR_RESUME_ONLY=1'
+  "$STORED_VERDICT_LOOP_BODY" 'dispatch advisor "$next_verdict" -E ADVISOR_RESUME_ONLY=1'
 assert_contains "...breaks out once the shared advisor_slots cap is exhausted" \
-  "$ORPHAN_LOOP_BODY" '[ "$advisor_slots" -le 0 ] && break'
+  "$STORED_VERDICT_LOOP_BODY" '[ "$advisor_slots" -gt 0 ] || break'
 assert_contains "...decrements the shared \$advisor_slots cap" \
-  "$ORPHAN_LOOP_BODY" 'advisor_slots=$((advisor_slots - 1))'
+  "$STORED_VERDICT_LOOP_BODY" 'advisor_slots=$((advisor_slots - 1))'
+assert_eq "exactly ONE pool owns stored-verdict resumes (the retired orphan + roadmap-parent-pending pair deadlocked #5298/#5302)" \
+  "1" "$(grep -cF 'for next_verdict in $(advisor_pending_orphan_candidates)' "$SCRIPT_DIR/issue-pipeline.sh" || true)"
 
 POLL_LOOP_BODY="$(sed -n '/^advisor_dispatch_pending_job_pool() {/,/^}$/p' "$SCRIPT_DIR/issue-pipeline.sh")"
 assert_true "issue-pipeline.sh: the pending-web-advisor-provider poll loop is present (fixture sanity check)" \

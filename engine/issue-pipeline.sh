@@ -365,6 +365,15 @@ ADVISOR_CAP=2
 # Every fresh advisor question uses one batch dialogue, including a one-ticket
 # queue. Existing single jobs are polled separately; no fresh single fallback.
 ADVISOR_BATCH_MIN=1
+# A stored (pending, not yet applied) advisor verdict is only resumed while it
+# is younger than this bound; an older one is discarded and re-asked fresh, so
+# a verdict that keeps failing to apply can never park a ticket forever.
+# Operators tune this the same way as BLOCKING_PR_STALE_SECONDS below.
+ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS="${ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS:-$((12 * 60 * 60))}"
+# A stored verdict still unresolved at this age emits one deduplicated stuck
+# signal line -- younger than the discard bound above, so a ticket repeatedly
+# failing to complete its Apply is visible before the verdict is thrown away.
+ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS="${ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS:-$((6 * 60 * 60))}"
 # recut=1: one parent-state mutation at a time. Its author's
 # own caveat (run-recut.sh's header) is that it has been run for real exactly
 # once and proven to refuse well, not yet proven to produce a dispatchable
@@ -2459,8 +2468,12 @@ profile_mark advisor
 # way the actual implement/release legs are gated further down.
 #
 # Fresh needs-advisor tickets use the batch path below. Single-ticket polling
-# handles jobs already sent; stored roadmap-parent verdicts leave the batch
-# and resume once without another model call.
+# handles jobs already sent; a ticket carrying a resumable stored verdict --
+# still labelled needs-advisor OR with its label already moved -- leaves the
+# batch and is resumed exactly once, without another model call, by the one
+# stored-verdict pool below (2026-11-04: previously only roadmap containers
+# left the batch, so a non-container verdict was skipped by every path; see
+# the ownership comment further down).
 ADVISOR_QUEUE_READ_FAILED=0
 if ! NEEDS_ADVISOR_IDS="$(gh issue list --repo "$REPO" --limit 1000 --label needs-advisor --state open \
     --json number,createdAt,labels | jq -r --argjson lane_labels "$PIPELINE_SYSTEM_LABELS_JSON" 'sort_by([(if any(.labels[]?; .name == "focus") then 0 else 1 end), (if any(.labels[]?; .name == "priority:top") then 0 else 1 end), .createdAt]) | map(select((any(.labels[]?; .name as $label_name | ($lane_labels | index($label_name)) != null)) | not)) | .[].number')"; then
@@ -2477,6 +2490,35 @@ NEEDS_ADVISOR_IDS="$(while IFS= read -r advisor_id; do
     continue
   fi
   if roadmap_issue_is_container "$advisor_id"; then
+    roadmap_status=0
+  else
+    roadmap_status=$?
+  fi
+  if [ "$roadmap_status" -ne 0 ] && [ "$roadmap_status" -ne 1 ]; then
+    record_advisor_decision skipped roadmap-parent-query \
+      "Roadmap container state could not be verified; advisor dispatch held" "$advisor_id"
+    continue
+  fi
+  # Stored-verdict ownership (2026-11-04, #5298/#5302): a ticket carrying a
+  # stored verdict that is FRESH and has never failed its Apply leaves the
+  # fresh batch here, and advisor_dispatch_stored_verdict_pool below is the
+  # one path that dispatches it (ADVISOR_RESUME_ONLY=1, no new model call).
+  # This exemption used to cover only roadmap containers while both resume
+  # pools dedup-skipped every candidate still queued, so a NON-container that
+  # kept its needs-advisor label was skipped by every path -- silently, for as
+  # long as the batch dialogue itself stayed starved. A verdict past its
+  # resume age bound, or whose Apply already failed once, is never resumed:
+  # it is discarded (one log line) and this ticket stays queued below, so the
+  # next batch dialogue re-asks it from scratch.
+  advisor_verdict_disposition="$(advisor_stored_verdict_disposition "$advisor_id" "$(state_read "$advisor_id")")"
+  case "$advisor_verdict_disposition" in
+    resume) continue ;;
+    discard-age|discard-apply-failed)
+      advisor_discard_stored_verdict "$advisor_id" "$advisor_verdict_disposition"
+      ;;
+    none) ;;
+  esac
+  if [ "$roadmap_status" -eq 0 ]; then
     if ! issue_state="$(state_read "$advisor_id")" \
       || ! jq -e 'type == "object"' <<< "$issue_state" >/dev/null 2>&1; then
       record_advisor_decision skipped tracker-parent-state \
@@ -2487,11 +2529,6 @@ NEEDS_ADVISOR_IDS="$(while IFS= read -r advisor_id; do
       || jq -e '.state == "on-hold" or (.hold | type == "object")' <<< "$issue_state" >/dev/null 2>&1; then
       continue
     fi
-    if jq -e '.pending_advisor_verdict != null' <<< "$issue_state" >/dev/null 2>&1; then
-      # Keep the stored ruling out of the fresh batch; the orphan pool below
-      # will resume it through run-advisor.sh without another model call.
-      continue
-    fi
     if retire_tracker_parent "$advisor_id"; then
       record_advisor_decision skipped tracker-parent \
         "Roadmap parent waits on child tickets; advisor candidate retired" "$advisor_id"
@@ -2499,13 +2536,6 @@ NEEDS_ADVISOR_IDS="$(while IFS= read -r advisor_id; do
       record_advisor_decision skipped tracker-parent-route \
         "Roadmap parent could not be routed to tracker" "$advisor_id"
     fi
-    continue
-  else
-    roadmap_status=$?
-  fi
-  if [ "$roadmap_status" -ne 1 ]; then
-    record_advisor_decision skipped roadmap-parent-query \
-      "Roadmap container state could not be verified; advisor dispatch held" "$advisor_id"
     continue
   fi
   [ "$(issue_model_failure_backoff_remaining "$advisor_id")" -gt 0 ] && continue
@@ -2564,64 +2594,146 @@ advisor_dispatch_pending_job_pool() {
   done
 }
 
-# The `grep -qx` dedup against $NEEDS_ADVISOR_IDS (captured above, not a
-# fresh query) keeps an orphan recovery candidate from being handled twice if
-# it is also back in the batch queue.
-advisor_dispatch_orphan_pool() {
-  for next_orphan in $(advisor_pending_orphan_candidates); do
-    grep -qx "$next_orphan" <<< "$NEEDS_ADVISOR_IDS" && continue
-    if issue_is_tracker_parent "$next_orphan"; then continue; fi
-    if hand_agent_issue_is_live_owned "$next_orphan"; then
-      record_hand_owned_decision advisor "$next_orphan"
-      continue
-    fi
-    [ "$advisor_slots" -le 0 ] && break
-    [ "$(issue_model_failure_backoff_remaining "$next_orphan")" -gt 0 ] && continue
-    is_on_hold "$next_orphan" && continue
-    stage_unit_active advisor "$next_orphan" && continue
-    if ! stage_dispatch_allowed advisor; then
-      record_advisor_decision skipped quarantine \
-        "Advisor rung remains queued because advisor quarantine blocks dispatch: ${STAGE_DISPATCH_BLOCKING_SCOPES:-unknown scope}" "$next_orphan"
-      break
-    fi
-    ensure_issue_roadmap_parent_for_dispatch "$next_orphan" needs-advisor || continue
-    agent_memory_floor_allows advisor || break
-    if dispatch advisor "$next_orphan" -E ADVISOR_RESUME_ONLY=1; then
-      :
-    else
-      dispatch_status=$?
-      if [ "$dispatch_status" -eq 75 ]; then advisor_slots=0; break; fi
-      return "$dispatch_status"
-    fi
-    advisor_slots=$((advisor_slots - 1))
+# --- stored (pending, not yet applied) advisor verdicts: exactly one owner --
+# 2026-11-04 (#5298/#5302, both stuck ~20h live): three dispatch paths each
+# assumed another one owned a needs-advisor ticket that still carried a stored
+# verdict. The fresh-batch filter only exempted roadmap CONTAINERS ("the
+# orphan pool will resume it"); both resume pools then dedup-skipped every
+# candidate still in the batch queue (`grep -qx` against $NEEDS_ADVISOR_IDS);
+# and the batch itself only runs when it wins priority -- no in-flight
+# single-ticket jobs, a free advisor slot, no active batch unit/job. A
+# NON-container whose label never moved off needs-advisor was therefore
+# skipped by every path, silently and indefinitely, while ticks applied
+# nothing and logged no advisor-decision line for it. Exactly one path owns a
+# stored verdict now: advisor_dispatch_stored_verdict_pool below. The filter
+# decides queue membership through the disposition helpers, so "in the batch
+# queue" and "carries a resumable stored verdict" are mutually exclusive by
+# construction -- which is what makes the pool's grep dedup sound.
+
+# advisor_pending_verdict_age_seconds <state-json> -- seconds since the stored
+# verdict was computed, or nothing when it carries no parseable computed_at
+# (a legacy verdict predating the field; age checks then tie toward resume).
+advisor_pending_verdict_age_seconds() {
+  local computed_at epoch
+  computed_at="$(jq -r '.pending_advisor_verdict.computed_at // empty' <<< "$1" 2>/dev/null || true)"
+  [ -n "$computed_at" ] || return 1
+  epoch="$(agent_epoch -u "$computed_at" 2>/dev/null)" || return 1
+  echo $(( $(date +%s) - epoch ))
+}
+
+# advisor_stored_verdict_disposition <n> <state-json> -- prints "resume" when
+# the stored verdict is fresh (within ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS)
+# and its Apply has never failed; "discard-age" or "discard-apply-failed" when
+# it must NOT be resumed (past the age bound, or a prior Apply attempt already
+# failed -- .pending_advisor_verdict.apply_failed_at, recorded at the apply
+# sites in run-advisor.sh/run-advisor-batch.sh); "none" when there is no
+# stored verdict at all.
+advisor_stored_verdict_disposition() {
+  local n="$1" state_json="$2" age
+  jq -e '.pending_advisor_verdict != null' <<< "$state_json" >/dev/null 2>&1 || { printf 'none\n'; return 0; }
+  if jq -e '.pending_advisor_verdict.apply_failed_at != null' <<< "$state_json" >/dev/null 2>&1; then
+    printf 'discard-apply-failed\n'
+    return 0
+  fi
+  if age="$(advisor_pending_verdict_age_seconds "$state_json")" \
+    && [ "$age" -gt "$ADVISOR_VERDICT_RESUME_MAX_AGE_SECONDS" ]; then
+    printf 'discard-age\n'
+    return 0
+  fi
+  printf 'resume\n'
+}
+
+# advisor_discard_stored_verdict <n> <reason> -- drops the stored verdict from
+# state and emits exactly ONE line naming the issue, the verdict age, and the
+# reason. The ticket then flows through its ordinary advisor routing: a queued
+# non-container is re-asked by the next batch dialogue; a roadmap container is
+# retired to tracker, exactly as a container that never carried a verdict.
+advisor_discard_stored_verdict() {
+  local n="$1" reason="$2" age age_note
+  age="$(advisor_pending_verdict_age_seconds "$(state_read "$n")" 2>/dev/null || true)"
+  if [ -n "$age" ]; then
+    age_note="$((age / 3600))h$(( (age % 3600) / 60 ))m"
+  else
+    age_note=unknown
+  fi
+  if state_merge "$n" 'del(.pending_advisor_verdict)'; then
+    echo "issue-pipeline: advisor stored verdict discarded: issue=#$n age=$age_note reason=$reason; the ticket re-enters its ordinary advisor routing" >&2
+  else
+    echo "issue-pipeline: advisor stored verdict for #$n (age=$age_note reason=$reason) could not be discarded from state; retrying next tick" >&2
+  fi
+}
+
+# advisor_stored_verdict_stuck_sweep -- one DEDUPLICATED line per stored
+# verdict still unresolved past ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS. The
+# marker (.pending_advisor_verdict.stuck_signal_at) keeps the signal to one
+# line per verdict however many ticks it survives; a discarded or re-computed
+# verdict is a fresh object, so a NEW stuck episode signals again. Sweeps the
+# state directory directly so the signal also fires for tickets no dispatch
+# path could reach this tick (exhausted slots, quarantine, an active batch
+# unit) -- the visibility gap is exactly those tickets.
+advisor_stored_verdict_stuck_sweep() {
+  local next_stuck state_json age
+  for next_stuck in $(advisor_pending_orphan_candidates); do
+    state_json="$(state_read "$next_stuck")"
+    jq -e '.pending_advisor_verdict.stuck_signal_at == null' <<< "$state_json" >/dev/null 2>&1 || continue
+    age="$(advisor_pending_verdict_age_seconds "$state_json" 2>/dev/null || true)"
+    [ -n "$age" ] && [ "$age" -gt "$ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS" ] || continue
+    echo "issue-pipeline: advisor stored verdict stuck: issue=#$next_stuck age=$((age / 3600))h$(( (age % 3600) / 60 ))m without completing its Apply (signal threshold ${ADVISOR_VERDICT_STUCK_SIGNAL_SECONDS}s)" >&2
+    state_merge "$next_stuck" '.pending_advisor_verdict.stuck_signal_at = (now | todate)' || true
   done
 }
 
-advisor_dispatch_roadmap_parent_pending_pool() {
-  local next_parent roadmap_status
-  for next_parent in $(advisor_pending_orphan_candidates); do
-    grep -qx "$next_parent" <<< "$NEEDS_ADVISOR_IDS" && continue
-    issue_is_tracker_parent "$next_parent" && continue
-    if roadmap_issue_is_container "$next_parent"; then
-      :
+# The ONE dispatch path owning a stored verdict. Runs on every tick that has
+# a free advisor slot and no active batch unit/job, BEFORE the batch decision,
+# so resuming never waits behind batch starvation. A candidate still listed in
+# $NEEDS_ADVISOR_IDS was discarded by the filter this tick (past its age bound
+# or after a failed Apply) and belongs to the batch re-ask; the `grep -qx`
+# dedup below (captured above, not a fresh query) keeps exactly that split.
+advisor_dispatch_stored_verdict_pool() {
+  local next_verdict verdict_disposition roadmap_status
+  for next_verdict in $(advisor_pending_orphan_candidates); do
+    grep -qx "$next_verdict" <<< "$NEEDS_ADVISOR_IDS" && continue
+    if issue_is_tracker_parent "$next_verdict"; then continue; fi
+    if hand_agent_issue_is_live_owned "$next_verdict"; then
+      record_hand_owned_decision advisor "$next_verdict"
+      continue
+    fi
+    verdict_disposition="$(advisor_stored_verdict_disposition "$next_verdict" "$(state_read "$next_verdict")")"
+    case "$verdict_disposition" in
+      resume) ;;
+      discard-age|discard-apply-failed)
+        # A pool-only orphan (label already moved off needs-advisor) has no
+        # batch queue to re-ask; the discard still applies the same bound so
+        # no stored verdict outlives its freshness contract.
+        advisor_discard_stored_verdict "$next_verdict" "$verdict_disposition"
+        continue
+        ;;
+      *) continue ;;
+    esac
+    if roadmap_issue_is_container "$next_verdict"; then
+      roadmap_status=0
     else
       roadmap_status=$?
-      [ "$roadmap_status" -eq 1 ] && continue
+    fi
+    if [ "$roadmap_status" -ne 0 ] && [ "$roadmap_status" -ne 1 ]; then
       record_advisor_decision skipped roadmap-parent-query \
-        "Stored verdict remains queued because roadmap container state could not be verified" "$next_parent"
+        "Stored verdict remains queued because roadmap container state could not be verified" "$next_verdict"
       continue
     fi
     [ "$advisor_slots" -gt 0 ] || break
-    [ "$(issue_model_failure_backoff_remaining "$next_parent")" -gt 0 ] && continue
-    is_on_hold "$next_parent" && continue
-    stage_unit_active advisor "$next_parent" && continue
+    [ "$(issue_model_failure_backoff_remaining "$next_verdict")" -gt 0 ] && continue
+    is_on_hold "$next_verdict" && continue
+    stage_unit_active advisor "$next_verdict" && continue
     if ! stage_dispatch_allowed advisor; then
       record_advisor_decision skipped quarantine \
-        "Stored roadmap-parent verdict remains queued because advisor quarantine blocks dispatch: ${STAGE_DISPATCH_BLOCKING_SCOPES:-unknown scope}" "$next_parent"
+        "Stored verdict remains queued because advisor quarantine blocks dispatch: ${STAGE_DISPATCH_BLOCKING_SCOPES:-unknown scope}" "$next_verdict"
       break
     fi
+    if [ "$roadmap_status" -eq 1 ]; then
+      ensure_issue_roadmap_parent_for_dispatch "$next_verdict" needs-advisor || continue
+    fi
     agent_memory_floor_allows advisor || break
-    if dispatch advisor "$next_parent" -E ADVISOR_RESUME_ONLY=1; then
+    if dispatch advisor "$next_verdict" -E ADVISOR_RESUME_ONLY=1; then
       :
     else
       dispatch_status=$?
@@ -2644,8 +2756,11 @@ if [ "$ADVISOR_QUEUE_COUNT" -ge "$ADVISOR_BATCH_MIN" ]; then
 fi
 # One tick chooses exactly one web-advisor mode. Every fresh question, even a
 # one-ticket queue, uses one batch dialogue. Existing single jobs are polled;
-# stored orphan verdicts resume without a model call. Deferred batch members
-# lead the next batch (one dialogue asks all questions at once).
+# stored verdicts resume through their one owning pool without a model call.
+# Deferred batch members lead the next batch (one dialogue asks all questions
+# at once). The stuck sweep is not a dispatch mode: it only signals, so it
+# runs regardless of which mode this tick landed in.
+advisor_stored_verdict_stuck_sweep
 if [ "$ADVISOR_QUEUE_READ_FAILED" = "1" ]; then
   : # A failed snapshot is not an empty queue; keep unrelated pipeline legs running.
 elif [ "$ADVISOR_BATCH_UNIT_ACTIVE" = "1" ]; then
@@ -2656,7 +2771,7 @@ elif advisor_batch_job_active; then
   fi
 else
   if [ "$advisor_slots" -gt 0 ]; then
-    advisor_dispatch_roadmap_parent_pending_pool
+    advisor_dispatch_stored_verdict_pool
   fi
   if [ -n "$ADVISOR_PENDING_JOB_IDS" ] && [ "$advisor_slots" -gt 0 ]; then
     advisor_dispatch_pending_job_pool
@@ -2671,8 +2786,6 @@ else
       record_advisor_decision skipped quarantine \
         "Advisor rung remains queued because advisor quarantine blocks dispatch: $STAGE_DISPATCH_BLOCKING_SCOPES" "$NEEDS_ADVISOR_IDS"
     fi
-  elif [ "$advisor_slots" -gt 0 ]; then
-    advisor_dispatch_orphan_pool
   fi
 fi
 
