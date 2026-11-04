@@ -137,5 +137,8 @@ assert_eq 'successful placement calls the parent writer for all 93 issues' 93 "$
 assert_eq 'successful placement emits no failure warning' 0 "$(wc -l < "$test_root/placement-success.err" | tr -d '[:space:]')"
 
 query="$(roadmap_tree_graphql_query)"
-assert_eq 'roadmap issue page is bounded to ten per request' true "$(grep -Fq 'issues(first:10,' <<< "$query" && echo true || echo false)"
+# #220 generalized the #209 fixed ten-per-request page into the ZF_ROADMAP_QUERY_PAGE_SIZE
+# bound (validated numeric, halved once on the per-query resource limit): the query must page
+# through that bound instead of requesting issues in one unbounded read.
+assert_eq 'roadmap issue page is bounded per request' true "$(grep -Fq 'issues(first:$pageSize,' <<< "$query" && echo true || echo false)"
 printf '%s\n' 'roadmap-release.test.sh: PASS'

@@ -1,5 +1,69 @@
 #!/usr/bin/env bash
 
+# GitHub refuses an oversized GraphQL query with "Resource limits for this
+# query exceeded" and one errors-array entry per requested path, so a single
+# failing gh invocation printed ~296 copies of that message — every scheduler
+# tick (admission's tree read) and every incident upsert run carried the whole
+# block into loop.out / bell.log. This is the 2026-11-03 recurrence of the
+# 2026-10-11 MAX_NODE_LIMIT_EXCEEDED incident documented at
+# roadmap_tree_graphql_query(). Bounded gh reads run through gh_bound_query_run:
+# exactly one retry at half the page size on exactly that error, then one log
+# line. It lives here (not lib.sh) because pipeline-issue-upsert.sh is
+# standalone and sources only this file for it.
+gh_query_resource_limit_error() { # stdin: gh stderr → 0 when the query was refused for size
+  grep -q 'Resource limits for this query exceeded'
+}
+
+gh_bound_query_run() { # prefix page-size -- gh-args; exactly one arg contains the literal __ZF_QUERY_PAGE__
+  local prefix="$1" page_size="$2" half="$(( $2 / 2 ))" out rc arg placeholders=0
+  local -a first=() retry=()
+  shift 2
+  [[ "${1:-}" == -- ]] && shift
+  (( half >= 1 )) || half=1
+  for arg in "$@"; do
+    if [[ "$arg" == *__ZF_QUERY_PAGE__* ]]; then
+      placeholders=$((placeholders + 1))
+      first+=("${arg//__ZF_QUERY_PAGE__/$page_size}")
+      retry+=("${arg//__ZF_QUERY_PAGE__/$half}")
+    else
+      first+=("$arg"); retry+=("$arg")
+    fi
+  done
+  if (( ${#first[@]} == 0 || placeholders != 1 )); then
+    printf 'gh_bound_query_run: needs exactly one __ZF_QUERY_PAGE__ argument\n' >&2
+    return 64
+  fi
+  local err_file
+  err_file="$(mktemp)" || return 1
+  if out="$("${first[@]}" 2>"$err_file")"; then
+    printf '%s' "$out"
+    rm -f -- "$err_file"
+    return 0
+  else
+    rc=$?
+  fi
+  if ! gh_query_resource_limit_error < "$err_file"; then
+    cat -- "$err_file" >&2
+    rm -f -- "$err_file"
+    return "$rc"
+  fi
+  if out="$("${retry[@]}" 2>"$err_file")"; then
+    rc=0
+    printf '%s: gh query resource limit at page=%s; retried once at page=%s and succeeded\n' \
+      "$prefix" "$page_size" "$half" >&2
+    printf '%s' "$out"
+  else
+    rc=$?
+    printf '%s: gh query resource limit at page=%s; retried once at page=%s and failed\n' \
+      "$prefix" "$page_size" "$half" >&2
+    # A different failure on the retry (auth, network) must stay visible; the
+    # limit message itself is not re-emitted, that spam is what this bounds.
+    gh_query_resource_limit_error < "$err_file" || cat -- "$err_file" >&2
+  fi
+  rm -f -- "$err_file"
+  return "$rc"
+}
+
 roadmap_switch_value() {
   local policy="${MODEL_POLICY_FILE:-${AGENT_HOME:-${HOME:?HOME is not set}/.zenoforge}/model-policy.json}"
   jq -r 'if .switches["roadmap-order"] == true then "true" else "false" end' "$policy" 2>/dev/null || printf 'false\n'
@@ -49,14 +113,18 @@ roadmap_fetch_for_admission() {
 
 # Large JSON (the flattened tree, open issues) reaches jq through --slurpfile: as --argjson it
 # exceeded the per-argument limit on 2026-10-11 ("Argument list too long").
-# One bounded page per 10 open issues, each with its parent link and ordered child numbers; jq rebuilds
+# One flat page of open issues, each with its parent link and ordered child numbers; jq rebuilds
 # the tree. The 2026-10-11 nested four-level query requested 1,000,000 possible nodes and GitHub refused
-# it (MAX_NODE_LIMIT_EXCEEDED), so the roadmap node read failed on every tick.
+# it (MAX_NODE_LIMIT_EXCEEDED), so the roadmap node read failed on every tick. 2026-11-03 recurrence:
+# the flat page itself grew past the per-query limit once the open-issue graph grew, so the page size
+# is a bound (ZF_ROADMAP_QUERY_PAGE_SIZE, default 50) and gh_bound_query_run halves it once on the
+# refusal. Shrinking the per-issue connections (labels/blocking/blockedBy/subIssues) instead would
+# flip the truncation flags roadmap_tree_is_valid rejects, so the page size is the only safe lever.
 roadmap_tree_graphql_query() {
   cat <<'GRAPHQL'
-query($owner:String!, $name:String!, $endCursor:String) {
+query($owner:String!, $name:String!, $endCursor:String, $pageSize:Int!) {
   repository(owner:$owner, name:$name) {
-    issues(first:10, after:$endCursor, states:[OPEN]) {
+    issues(first:$pageSize, after:$endCursor, states:[OPEN]) {
       nodes {
         number title state createdAt updatedAt
         labels(first:30) { nodes { name } }
@@ -113,13 +181,16 @@ roadmap_tree_normalize_pages() {
 }
 
 roadmap_fetch_tree() {
-  local cache_file="$1" repo="$2" owner name query raw tree tmp snapshot
+  local cache_file="$1" repo="$2" owner name query raw tree tmp snapshot page_size
   owner="${repo%%/*}"
   name="${repo#*/}"
   [[ -n "$owner" && -n "$name" && "$name" != "$repo" ]] || return 64
   query="$(roadmap_tree_graphql_query)" || return 1
-  raw="$(timeout "${ZF_ROADMAP_QUERY_TIMEOUT_SECONDS:-60}s" gh api graphql --paginate --slurp \
-    -f query="$query" -F owner="$owner" -F name="$name")" || return 1
+  page_size="${ZF_ROADMAP_QUERY_PAGE_SIZE:-50}"
+  [[ "$page_size" =~ ^[1-9][0-9]{0,3}$ ]] || page_size=50
+  raw="$(gh_bound_query_run roadmap "$page_size" -- \
+    timeout "${ZF_ROADMAP_QUERY_TIMEOUT_SECONDS:-60}s" gh api graphql --paginate --slurp \
+    -f query="$query" -F owner="$owner" -F name="$name" -F pageSize=__ZF_QUERY_PAGE__)" || return 1
   tree="$(roadmap_tree_normalize_pages "$raw")" || return 1
   roadmap_tree_is_valid "$tree" || return 1
   mkdir -p -- "$(dirname -- "$cache_file")" || return 1
