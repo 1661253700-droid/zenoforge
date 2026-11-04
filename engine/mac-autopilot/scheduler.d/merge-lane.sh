@@ -146,19 +146,22 @@ run_merge_lane() {
   merge_max="$(jqf -r '.batch_max // 4' <<<"$CFG")"
   [[ "$merge_max" =~ ^[1-9][0-9]*$ ]] || merge_max=4
   eval_sha=""; gate_run=""
-  local candidate
+  local candidate suites_gate=1
+  merge_gate_suites_active || suites_gate=0
   # 取候选链上最新一个「已完成」的 run；更新的 [skip ci] 直落提交只有在跑的 run 时不让产品合并干等它（直落频繁会饿死车道）。
   local first_eval="" first_run="" run
   detail_started=$SECONDS
-  for candidate in $(gate_eval_sha); do
-    [[ "$candidate" =~ $SHA_RE ]] || continue
-    run="$(suites_run_for "$candidate")"
-    [[ -n "$run" ]] || { [[ -z "$first_eval" ]] && first_eval="$candidate"; continue; }
-    [[ -z "$first_eval" ]] && { first_eval="$candidate"; first_run="$run"; }
-    # 被取消的 run 不是裁决（去重会取消被取代的排队 run），继续往链上找
-    if [[ "$(jqf -r '.status // empty' <<<"$run")" == completed && "$(jqf -r '.conclusion // empty' <<<"$run")" != cancelled ]]; then eval_sha="$candidate"; gate_run="$run"; break; fi
-  done
-  [[ -n "$eval_sha" ]] || { eval_sha="$first_eval"; gate_run="$first_run"; }
+  if (( suites_gate )); then
+    for candidate in $(gate_eval_sha); do
+      [[ "$candidate" =~ $SHA_RE ]] || continue
+      run="$(suites_run_for "$candidate")"
+      [[ -n "$run" ]] || { [[ -z "$first_eval" ]] && first_eval="$candidate"; continue; }
+      [[ -z "$first_eval" ]] && { first_eval="$candidate"; first_run="$run"; }
+      # 被取消的 run 不是裁决（去重会取消被取代的排队 run），继续往链上找
+      if [[ "$(jqf -r '.status // empty' <<<"$run")" == completed && "$(jqf -r '.conclusion // empty' <<<"$run")" != cancelled ]]; then eval_sha="$candidate"; gate_run="$run"; break; fi
+    done
+    [[ -n "$eval_sha" ]] || { eval_sha="$first_eval"; gate_run="$first_run"; }
+  fi
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail suite_gate_lookup=${detail_elapsed}s"
   detail_started=$SECONDS
@@ -193,20 +196,27 @@ run_merge_lane() {
     fi
   fi
   local pending_pass=0 hotpatch_pass=0
-  if [[ "$CI_CLASS" == unknown ]] && jqf -e --arg sha "$eval_sha" '
-      type=="object" and .headSha==$sha and ($sha | test("^[0-9a-f]{40}$"))
-      and (.databaseId | type=="number" and .>0 and floor==.)
-      and (.conclusion==null or .conclusion=="")
-      and (.status | IN("queued", "in_progress", "waiting", "pending", "requested"))
-    ' <<<"$gate_run" >/dev/null; then pending_pass=1; fi
-  if [[ "$CI_CLASS" == pass ]] || (( pending_pass )); then hotpatch_pass=1; fi
-  if [[ "$CI_CLASS" != pass ]] && (( ! pending_pass )); then
-    gate_note "GATE class=$CI_CLASS main=${eval_sha:-unknown} run=${CI_RUN_ID:-unknown}; $CI_REASON; merge lane held for pipeline PRs; product PRs still merge"
-    pipe_open=0
-  elif [[ "$suites" != "success" ]] && (( pipe_open )); then
-    gate_note "GATE main=${eval_sha:-unknown} run=${CI_RUN_ID:-unknown} status=$(jqf -r .status <<<"$gate_run") — pipeline PRs merge on their own checks; main CI verifies after merge"
-  elif (( pipe_open )); then
-    gate_note "GATE main=$eval_sha suites=success — merge lane open"
+  if (( ! suites_gate )); then
+    # 门禁已退役（工作流不在 origin/main 或 config 显式关闭）：不再等一个永远不会到来的 verdict，
+    # 也不再每个 main 提交刷 GATE unknown；一次性行告警后流水线 PR 与产品 PR 一样只看自己 head 的检查。
+    hotpatch_pass=1
+    gate_note "$MERGE_GATE_SUITES_NOTE"
+  else
+    if [[ "$CI_CLASS" == unknown ]] && jqf -e --arg sha "$eval_sha" '
+        type=="object" and .headSha==$sha and ($sha | test("^[0-9a-f]{40}$"))
+        and (.databaseId | type=="number" and .>0 and floor==.)
+        and (.conclusion==null or .conclusion=="")
+        and (.status | IN("queued", "in_progress", "waiting", "pending", "requested"))
+      ' <<<"$gate_run" >/dev/null; then pending_pass=1; fi
+    if [[ "$CI_CLASS" == pass ]] || (( pending_pass )); then hotpatch_pass=1; fi
+    if [[ "$CI_CLASS" != pass ]] && (( ! pending_pass )); then
+      gate_note "GATE class=$CI_CLASS main=${eval_sha:-unknown} run=${CI_RUN_ID:-unknown}; $CI_REASON; merge lane held for pipeline PRs; product PRs still merge"
+      pipe_open=0
+    elif [[ "$suites" != "success" ]] && (( pipe_open )); then
+      gate_note "GATE main=${eval_sha:-unknown} run=${CI_RUN_ID:-unknown} status=$(jqf -r .status <<<"$gate_run") — pipeline PRs merge on their own checks; main CI verifies after merge"
+    elif (( pipe_open )); then
+      gate_note "GATE main=$eval_sha suites=success — merge lane open"
+    fi
   fi
 
   # 候选的检查行取自 merge_candidates 那一次批量 gh pr list（census），不再逐个 gh pr checks；合并仍用 --match-head-commit 钉住 head。

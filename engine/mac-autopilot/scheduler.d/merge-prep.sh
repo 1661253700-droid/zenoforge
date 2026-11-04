@@ -108,7 +108,11 @@ main_red_attribution() { # sha run-id attempt；置 MAIN_RED_REVERTED（已回�
     return 0
   fi
   : > "$dir/$sha.reverted"; MAIN_RED_REVERTED=1
-  gh workflow run pipeline-suites.yml --ref main >/dev/null 2>&1 || say "main red $sha: Pipeline suites dispatch on the revert failed"
+  if merge_gate_suites_active; then
+    gh workflow run pipeline-suites.yml --ref main >/dev/null 2>&1 || say "main red $sha: Pipeline suites dispatch on the revert failed"
+  else
+    say "main red $sha: Pipeline suites dispatch skipped (gate retired for this repo); main CI verifies the revert"
+  fi
   say "main red $sha: reverted $culprit (parent passes, candidate fails $suite)"
   echo "[$STAMP] MAIN-RED-REVERTED main=$sha culprit=$culprit suite=$suite run=$run" >> "$A/alerts/gate.md"
   uid="$(jqf -r --arg c "$culprit" 'first(.units[] | select((.land_sha // "") == $c) | .id) // empty' "$UNITS")"
@@ -196,6 +200,23 @@ ci_failure_retry_status() { # exact SHA, current run, existing reservation (null
 suites_timeout_only() { # log-failed text
   grep -qE 'FAILED suite=.* timed out after' <<<"$1" || return 1
   ! grep -qE 'not ok [0-9]+ -' <<<"$1" && ! grep -E 'FAILED suite=' <<<"$1" | grep -vq 'timed out after'
+}
+
+# main-suites 门禁的仓库适用性（2026-11-04：产品仓库 PR #4860 删掉 .github/workflows/pipeline-suites.yml 后，
+# verdict 永远不会到来，门禁每个 main 提交刷一条 GATE unknown 并把流水线 PR 永久挂起）。流水线套件已随
+# 仓库迁走（Zenoforge 的 merge-pr/engine shards），这里退不掉的等待没有对应信号。merge_gate.pipeline_suites=off
+# 显式退役；auto（默认）以 origin/main 是否还有该工作流为准（与 land-direct-main 落地派发同一检查）——
+# 还有的仓库照旧门禁，没有的退役并只告警一次。origin/main 读不出来算没有退役证据，保持原门禁。
+merge_gate_suites_active() { # → 0=门禁适用本仓库；非 0=退役（MERGE_GATE_SUITES_NOTE 为一次性告警文本）
+  MERGE_GATE_SUITES_NOTE=""
+  if [[ "$(jqf -r '.merge_gate.pipeline_suites // "auto"' <<<"${CFG:-}" 2>/dev/null)" == off ]]; then
+    MERGE_GATE_SUITES_NOTE="GATE pipeline-suites retired by config (merge_gate.pipeline_suites=off); pipeline PRs merge on their own head checks, main CI verifies after merge"
+    return 1
+  fi
+  git -C "$ROOT" rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 || return 0
+  git -C "$ROOT" cat-file -e "refs/remotes/origin/main:.github/workflows/pipeline-suites.yml" 2>/dev/null && return 0
+  MERGE_GATE_SUITES_NOTE="GATE pipeline-suites retired: .github/workflows/pipeline-suites.yml absent from origin/main, no suites verdict can arrive; pipeline PRs merge on their own head checks, main CI verifies after merge; restore the workflow or set merge_gate.pipeline_suites in config if this is unexpected"
+  return 1
 }
 
 # 门禁候选：从 origin/main HEAD 往回，直到第一个非 [skip ci] 提交为止（含）。
