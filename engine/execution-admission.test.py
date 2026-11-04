@@ -592,11 +592,14 @@ try:sys.exit"""))
         def lane(name):
             ready = self.home / f"dynamic-{name}"
             personal = self.home / f"dynamic-{name}-release"
-            code = ("from pathlib import Path\nimport time\n"
+            code = ("from pathlib import Path\nimport fcntl,os,time\n"
                     f"mem=Path({str(proc / 'meminfo')!r});ld=Path({str(proc / 'loadavg')!r})\n"
                     "def shift(kb,load):\n"
-                    " cur=int(mem.read_text().split()[1]);mem.write_text(f'MemAvailable: {cur+kb} kB\\n')\n"
-                    " l1=float(ld.read_text().split()[0]);ld.write_text(f'{l1+load} 0 0 1/2 3\\n')\n"
+                    " with (mem.parent/'lock').open('a') as lock:\n"
+                    "  fcntl.flock(lock,fcntl.LOCK_EX)\n"
+                    "  cur=int(mem.read_text().split()[1]);l1=float(ld.read_text().split()[0])\n"
+                    "  for path,data in ((mem,f'MemAvailable: {cur+kb} kB\\n'),(ld,f'{l1+load} 0 0 1/2 3\\n')):\n"
+                    "   tmp=path.with_name(f'{path.name}.{os.getpid()}');tmp.write_text(data);tmp.replace(path)\n"
                     "shift(-1572864,2)\n"
                     f"Path({str(ready)!r}).touch()\n"
                     f"while not Path({str(personal)!r}).exists():time.sleep(0.01)\n"
@@ -613,12 +616,12 @@ try:sys.exit"""))
         self.assertEqual(self.run_guard("run", "true").returncode, 75)
         # One worker exits and frees its share: the next admission passes again.
         releases[1].touch()
-        self.children[1].wait(timeout=5)
+        self.assertEqual(self.children[1].wait(timeout=5), 0)
         lane("fifth")
         for path in (releases[0], releases[2], releases[3], self.home / "dynamic-fifth-release"):
             path.touch()
-        for child in self.children[4:]:
-            child.wait(timeout=5)
+        for child in self.children:
+            self.assertEqual(child.wait(timeout=5), 0)
 
     def test_isolated_test_home_skips_host_census_only_inside_test_root(self):
         test_root = self.home / "isolated"
