@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/roadmap.sh" # gh_bound_query_run: the label reads are GraphQL and stay under the per-query limit
 repo="${ZF_GH_REPO:-${ZF_REPO:?ZF_REPO is not set}}"
 class=""
 title=""
@@ -95,7 +96,8 @@ fi
 
 # Labels are repository state. Read the current set once and create missing
 # lane/custom labels before the issue write, following issue-state.sh's label-heal pattern.
-existing_labels="$(gh label list --repo "$repo" --limit 200 --json name -q '.[].name')" || {
+existing_labels="$(gh_bound_query_run pipeline-issue-upsert 200 -- \
+  gh label list --repo "$repo" --limit __ZF_QUERY_PAGE__ --json name -q '.[].name')" || {
   echo "pipeline-issue-upsert: could not read repository labels; no issue created" >&2
   exit 1
 }
@@ -103,7 +105,8 @@ for label in "${labels[@]}"; do
   grep -qx -- "$label" <<<"$existing_labels" && continue
   if ! gh label create "$label" --repo "$repo" --color ededed \
     --description "Zenoforge pipeline issue label" >/dev/null 2>&1; then
-    existing_labels="$(gh label list --repo "$repo" --limit 200 --json name -q '.[].name')" || {
+    existing_labels="$(gh_bound_query_run pipeline-issue-upsert 200 -- \
+      gh label list --repo "$repo" --limit __ZF_QUERY_PAGE__ --json name -q '.[].name')" || {
       echo "pipeline-issue-upsert: could not verify label $label; no issue created" >&2
       exit 1
     }
