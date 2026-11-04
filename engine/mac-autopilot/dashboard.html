@@ -1180,8 +1180,6 @@ function lwGauge(label, frac, st, txt) {
 // 员工分组的唯一口径：总览卡、员工区都从这里取，不各自数。shortcut: 前端按 owner 分，数据层有 workers_by_kind 后改读它。
 const LW_GROUPS = [["pipeline","产线（做产品）"], ["opt","自进化"], ["hotfix","热修"], ["advisor","顾问"], ["release","发布"]];
 const lwGroup = w => LW_GROUPS.some(g => g[0]===w.owner) ? w.owner : "other";
-// 自我改进任务的 task 常是别的任务标题，真实名称在 tip 的第一段（如 zf-ci-waste）
-const lwName = w => w.owner==="opt" && w.tip ? zfName(String(w.tip).split(" · ")[0]) : w.task;
 function lwGrouped(items) { const m = {}; items.forEach(w => (m[lwGroup(w)] = m[lwGroup(w)] || []).push(w)); return m; }
 function livePanel(D) {
   const L = D.live_workers;
@@ -1193,7 +1191,7 @@ function livePanel(D) {
   const legend = Object.entries(OWN).map(([k,[n,c]]) => `<span class="lwl" style="--oc:${c}"><i></i>${n}</span>`).join("");
   const G = lwGrouped(L.items), mxN = (D.summary || {}).max_workers, mx = maxUse(L.items);
   const cards = L.items.length ? [...LW_GROUPS, ["other","其他"]].filter(g => (G[g[0]] || []).length).map(g =>
-    `<div class="sub" style="margin:16px 0 6px"><b>${esc(g[1])}</b>，${G[g[0]].length} 位${g[0]==="pipeline" && mxN ? `（上限 ${num(mxN)}）` : ""}</div><div class="lwgrid">${G[g[0]].map(w => lwCard(Object.assign({}, w, {task: lwName(w)}), nowS, mx)).join("")}</div>`).join("") : emptyMsg("空闲");
+    `<div class="sub" style="margin:16px 0 6px"><b>${esc(g[1])}</b>，${G[g[0]].length} 位${g[0]==="pipeline" && mxN ? `（上限 ${num(mxN)}）` : ""}</div><div class="lwgrid">${G[g[0]].map(w => lwCard(w, nowS, mx)).join("")}</div>`).join("") : emptyMsg("空闲");
   const uleg = `<span class="lwl" style="--oc:var(--steel)"><i></i>用时</span><span class="lwl" style="--oc:var(--c7)"><i></i>token</span><span class="lwl" style="--oc:var(--c5)"><i></i>流量 ↓↑</span>`;
   return panel("workers", "员工", `<div class="lwbar"><span class="lwlg"></span><span class="lwgs">${gauges}</span></div>${cards}`);
 }

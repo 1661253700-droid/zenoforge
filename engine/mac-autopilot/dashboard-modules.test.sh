@@ -192,6 +192,14 @@ const lw = renderAll("live-workers", {live_workers: {load5: 3.2, mem_avail_mb: 4
 if ((lw.match(/class="lwc /g)||[]).length !== 2 || !lw.includes("fixture title") || !lw.includes("ADR-109 cleanup") || !lw.includes("lwc s-bad") || !lw.includes("PR 7") || /现在在干活/.test(lw))
   throw new Error("overview lacks one worker card per live worker");
 if (!renderAll("live-workers-bad", {live_workers: {error: "x"}}).out.overview.includes("员工清单不可用")) throw new Error("live workers error state missing");
+// 每张自进化员工卡显示 live_workers 生产者给出的本行 task；相同 tip 不能覆盖不同任务，也不能补空 task
+const optTasks = renderAll("live-workers-opt-tasks", {live_workers: {items: [
+  {owner: "opt", task: "worker one task", tip: "Prefer Pro and fall back on exhausted advisor tiers · worker-one", steps: ["run","land"], step: 0, kind: "opt", started_epoch: 1, typical_s: 1800, health: "none"},
+  {owner: "opt", task: "worker two task", tip: "Prefer Pro and fall back on exhausted advisor tiers · worker-two", steps: ["run","land"], step: 0, kind: "opt", started_epoch: 1, typical_s: 1800, health: "none"},
+  {owner: "opt", tip: "Prefer Pro and fall back on exhausted advisor tiers · worker-three", steps: ["run","land"], step: 0, kind: "opt", started_epoch: 1, typical_s: 1800, health: "none"}
+]}}).out.overview.match(/<span class="lw-t">([^<]*)<\/span>/g).map(x => x.replace(/^<span class="lw-t">|<\/span>$/g, ""));
+if (JSON.stringify(optTasks) !== JSON.stringify(["worker one task", "worker two task", ""]))
+  throw new Error(`opt worker cards do not preserve each row's task: ${JSON.stringify(optTasks)}`);
 const fx = renderAll("factory", {factory: {archive: [
   {task: "done ticket", issue: 9, pr: 10, kind: "repair", backend: "codex", wall_s: 600, tokens: 2500000, end_epoch: 1, outcome: "ok", stage: "merged", tip: "k"},
   {task: "parked ticket", backend: "zc", wall_s: null, tokens: null, outcome: "bad", stage: "parked", tip: "k"}],
@@ -237,12 +245,12 @@ const pg = renderAll("reqs-paged", {founder_reqs: {stages: ["提出","热修生�
 const ord = [...pg.matchAll(/class="fq-w"[^>]*>([^<]+)</g)].map(m => m[1]);
 if (ord.length !== 8 || ord.slice(0, 3).join() !== "blocked-one,accept-one,main-one" || pg.includes("done-one") || !pg.includes("1 / 2") || !pg.includes('data-rp="1"'))
   throw new Error("requirements list is not paged to 8 or not sorted blocked > accept > near-done > done: " + ord.join());
-// 自动事故单标题白话化；原文留在 raw_task；自进化任务用中文名，且和产线分组显示
+// 自动事故单标题白话化；原文留在 raw_task；自进化卡片显示本行 task，且和产线分组显示
 const pt = renderAll("plain-titles", {live_workers: {items: [
   {owner: "pipeline", task: "Incident: scheduler.log: refill done live=5 secs=43 gh_calls", backend: "cx", steps: ["a"], step: 0, kind: "implement", started_epoch: 1, typical_s: 1800, health: "ok"},
   {owner: "opt", task: "unrelated title", tip: "zf-ci-waste · luna-zf-ci-waste-1.scope", backend: "cx", steps: ["a"], step: 0, kind: "opt", started_epoch: 1, typical_s: 1800, health: "none"}]}}).out.overview;
-if (!pt.includes("调度器补位耗时 43 秒") || pt.includes("refill done") || !pt.includes("减少 CI 浪费") || !pt.includes("自进化") || !pt.includes("产线"))
-  throw new Error("worker titles are not plain Chinese, or the self-evolution group is missing");
+if (!pt.includes("调度器补位耗时 43 秒") || pt.includes("refill done") || !pt.includes("unrelated title") || pt.includes("减少 CI 浪费") || !pt.includes("自进化") || !pt.includes("产线"))
+  throw new Error("worker titles are not plain Chinese, or opt cards still replace their task with the tip name");
 console.log("modules ok");
 JS
 
