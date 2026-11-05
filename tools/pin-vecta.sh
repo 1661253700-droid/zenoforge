@@ -146,8 +146,48 @@ if [[ "$live_engine_sync" != */* ]]; then
 fi
 [[ -f "$live_engine_sync" ]] || { echo "pin-vecta: live engine-sync is missing: $live_engine_sync" >&2; exit 2; }
 
-stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+# Carry VectA overrides across the engine change (vendor-branch three-way merge):
+# base = engine blob the row was made from, ours = pack copy, theirs = blob in the
+# target engine. Everything is computed in a scratch dir first, so a refusal
+# creates no worktree, branch or file.
+pack_agent_rel=".zenoforge/build/pack/scripts/agent"
 short_sha=${engine_sha:0:12}
+merge_stage=$(mktemp -d "${TMPDIR:-/tmp}/zf-pin-merge.XXXXXXXX")
+trap 'rm -rf -- "$merge_stage"' EXIT
+merged_rows="$merge_stage/rows.tsv" # path <TAB> new engine blob, rows that were merged
+: > "$merged_rows"
+merge_fail() { echo "pin-vecta: refusing pin: override $1: $2" >&2; exit 1; }
+if table_text=$(git -C "$target" show "$start_head:$overrides_rel" 2>/dev/null); then
+  while IFS=$'\t' read -r ov_path ov_base _; do
+    [[ -n "$ov_path" && "$ov_path" != '#'* ]] || continue
+    ov_new=$(git -C "$engine_repo" rev-parse --verify -q "$engine_sha:engine/$ov_path" 2>/dev/null) \
+      || merge_fail "$ov_path" "the engine at $short_sha no longer has engine/$ov_path (deleted or moved); decide by hand, nothing was merged"
+    [[ "$ov_base" != "$ov_new" ]] || continue
+    n=$(wc -l < "$merged_rows"); n=${n//[[:space:]]/}
+    git -C "$engine_repo" cat-file blob "$ov_base" > "$merge_stage/$n.base" 2>/dev/null \
+      || merge_fail "$ov_path" "base blob $ov_base from $overrides_rel is unreadable in $engine_repo"
+    git -C "$engine_repo" cat-file blob "$ov_new" > "$merge_stage/$n.theirs" 2>/dev/null \
+      || merge_fail "$ov_path" "engine blob $ov_new is unreadable in $engine_repo"
+    git -C "$target" show "$start_head:$pack_agent_rel/$ov_path" > "$merge_stage/$n.ours" 2>/dev/null \
+      || merge_fail "$ov_path" "pack copy $pack_agent_rel/$ov_path is missing at $start_head"
+    merge_rc=0
+    git merge-file -p "$merge_stage/$n.ours" "$merge_stage/$n.base" "$merge_stage/$n.theirs" \
+      > "$merge_stage/$n.merged" 2>/dev/null || merge_rc=$?
+    if ((merge_rc == 0)); then :
+    elif ((merge_rc < 128)); then
+      merge_fail "$ov_path" "three-way merge conflicts ($merge_rc hunk(s)) between the pack copy and engine ${ov_new:0:12}; resolve the pack copy by hand, nothing was merged"
+    else
+      merge_fail "$ov_path" "three-way merge failed (git merge-file exit $merge_rc)"
+    fi
+    if [[ "$ov_path" == *.sh ]]; then
+      bash -n "$merge_stage/$n.merged" 2>"$merge_stage/syntax.err" \
+        || merge_fail "$ov_path" "merged result fails bash -n: $(head -1 "$merge_stage/syntax.err"); nothing was merged"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$ov_path" "$ov_new" "$n" "$ov_base" >> "$merged_rows"
+  done <<<"$table_text"
+fi
+
+stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 branch="chore/pin-vecta-$short_sha-$stamp"
 worktree="$target/.worktrees/pin-vecta-$short_sha-$stamp"
 mkdir -p -- "$target/.worktrees"
@@ -158,6 +198,18 @@ pin_tmp="$worktree/$build_rel.tmp.$$"
 jq -c --arg engine "$engine_sha" '.engine = $engine' "$worktree/$build_rel" > "$pin_tmp"
 mv -- "$pin_tmp" "$worktree/$build_rel"
 git -C "$worktree" add -- "$build_rel"
+while IFS=$'\t' read -r ov_path ov_new n ov_base; do
+  cat -- "$merge_stage/$n.merged" > "$worktree/$pack_agent_rel/$ov_path"
+  # ENVIRON, not -v: awk -v would interpret backslash escapes in the path.
+  OV_P="$ov_path" OV_B="$ov_new" awk -F '\t' -v OFS='\t' \
+    '$1 == ENVIRON["OV_P"] { $2 = ENVIRON["OV_B"]; hit = 1 } { print } END { exit !hit }' \
+    "$worktree/$overrides_rel" > "$worktree/$overrides_rel.tmp.$$" \
+    || { echo "pin-vecta: refusing pin: override $ov_path: no row to update in $overrides_rel" >&2; exit 1; }
+  mv -- "$worktree/$overrides_rel.tmp.$$" "$worktree/$overrides_rel"
+  git -C "$worktree" add -- "$pack_agent_rel/$ov_path" "$overrides_rel"
+  printf 'pin-vecta: merged override %s base=%s -> engine=%s (clean three-way merge)\n' \
+    "$ov_path" "${ov_base:0:12}" "${ov_new:0:12}"
+done < "$merged_rows"
 if git -C "$worktree" diff --cached --quiet; then
   echo 'pin-vecta: pin produced no change' >&2
   exit 1
@@ -352,6 +404,7 @@ fi
 printf 'pin-vecta: prepared route=%s branch=%s head=%s\n' "$route" "$branch" "$head_sha"
 if ((land == 0)); then
   echo 'pin-vecta: stopped before pushing (pass --land to publish through the selected route)'
+  printf 'pin-vecta: result=prepared route=%s landed=no\n' "$route"
   exit 0
 fi
 
@@ -360,14 +413,25 @@ cd -- "$worktree"
 if [[ "$route" == land-direct-main ]]; then
   lander=${ZF_LAND_DIRECT_MAIN:-$agent_home/engine-live/land-direct-main.sh}
   [[ -f "$lander" ]] || { echo "pin-vecta: land-direct-main is missing: $lander" >&2; exit 2; }
-  run_bounded_step land bash "$lander"
+  land_rc=0
+  run_bounded_step land bash "$lander" || land_rc=$?
+  if ((land_rc != 0)); then
+    # The lander can push and then fail later (post-land dispatch), so say so instead of guessing.
+    printf 'pin-vecta: result=land-failed route=land-direct-main landed=unknown (lander exit %s; check origin/main before retrying)\n' "$land_rc"
+    exit "$land_rc"
+  fi
+  printf 'pin-vecta: result=landed route=land-direct-main landed=yes\n'
 else
   delivery_preflight="$worktree/scripts/branch-delivery-preflight.mjs"
   [[ -f "$delivery_preflight" ]] \
     || { echo "pin-vecta: branch delivery preflight is missing: $delivery_preflight" >&2; exit 2; }
   run_bounded_step delivery node "$delivery_preflight" --mode push --publish-topic
   gh_bin=${GH:-gh}
-  "$gh_bin" pr create --base main --head "$branch" \
+  pr_url=$("$gh_bin" pr create --base main --head "$branch" \
     --title "chore(engine): pin zenoforge $short_sha" \
-    --body "Pin the engine to $engine_sha. The build, check, and publish preflight passed before selecting the PR route."
+    --body "Pin the engine to $engine_sha. The build, check, and publish preflight passed before selecting the PR route.")
+  printf '%s\n' "$pr_url"
+  printf 'pin-vecta: result=pr-open route=PR landed=no pr=%s (NOT landed: the pin is live only after this PR merges)\n' "$pr_url"
+  # Exit 0 means landed. A PR is not landed, and zf-auto-pin records exit 0 as pinned, so fail closed with 75.
+  exit 75
 fi
