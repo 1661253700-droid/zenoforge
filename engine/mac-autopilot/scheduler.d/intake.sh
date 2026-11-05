@@ -128,7 +128,7 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
   skip_labels="$(issue_skip_labels)"
   mapfile -t deps < <(jqf -r '[.units[] | select(.stage=="blocked-external" and .blocked_on != null) | .blocked_on] | unique | .[]' "$UNITS")
   while IFS= read -r issue; do [[ "$issue" =~ ^[0-9]+$ ]] && issue_in_ledger["$issue"]=1; done \
-    < <(jqf -r '[.units[].issue | numbers] | unique | .[]' "$UNITS")
+    < <(jqf -r '[.units[].issue | numbers] | unique | .[]' <(units_history_doc))
   for dep in "${deps[@]}"; do
     [[ "${issue_in_ledger[$dep]:-}" == 1 ]] || deps_filtered+=("$dep")
   done
@@ -168,7 +168,7 @@ existing_handoff_candidates() {
 handoff_open_pr() { # issue → matching PR rows from this tick's single census
   local n="$1"
   [[ -n "${HANDOFF_PR_CENSUS:-}" ]] || return 1
-  jqf -c --slurpfile u "$UNITS" --arg n "$n" '
+  jqf -c --slurpfile u <(units_history_doc) --arg n "$n" '
     [.[] | . as $p
       | [($p.body // "") | match("(?i)\\b(?:fix(?:es)?|closes|resolves)[[:space:]:]+#(?<id>[0-9]+)"; "g") | .captures[0].string] as $fixes
       | [($p.body // "") | match("(?im)^[[:space:]]*[-*]?[[:space:]]*refs[[:space:]:]+#(?<id>[0-9]+)"; "g") | .captures[0].string] as $refs
@@ -372,7 +372,7 @@ register_new_issues() {
       # ownership from an old hold snapshot.
       known_prs="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '
         ([.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring))) | .pr | select(type == "number")]
-          + (if ($pr | test("^[0-9]+$")) then [($pr | tonumber)] else [] end)) | unique' "$UNITS")"
+          + (if ($pr | test("^[0-9]+$")) then [($pr | tonumber)] else [] end)) | unique' <(units_history_doc))"
       known_failed=0
       while read -r pr_number; do
         if ! jqf -e --argjson pr "$pr_number" 'any(.[]; .number == $pr)' <<<"${HANDOFF_PR_CENSUS:-[]}" >/dev/null; then
@@ -443,12 +443,12 @@ register_new_issues() {
       (( state_read_status == 64 )) || return "$state_read_status"
     fi
     [[ -n "$handoff" ]] || handoff='{}'
-    existing_id="$(jqf -r --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr))] | sort_by([if ($pr != "" and ((.pr // "") | tostring) == $pr) then 0 else 1 end, if (.stage | IN("parked","supervisor-review","blocked-external","done","closed","landed","merged","wontfix","duplicate")) then 1 else 0 end]) | .[0].id // empty' "$UNITS")"
+    existing_id="$(jqf -r --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr))] | sort_by([if ($pr != "" and ((.pr // "") | tostring) == $pr) then 0 else 1 end, if (.stage | IN("parked","supervisor-review","blocked-external","done","closed","landed","merged","wontfix","duplicate")) then 1 else 0 end]) | .[0].id // empty' <(units_history_doc))"
     if [[ -n "$existing_id" ]]; then
       (( existing_only )) || continue
       [[ -n "$episode" ]] || continue
-      ids="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)) | .id]' "$UNITS")"
-      if jqf -e --argjson n "$n" --arg pr "$handoff_pr" --arg episode "$episode" 'all(.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)); .hold_handoff_episode == $episode) and ($pr == "" or any(.units[]; ((.pr // "") | tostring) == $pr))' "$UNITS" >/dev/null; then
+      ids="$(jqf -c --argjson n "$n" --arg pr "$handoff_pr" '[.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)) | .id]' <(units_history_doc))"
+      if jqf -e --argjson n "$n" --arg pr "$handoff_pr" --arg episode "$episode" 'all(.units[] | select(.issue == $n or ($pr != "" and ((.pr // "") | tostring) == $pr)); .hold_handoff_episode == $episode) and ($pr == "" or any(.units[]; ((.pr // "") | tostring) == $pr))' <(units_history_doc) >/dev/null; then
         units_update --slurpfile ids <(printf '%s' "$ids") --argjson n "$n" '.units |= map(if (.id as $id | $ids[0] | index($id)) != null then .hold_handoff_wait_issues = ((.hold_handoff_wait_issues // []) | map(select(. != $n))) | if (.hold_handoff_wait_issues | length) == 0 and .hold_handoff_lookup_pending != true then del(.hold_handoff_wait_issues, .hold_handoff_waiting) else . end else . end)'
         continue
       fi
@@ -622,8 +622,8 @@ register_new_issues() {
     else
       if [[ "$handoff_pr" =~ ^[0-9]+$ ]]; then branch="$handoff_branch"; fi
       units_update --argjson n "$n" --arg title "$title" --argjson labels "${labels:-[]}" --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --arg lane "$lane" --arg lane_policy "${lane_policy:-}" --arg branch "$branch" --arg episode "$episode" --argjson handoff "$handoff" --argjson handoff_all "$handoff_all" \
-        --arg pr "$handoff_pr" --arg acceptance "${acceptance:-}" \
-        'if any(.units[]; .issue == $n) then . else .units += [{id:("issue-"+($n|tostring)), issue:$n, title:$title, labels:$labels, stage:"implement-pending", lane:$lane, branch:$branch, task:$task, body_blocked_by:$body_blocked_by, history:[],hold_handoff_episode:$episode}
+        --arg pr "$handoff_pr" --arg acceptance "${acceptance:-}" --slurpfile history <(units_history_doc) \
+        'if any($history[0].units[]; .issue == $n) then . else .units += [{id:("issue-"+($n|tostring)), issue:$n, title:$title, labels:$labels, stage:"implement-pending", lane:$lane, branch:$branch, task:$task, body_blocked_by:$body_blocked_by, history:[],hold_handoff_episode:$episode}
           + (if $acceptance != "" then {acceptance:($acceptance | fromjson)} else {} end)
           + (if $pr != "" then {pr:($pr | tonumber),stage:"repair-pending",lane_policy:$lane_policy,repair_hint:"Read the issue comments for the ownerless hold handoff and complete the existing PR."} else {} end)
           + (if (($handoff_all.worktree_sha // "") | test("^[0-9a-f]{40}$")) then {handoff_worktree:$handoff_all.worktree,handoff_worktree_sha:$handoff_all.worktree_sha,handoff_worktree_dirty:$handoff_all.worktree_dirty} else {} end)
