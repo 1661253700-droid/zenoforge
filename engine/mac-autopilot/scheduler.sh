@@ -114,7 +114,7 @@ if [[ "${AUTOPI_TEST_LIBRARY_ONLY:-false}" != true && "${1:-}" != --views && "${
   [[ -z "$reconcile_event" ]] || say "$reconcile_event"
 fi
 CFG="$(cat "$A/config.json")"
-CODEX_QUOTA_SNAPSHOT_FILE="${CODEX_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/codex-quota.json}"
+CODEX_QUOTA_SNAPSHOT_FILE="${CODEX_QUOTA_SNAPSHOT_FILE:-${HOME:-}/.zenoforge/codex-pacing.json}"
 CODEX_PACING_WINDOW_HOURS="$(jqf -r '.codex_pacing.burn_window_hours // 6' <<<"$CFG")"
 CODEX_PACING_MAX_AGE_SECONDS="$(jqf -r '.codex_pacing.max_age_seconds // 900' <<<"$CFG")"
 CODEX_PACING_THRESHOLD_PERCENT="$(jqf -r '.codex_pacing.projection_threshold_percent // 100' <<<"$CFG")"

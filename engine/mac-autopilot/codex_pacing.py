@@ -252,7 +252,7 @@ def should_hold_dispatch(decision, unit, provider):
 def _write_snapshot(path, snapshot):
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".codex-quota.", dir=parent, text=True)
+    fd, temporary = tempfile.mkstemp(prefix=".codex-pacing.", dir=parent, text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as output:
             json.dump(snapshot, output, separators=(",", ":"), sort_keys=True)
