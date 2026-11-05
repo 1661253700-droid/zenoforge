@@ -530,8 +530,8 @@ cleanup() {
   for n in "${!ADVISOR_TICKET_LOCK_FDS[@]}"; do
     unlock_fd "${ADVISOR_TICKET_LOCK_FDS[$n]}"
   done
-  [ -n "$BATCH_LOCK_FD" ] && unlock_fd "$BATCH_LOCK_FD"
   worktree_lifecycle_finish "$WT" "$REPO_DIR" || true
+  advisor_batch_chain_handover "$LOG_DIR/$ADVISOR_TICK_ID.result.json"
 }
 trap cleanup EXIT
 
@@ -545,7 +545,7 @@ release_ticket_lock() {
 
 ensure_state_labels
 
-if ! try_lock_nonblocking "$(advisor_batch_lock_file)" BATCH_LOCK_FD; then
+if ! advisor_batch_lock_acquire; then
   BATCH_OUTCOME=batch-busy
   echo "run-advisor-batch: another batch wrapper is already selecting or polling -- exiting cleanly" >&2
   exit 0

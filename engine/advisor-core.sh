@@ -62,6 +62,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/lib.d/advisor-plan-contract.sh"
+source "$SCRIPT_DIR/lib.d/advisor-batch-chain.sh"
 
 # advisor_plan_action <was-reasked:true|false> <ruling-json> -- keep the
 # structured-output schema and the post-provider parser on one contract.
