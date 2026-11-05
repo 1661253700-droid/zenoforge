@@ -1,6 +1,48 @@
 {
   "incidents": [
     {
+      "id": "prod-errors-516-free-text-status",
+      "date": "2026-11-06",
+      "class": "The production-error monitor assigns HTTP status codes to unrelated three-digit numbers in free-text logs.",
+      "what_happened": "Issue #3922 reported the deduplicated line `service=openclaw-litellm route= status=516 trace=none`; the raw source line was not retained. Replaying the pinned assessor showed ordinary `request count 516` text and Python `line 516` were both classified as HTTP 516, while explicit status fields and HTTP access logs were legitimate status sources.",
+      "root_cause_evidence": "Issue #3922 deduplicated output: `service=openclaw-litellm route= status=516 trace=none`. The raw source log was not retained. At the product-pinned Zenoforge source, engine/night/prod-errors-assess.py:29 PLAIN_STATUS accepts any whitespace before a 5xx and engine/night/prod-errors-assess.py:188 applies it to the entire body; the planted `request count 516` fixture produced status=516 before the fix.",
+      "classic_pattern": "Unstructured-log parsing false positive: context-free lexical extraction mistakes an incidental number for a typed HTTP status, then downstream anomaly grouping amplifies the wrong field.",
+      "best_known_solution": "Read status from structured HTTP status fields, or parse it only in a known HTTP response/access-log grammar. Do not infer a status from an arbitrary three-digit token in a message body.",
+      "lesson_id": "issue-3922-contextual-http-status-extraction",
+      "recurs_of": "prod-errors-bare-status-misparse",
+      "recurrence_difference": "The earlier parser fix rejected dotted IPs and word-prefixed UUIDs but kept a bare-whitespace branch. Numbers at the ends of ordinary count text and Python traceback locations still passed that branch.",
+      "research_sources": [
+        "https://opentelemetry.io/docs/specs/otel/logs/data-model/",
+        "https://opentelemetry.io/docs/specs/semconv/http/http-spans/",
+        "https://www.elastic.co/guide/en/ecs/8.17/ecs-http.html",
+        "https://sre.google/sre-book/effective-troubleshooting/",
+        "https://jiemingzhu.github.io/pub/pjhe_icws2017.pdf"
+      ],
+      "options_considered": [
+        "Use typed structured status fields and preserve grammar-scoped HTTP status parsing; selected because it distinguishes status from unrelated message numbers while retaining explicit HTTP evidence.",
+        "Keep scanning for any standalone three-digit 4xx/5xx number; rejected because counts and traceback line numbers satisfy the same lexical shape.",
+        "Adopt a general-purpose learned log parser; rejected for this field because known JSON keys and HTTP line grammar are sufficient and keep the status decision deterministic."
+      ],
+      "machine_checks": [
+        {
+          "command": [
+            "bash",
+            "engine/night/node-health-rules.test.sh"
+          ],
+          "expected": "exit:0",
+          "why": "CI's node-health rules suite runs the planted count and traceback fixtures, then verifies explicit status and HTTP access responses still parse.",
+          "test_file": "engine/night/prod-errors-assess.test.py"
+        }
+      ],
+      "enforcement": {
+        "level": "test",
+        "enforced_by": [
+          "engine/night/prod-errors-assess.test.py",
+          "engine/night/node-health-rules.test.sh"
+        ]
+      }
+    },
+    {
       "id": "maintenance-tail-step-starvation",
       "date": "2026-11-03",
       "class": "optional-maintenance-work-consumes-required-recovery-budget",

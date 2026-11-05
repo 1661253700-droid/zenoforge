@@ -58,6 +58,18 @@ def row(container, fields, minute="01"):
     return f"{container}\t{timestamp} {json.dumps(fields, separators=(',', ':'))}"
 
 
+def test_plain_text_numbers_are_not_http_statuses():
+    count = monitor.parse_row("service-api\tINFO request count 516")
+    traceback = monitor.parse_row('service-api\t  File "worker.py", line 516, in handle')
+    explicit = monitor.parse_row("service-api\tservice=llm status=516")
+    access = monitor.parse_row('service-api\t"POST /v1/chat/completions HTTP/1.1" 516')
+    assert count["status"] is None and not count["error"], count
+    assert traceback["status"] is None and traceback["stack_trace"], traceback
+    assert explicit["status"] == 516, explicit
+    assert access["status"] == 516, access
+    print("ok - free-text numbers stay out of HTTP status")
+
+
 def assess(raw, state, config=None):
     return monitor.assess(raw, state, now_epoch=1791720060, config=config or settings())
 
@@ -157,6 +169,7 @@ def test_rate_spike_and_state_acknowledgement():
 
 
 if __name__ == "__main__":
+    test_plain_text_numbers_are_not_http_statuses()
     test_masks_credentials_and_private_identifiers()
     test_gateway_counters_and_configured_labels()
     test_configured_ux_rules_and_container_aliases()

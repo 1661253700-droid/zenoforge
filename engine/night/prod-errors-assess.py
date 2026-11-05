@@ -26,7 +26,7 @@ NUMBER = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?(?![A-Za-z])")
 TIMESTAMP = re.compile(r"^(\d{4}-\d\d-\d\dT[^ ]+)\s+(.*)$")
 ISO_TIMESTAMP = re.compile(r"\b\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?\b", re.I)
 PLAIN_STATUS = re.compile(
-    r"(?:HTTP/\d(?:\.\d)?[\" ]+|\bstatus(?:_code)?[\"']?\s*[=: ]\s*|\s)([1-5]\d\d)(?![\w.])", re.I
+    r"(?:\bHTTP(?:/\d(?:\.\d)?)?[\" ]+|\bstatus(?:_code)?[\"']?\s*[=: ]\s*)([1-5]\d\d)(?![\w.])", re.I
 )
 ACCESS_LINE = re.compile(r'"(?P<method>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) (?P<path>/[^ "?]*)[^\"]* HTTP/')
 TRACE_ID = re.compile(r"(?i)^[a-f0-9]{32}$")
