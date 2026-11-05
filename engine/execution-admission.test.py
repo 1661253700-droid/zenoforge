@@ -100,6 +100,19 @@ class ExecutionAdmission(unittest.TestCase):
         with self.assertRaises(guard.Deferred):
             guard.resources(proc, 6144, 12, stale, 90)
 
+    def test_memory_pressure_defers_pipeline_but_not_hotfix(self):
+        proc = self.home / "pressure-proc"
+        (proc / "pressure").mkdir(parents=True)
+        (proc / "meminfo").write_text("MemAvailable: 9999999 kB\n")
+        (proc / "loadavg").write_text("1 0 0 1/2 3\n")
+        self.assertEqual(guard.resources(proc, 6144, 12)["available_mb"], 9999999 // 1024)
+        (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=9.99 avg300=0 total=1\n")
+        self.assertEqual(guard.resources(proc, 6144, 12)["memory_full_avg60"], 9.99)
+        (proc / "pressure/memory").write_text("some avg10=0 avg60=30 avg300=0 total=1\nfull avg10=0.00 avg60=10.00 avg300=0 total=1\n")
+        with self.assertRaises(guard.Deferred):
+            guard.resources(proc, 6144, 12)
+        self.assertEqual(guard.resources(proc, 6144, 12, priority="hotfix")["memory_full_avg60"], 10.0)
+
     def test_cpu_threshold_memory_and_wait_are_not_idle(self):
         proc = self.home / "cpu-resources"
         proc.mkdir()
@@ -261,8 +274,12 @@ try:sys.exit"""))
                 start.unlink(missing_ok=True)
                 (proc / "meminfo").write_text("MemAvailable: 99999999 kB\n")
                 (proc / "loadavg").write_text("0 0 0 1/2 3\n")
+                (proc / "pressure").mkdir(exist_ok=True)
+                (proc / "pressure/memory").unlink(missing_ok=True)
+                # The admitted worker sees high memory pressure: its own calls still run (expected 23).
                 code = ("from pathlib import Path;import subprocess,sys;"
                         f"p=Path({str(start)!r});before=p.read_bytes() if p.exists() else None;"
+                        f"Path({str(proc / 'pressure/memory')!r}).write_text('full avg10=50 avg60=50 avg300=0 total=1\\n');"
                         f"Path({str(proc / 'loadavg')!r}).write_text('40 0 0 1/2 3\\n');"
                         f"Path({str(proc / 'meminfo')!r}).write_text('MemAvailable: {memory} kB\\n');"
                         f"status=subprocess.call([sys.executable,{str(self.driver)!r},'run','sh','-c','exit 23']);"
