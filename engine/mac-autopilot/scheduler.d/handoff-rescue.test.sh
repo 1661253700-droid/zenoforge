@@ -50,7 +50,7 @@ refused_intact() { # what-it-is why-pattern
   before="$(snapshot)"
   if rescue_handoff_clone 70 "$wt"; then fail "$1: expected a refusal"; fi
   after="$(snapshot)"
-  [[ "$after" == "$before" ]] || fail "$1: the clone changed"
+  [[ "$after" == "$before" ]] || fail "$1: the clone changed: $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
   [[ "$RESCUE_REFUSED" == *"$2"* ]] || fail "$1: said '$RESCUE_REFUSED'"
   [[ ! -s "$fixture/state-merges" ]] || fail "$1: a start ref was recorded"
 }
@@ -107,8 +107,13 @@ rescue_handoff_clone 70 "$wt" || fail "detached HEAD refused: $RESCUE_REFUSED"
 new_clone
 printf 'dirty\n' >> "$wt/a.txt"
 real_git="$(command -v git)"
-printf '#!/usr/bin/env bash\n[[ "${3:-}" != ls-remote ]] || { echo "0000000000000000000000000000000000000001 refs/heads/x"; exit 0; }\nexec "%s" "$@"\n' "$real_git" > "$fixture/bin/git"; chmod +x "$fixture/bin/git"
+# Plays newer git, which also moves the tracking ref on a push by URL.
+printf '#!/usr/bin/env bash\n[[ "${3:-}" != ls-remote ]] || { echo "0000000000000000000000000000000000000001 refs/heads/x"; exit 0; }\nif [[ "${5:-}" == push ]]; then "%s" "$@" || exit; exec "%s" -C "$2" update-ref "refs/remotes/origin/${8#*:refs/heads/}" "${8%%%%:*}"; fi\nexec "%s" "$@"\n' "$real_git" "$real_git" "$real_git" > "$fixture/bin/git"; chmod +x "$fixture/bin/git"
 refused_intact "a read-back mismatch" "push failed"
+sed -i '/ls-remote/d' "$fixture/bin/git"
+new_clone
+printf 'dirty\n' >> "$wt/a.txt"
+STATE_MERGE_FAILS=1 refused_intact "a push proved but not recorded" "could not record"
 rm -f "$fixture/bin/git"; hash -r
 
 # The repo's pre-push hook is honoured.
