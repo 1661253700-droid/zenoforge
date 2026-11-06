@@ -153,6 +153,19 @@ SUPERVISOR_ARBITER_DAILY_MAX="$saved_daily"
 jq -e 'any(.workers[]; .unit=="pr-652")' "$WORKERS" >/dev/null || fail "old dispatches must not count against the ceiling"
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
+# A run that left the unit here holds it until head, state or ruling moves.
+jq -cn '{units:[{id:"pr-661",stage:"supervisor-review",reviewed_pr_head:"aaa",history:[]},{id:"pr-662",stage:"supervisor-review",reviewed_pr_head:"bbb",history:[]},{id:"pr-663",stage:"supervisor-review",reviewed_pr_head:"ccc",cto_rulings:["new"],history:[]}]}' > "$UNITS"
+set_unit pr-661 ".arbiter_left_mark=$(js "$(supervisor_arbiter_mark "$(jq -c '.units[0]' "$UNITS")")")"
+set_unit pr-662 '.arbiter_left_mark="aaa||0"'
+set_unit pr-663 '.arbiter_left_mark="ccc||0"'
+echo '{"workers":[]}' > "$WORKERS"
+dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .unit=="pr-661")' "$WORKERS" >/dev/null || fail "an unchanged unit must not dispatch again"
+jq -e 'any(.workers[]; .unit=="pr-662")' "$WORKERS" >/dev/null || fail "a new head must reopen arbitration"
+jq -e 'any(.workers[]; .unit=="pr-663")' "$WORKERS" >/dev/null || fail "a new ruling must reopen arbitration"
+grep -Fq 'arbiter-no-change unit=pr-661' "$AGENT_HOME/supervisor-inbox" || fail "a held unit must reach the supervisor"
+echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
+
 # ---- 回收：六个动作逐个断言对外效果 ----
 harvest_with_reply() { # unit report-body → 用一个已死 worker 回收
   local unit="$1" reply="$2"
@@ -241,8 +254,22 @@ harvest_with_reply pr-616 'ACTION: park
 REASON: 策略性搁置，等产品决策
 REJECTED: close'
 [[ "$(field pr-616 .stage)" == parked ]] || fail "park must land in parked"
+jq -e '.units[]|select(.id=="pr-616")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a decision that moved the unit must not hold it"
+
+# The #4879 shape: a stale tracker flag refuses the requeue, so the decision leaves the unit in review.
+units "$(jq -cn '{units:[{id:"pr-698",issue:698,pr:698,lane:"pr",branch:"agent/issue-698",stage:"supervisor-review",history:[{stage:"review-request-changes",result:"F1",at:"2026-10-27T00:00:00Z"},{stage:"supervisor-escalated",result:"stop-loss",at:"2026-10-27T00:01:00Z"}]}]}')"
+jq -n '{state:"on-hold",tracker_parent:true,hold:{kind:"stop-loss",holder:"scheduler-stop-loss"},recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/698.json"
+harvest_with_reply pr-698 'ACTION: requeue
+REASON: stop-loss hold reviewed, resume the approved repair
+EVIDENCE: supervisor-escalated stop-loss
+REJECTED: park（仍有可重试的修复）
+GUIDANCE: 恢复修复并提交' || :  # the scheduler runs without errexit
+[[ "$(field pr-698 .stage)" == supervisor-review ]] || fail "a refused requeue must stay in review"
+[[ -n "$(field pr-698 .arbiter_left_mark)" ]] || fail "a decision that left the unit in review must hold it"
 
 units "$(jq -cn '{units:[{id:"pr-617",issue:617,pr:617,lane:"pr",stage:"supervisor-review",history:[{stage:"supervisor-escalated",result:"superseded",at:"2026-10-27T00:00:00Z"}]}]}')"
+harvest_with_reply pr-617 'no action line'
+jq -e '.units[]|select(.id=="pr-617")|has("arbiter_left_mark")|not' "$UNITS" >/dev/null || fail "a run with no answer decided nothing and must not hold the next one"
 harvest_with_reply pr-617 'ACTION: close
 REASON: 已被 #618 取代
 REJECTED: park'
