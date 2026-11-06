@@ -436,6 +436,73 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
 [[ "$(grep -c 'cap-exhausted unit=pr-691' "$AGENT_HOME/supervisor-inbox")" == 1 ]] || fail "a held terminal park must alert exactly once"
 
+# ---- No answer: backoff, then a terminal park that an answering provider lifts ----
+no_answer() { # unit: one dead worker that left no report
+  harvest_supervisor_arbiter "$(jq -cn --arg unit "$1" '{pid:99999998,unit:$unit,type:"supervise",log:"none.log",report:("none-" + $unit + ".md"),started:"2026-10-27T00:00:00Z",model:"profile:terra"}')"
+}
+review_unit() { jq -cn --arg id "$1" '{id:$id,lane:"pr",stage:"supervisor-review",supervisor_cap_return_stage:"repair-pending",history:[]}'; }
+units "$(jq -cn --argjson a "$(review_unit pr-681)" --argjson b "$(review_unit pr-682)" '{units:[$a,$b]}')"
+rm -f "$sup/arbiter-last-answer" "$sup/arbiter-last-probe"
+no_answer pr-681
+wait_s="$(( $(field pr-681 .arbiter_retry_after) - $(date +%s) ))"
+(( wait_s > 3500 && wait_s <= 3600 )) || fail "the first no-answer must wait 1h, got ${wait_s}s"
+no_answer pr-681
+wait_s="$(( $(field pr-681 .arbiter_retry_after) - $(date +%s) ))"
+(( wait_s > 7100 && wait_s <= 7200 )) || fail "the second no-answer must wait 2h, got ${wait_s}s"
+before="$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 ZF_ENGINE_DIR="$script_dir/.." dispatch_supervisor_arbiters
+[[ "$(jq '[.workers[] | select(.unit=="pr-681" and .harvested!=true)] | length' "$WORKERS")" == 0 ]] || fail "a unit in backoff must not dispatch"
+jq '.workers[].harvested = true' "$WORKERS" > "$fixture/workers.tmp" && mv "$fixture/workers.tmp" "$WORKERS"  # pr-682 was free to run
+no_answer pr-681; no_answer pr-681
+no_answer pr-682; no_answer pr-682; no_answer pr-682; no_answer pr-682
+for unit in pr-681 pr-682; do
+  jq -e --arg id "$unit" '.units[] | select(.id==$id) | .parked_reason=="supervisor-cap-exhausted" and .cap_exhausted_by=="no-answer" and (.unpark_condition | length > 0)' "$UNITS" >/dev/null \
+    || fail "four no-answers with no other answer must wait for the provider: $unit"
+done
+[[ "$(grep -c '^.*arbiter-no-answer: runs stopped answering' "$AGENT_HOME/supervisor-inbox")" == 1 ]] || fail "an outage of many units must give one alert"
+if grep -q 'cap-exhausted unit=pr-68[12]' "$AGENT_HOME/supervisor-inbox"; then fail "an outage must not alert per unit"; fi
+
+no_answer_dispatch() {
+  SUPERVISOR_ARBITER=true SUPERVISOR_CAP_TRIAGE="${1:-true}" SUPERVISOR_ARBITER_MAX=99 ZF_ENGINE_DIR="$script_dir/.." dispatch_supervisor_arbiters
+  jq '.workers[].harvested = true' "$WORKERS" > "$fixture/workers.tmp" && mv "$fixture/workers.tmp" "$WORKERS"
+}
+waiting() { jq '[.units[] | select(.cap_exhausted_by=="no-answer")] | length' "$UNITS"; }
+no_answer_dispatch
+[[ "$(waiting)" == 2 ]] || fail "no answer yet and no probe due: the units must wait"
+
+# With cap triage off nothing can run, so the probe is not spent.
+jq '(.units[].cap_exhausted_at) |= (. - 21700)' "$UNITS" > "$fixture/units.tmp" && mv "$fixture/units.tmp" "$UNITS"
+no_answer_dispatch false
+[[ "$(waiting)" == 2 && ! -e "$sup/arbiter-last-probe" ]] || fail "cap triage off must not spend the probe"
+
+# Six hours on, one unit probes; the other stays parked.
+no_answer_dispatch
+[[ "$(waiting)" == 1 ]] || fail "one interval gives one probe, got $(waiting) waiting"
+jq -e '[.units[] | select(.cap_exhausted_by==null)][0].arbiter_no_answer == 3' "$UNITS" >/dev/null || fail "a probe with no answer must park again at once"
+
+# A run that answers anywhere lifts the rest, even in the same second as the park.
+jq --argjson t "$(supervisor_file_epoch "$sup/arbiter-last-probe")" '(.units[] | select(.cap_exhausted_by=="no-answer") | .cap_exhausted_at) = $t' "$UNITS" > "$fixture/units.tmp" && mv "$fixture/units.tmp" "$UNITS"
+touch -r "$sup/arbiter-last-probe" "$sup/arbiter-last-answer"
+no_answer_dispatch
+[[ "$(waiting)" == 0 ]] || fail "an answer must unpark every waiting unit"
+
+# Others answered during the streak: the fault is this unit's, and it does not wait for a provider.
+units "$(jq -cn --argjson a "$(review_unit pr-683)" '{units:[$a]}')"
+no_answer pr-683; no_answer pr-683; no_answer pr-683
+touch -d '+1 hour' "$sup/arbiter-last-answer"
+no_answer pr-683
+[[ "$(field pr-683 .parked_reason)" == supervisor-cap-exhausted && "$(field pr-683 .cap_exhausted_by)" != no-answer ]] \
+  || fail "a unit others answered around takes the ordinary terminal park: $(jq -c '.units[0]' "$UNITS")"
+grep -q 'cap-exhausted unit=pr-683' "$AGENT_HOME/supervisor-inbox" || fail "a unit fault must alert for that unit"
+
+# A decision ends the streak.
+units "$(jq -cn --argjson a "$(review_unit pr-684)" '{units:[$a]}')"
+no_answer pr-684
+harvest_with_reply pr-684 'ACTION: park
+REASON: 策略性搁置
+REJECTED: close'
+jq -e '.units[0] | (has("arbiter_no_answer") or has("arbiter_retry_after")) | not' "$UNITS" >/dev/null || fail "a decision must clear the streak"
+
 # A terminal park unparks only when its mark changes.
 units "$(jq -cn '{units:[{id:"pr-696",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[]}]}')"
 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
