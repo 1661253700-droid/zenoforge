@@ -5291,16 +5291,29 @@ sched_case_supervisor_cap_triage_rule_twice() {
     "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
   for attempt in $(seq 1 12); do
     tick
-    command jq -e '.units[0].stage=="parked" and .units[0].parked_reason=="supervisor-cap-founder"' \
-      "$TF/supervisor/autopi/units.json" >/dev/null && break
+    command jq -e '.units[0].supervisor_cap_retry=="spent"' "$TF/supervisor/autopi/units.json" >/dev/null && break
   done
-  command jq -e '.units[0].stage=="parked" and .units[0].parked_reason=="supervisor-cap-founder"
-    and ([.units[0].history[] | select(.stage=="supervisor-cap-rule")]|length)==1
-    and ([.units[0].history[] | select(.stage=="supervisor-cap-founder")]|length)==1' \
+  command jq -e '.units[0].supervisor_cap_retry=="spent"
+    and ([.units[0].history[] | select(.stage=="supervisor-cap-rule")]|length)==2' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
-    || { echo 'not ok - scheduler.test.sh: a second cap RULE was not sent to FOUNDER' >&2; exit 1; }
-  [[ "$(grep -c 'cap-triage-founder' "$TF/agent-home/supervisor-inbox")" == 1 ]] \
-    || { echo 'not ok - scheduler.test.sh: second cap did not post exactly one founder question' >&2; exit 1; }
+    || { echo 'not ok - scheduler.test.sh: a second cap RULE did not get its one retry' >&2; exit 1; }
+  command jq --argjson h "$(cap_triage_history)" '(.units[0].history += $h) | .units[0].stage="supervisor-review" | .units[0].hold_handoff_waiting=false' \
+    "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+  for attempt in $(seq 1 12); do
+    # The mark is #504's no-change hold on the run before this cap; a real unit lifts it with a new head or ruling.
+    command jq 'del(.units[0].arbiter_left_mark)' "$TF/supervisor/autopi/units.json" > "$TF/units.tmp" && mv "$TF/units.tmp" "$TF/supervisor/autopi/units.json"
+    tick
+    command jq -e '.units[0].parked_reason=="supervisor-cap-exhausted"' "$TF/supervisor/autopi/units.json" >/dev/null && break
+  done
+  command jq -e '.units[0].stage=="parked" and .units[0].parked_reason=="supervisor-cap-exhausted"
+    and (.units[0].unpark_condition | length > 0) and (.units[0].cap_exhausted_mark != null)
+    and ([.units[0].history[] | select(.stage=="supervisor-cap-founder")]|length)==0' \
+    "$TF/supervisor/autopi/units.json" >/dev/null \
+    || { echo 'not ok - scheduler.test.sh: a third cap did not end in a terminal park with its unpark condition' >&2; exit 1; }
+  [[ "$(grep -c 'cap-exhausted' "$TF/agent-home/supervisor-inbox")" == 1 ]] \
+    || { echo 'not ok - scheduler.test.sh: a terminal park did not send head exactly one line' >&2; exit 1; }
+  ! grep -q 'cap-triage-founder' "$TF/agent-home/supervisor-inbox" \
+    || { echo 'not ok - scheduler.test.sh: repeated caps reached the founder' >&2; exit 1; }
 }
 sched_run_case supervisor_cap_triage_rule_twice
 
@@ -5377,7 +5390,7 @@ sched_case_supervisor_cap_triage_normal_verb_reask() {
   for attempt in $(seq 1 15); do
     tick
     command jq -e '([.units[] | select(.id=="verb-requeue")][0].stage=="closed")
-      and ([.units[] | select(.id=="verb-approve")][0].parked_reason=="supervisor-cap-triage-invalid")' \
+      and ([.units[] | select(.id=="verb-approve")][0].parked_reason=="supervisor-cap-exhausted")' \
       "$TF/supervisor/autopi/units.json" >/dev/null && break
   done
   # 一次无效答案 = 一次复问，不是 park 收尾，也不是按六动作落地（复问历史先于终态，全程无 invalid-final 之外的 park）。
@@ -5385,7 +5398,7 @@ sched_case_supervisor_cap_triage_normal_verb_reask() {
     | .stage=="closed"
     and any(.history[]?; .stage=="supervisor-cap-triage-reask")
     and any(.history[]?; .stage=="supervisor-cap-close")
-    and ([.history[]? | select(.stage=="supervisor-cap-triage-invalid-final")] | length)==0
+    and ([.history[]? | select(.stage=="supervisor-cap-exhausted")] | length)==0
     and ([.history[]? | select(.stage=="supervisor-requeue" or .stage=="supervisor-approve" or .stage=="supervisor-reroute" or .stage=="supervisor-close")] | length)==0' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
     || { echo 'not ok - scheduler.test.sh: ACTION: requeue from cap triage did not trigger one re-ask instead of a park' >&2; exit 1; }
@@ -5407,17 +5420,17 @@ sched_case_supervisor_cap_triage_normal_verb_reask() {
     || { echo 'not ok - scheduler.test.sh: re-ask prompt does not name the previous invalid answer' >&2; exit 1; }
   # 第二次无效答案才 park，原因点名两次答案；其余单元同样先复问再终局 park。
   command jq -e '[.units[] | select(.id=="verb-approve")][0] | .stage=="parked"
-    and .parked_reason=="supervisor-cap-triage-invalid"
+    and .parked_reason=="supervisor-cap-exhausted"
     and (.note | contains("two invalid cap triage answers"))
     and (.note | contains("ACTION: approve"))
     and (.note | contains("ACTION: reroute"))
-    and any(.history[]?; .stage=="supervisor-cap-triage-invalid-final")' \
+    and any(.history[]?; .stage=="supervisor-cap-exhausted")' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
     || { echo 'not ok - scheduler.test.sh: two invalid answers did not park with a reason naming both' >&2; exit 1; }
   command jq -e '(.units | map(select(.id=="verb-park" or .id=="verb-close" or .id=="verb-reroute" or .id=="verb-needs-info" or .id=="verdline"))
-    | all(.stage=="parked" and .parked_reason=="supervisor-cap-triage-invalid"
+    | all(.stage=="parked" and .parked_reason=="supervisor-cap-exhausted"
       and any(.history[]?; .stage=="supervisor-cap-triage-reask")
-      and any(.history[]?; .stage=="supervisor-cap-triage-invalid-final")))' \
+      and any(.history[]?; .stage=="supervisor-cap-exhausted")))' \
     "$TF/supervisor/autopi/units.json" >/dev/null \
     || { echo 'not ok - scheduler.test.sh: every normal-arbitration verb must re-ask once before the final park' >&2; exit 1; }
   # park 收尾是终局：后续 tick 不再为该单元派终局裁决 worker。

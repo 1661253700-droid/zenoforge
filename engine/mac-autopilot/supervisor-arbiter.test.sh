@@ -379,11 +379,74 @@ dispatch_supervisor_arbiters
 [[ "$(field pr-624 .stage)" == supervisor-review ]] || fail "gate off must keep the current waiting behavior"
 [[ "$(jq '[.workers[] | select(.type=="supervise")] | length' "$WORKERS")" == "$before" ]] || fail "gate off must not dispatch an arbitration worker"
 
-# A founder question ends cap triage even when old history still shows a budget park; sweeping it again re-asks forever.
+# A founder question that names a fact ends cap triage even when old history still shows a budget park; sweeping it again re-asks forever.
 budget_park='{"stage":"supervisor-budget-park","result":"arbitration budget exhausted for x"}'
 supervisor_cap_parked_unit "{\"stage\":\"parked\",\"history\":[$budget_park]}" || fail "a legacy budget park must stay swept"
-if supervisor_cap_parked_unit "{\"stage\":\"parked\",\"parked_reason\":\"supervisor-cap-founder\",\"history\":[$budget_park]}"; then
-  fail "a founder park must not be swept back into cap triage"
+if supervisor_cap_parked_unit "{\"stage\":\"parked\",\"parked_reason\":\"supervisor-cap-founder\",\"supervisor_cap_question\":\"这批单据要对接哪个外部系统？\",\"history\":[$budget_park]}"; then
+  fail "a founder park with a real question must not be swept back into cap triage"
 fi
+# A generic founder park is an engine fault: it gets one sweep, and only one.
+generic='工作单元 issue-1 多次升级到工厂 supervisor 后仍无法自动裁决（最近原因：stop-loss）'
+supervisor_cap_parked_unit "$(jq -cn --arg q "$generic" '{stage:"parked",parked_reason:"supervisor-cap-founder",supervisor_cap_question:$q}')" \
+  || fail "a generic founder park must get its one sweep"
+if supervisor_cap_parked_unit "$(jq -cn --arg q "$generic" '{stage:"parked",parked_reason:"supervisor-cap-founder",supervisor_cap_question:$q,supervisor_cap_retry:"spent"}')"; then
+  fail "a generic founder park must be swept once only"
+fi
+if supervisor_cap_parked_unit "{\"stage\":\"parked\",\"parked_reason\":\"supervisor-cap-exhausted\",\"history\":[$budget_park]}"; then
+  fail "a terminal park must not be swept by its history"
+fi
+
+# The parser rejects text that names no owner fact, so the report re-asks instead of reaching the founder.
+report="$fixture/founder-report.md"
+founder_report() { printf 'REASON: r\nEVIDENCE: e\nQUESTION: %s\nVERDICT: FOUNDER\n' "$1" > "$report"; }
+for generic in 'could not decide automatically' 'The unit could not decide automatically?' "$(printf '工作单元多次升级后仍无法自动裁决？')" 'no question mark here'; do
+  founder_report "$generic"
+  if supervisor_cap_verdict_of "$report" >/dev/null; then fail "generic founder question passed: $generic"; fi
+done
+for owner_question in '这批单据要对接哪个外部系统？' '多次升级时用哪个企业账号？'; do
+  founder_report "$owner_question"
+  [[ "$(supervisor_cap_verdict_of "$report")" == FOUNDER ]] || fail "a question naming an owner fact must pass: $owner_question"
+done
+
+# A unit on its one retry has capped again: even a valid FOUNDER verdict ends in the terminal park.
+units "$(jq -cn '{units:[{id:"pr-694",lane:"pr",stage:"supervisor-review",supervisor_cap_retry:"pending",history:[]}]}')"
+founder_report '这批单据要对接哪个外部系统？'
+supervisor_apply_cap_verdict pr-694 "$report" FOUNDER
+jq -e '.units[0] | .parked_reason=="supervisor-cap-exhausted" and (.unpark_condition | length > 0)' "$UNITS" >/dev/null \
+  || fail "a retry must never reach the founder: $(jq -c '.units[0]' "$UNITS")"
+grep -q 'cap-exhausted unit=pr-694' "$AGENT_HOME/supervisor-inbox" || fail "a terminal park must send head one line"
+if grep -q 'cap-triage-founder unit=pr-694' "$AGENT_HOME/supervisor-inbox"; then fail "a retry reached the founder inbox"; fi
+
+# The one sweep of a generic founder park goes back through cap triage with its retry pending.
+units "$(jq -cn --arg q "$generic" '{units:[{id:"pr-695",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-founder",supervisor_cap_question:$q,supervisor_cap_return_stage:"repair-pending",history:[]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_CAP_TRIAGE=true SUPERVISOR_ARBITER_MAX=99 ZF_ENGINE_DIR="$script_dir/.." dispatch_supervisor_arbiters
+jq -e '.units[0] | .stage=="supervisor-review" and .supervisor_cap_retry=="pending" and (has("parked_reason") | not)' "$UNITS" >/dev/null \
+  || fail "a generic founder park must sweep once with its retry pending: $(jq -c '.units[0]' "$UNITS")"
+
+# Two invalid answers are a terminal park too, with its unpark condition.
+units "$(jq -cn '{units:[{id:"pr-692",lane:"pr",stage:"supervisor-review",supervisor_cap_reask:1,supervisor_cap_invalid_answers:["x"],history:[]}]}')"
+printf 'no verdict\n' > "$report"
+supervisor_cap_triage_reask_or_park pr-692 "$report"
+jq -e '.units[0] | .parked_reason=="supervisor-cap-exhausted" and (.unpark_condition | length > 0)' "$UNITS" >/dev/null \
+  || fail "two invalid answers must end with an unpark condition: $(jq -c '.units[0]' "$UNITS")"
+
+# An alert that failed once goes out on a later pass; a delivered one does not repeat.
+units "$(jq -cn '{units:[{id:"pr-691",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",note:"n",cap_exhausted_mark:"aaa||0",history:[]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+[[ "$(grep -c 'cap-exhausted unit=pr-691' "$AGENT_HOME/supervisor-inbox")" == 1 ]] || fail "a held terminal park must alert exactly once"
+
+# A terminal park unparks only when its mark changes.
+units "$(jq -cn '{units:[{id:"pr-696",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters
+[[ "$(field pr-696 .parked_reason)" == supervisor-cap-exhausted ]] || fail "an unchanged terminal park must stay parked"
+# An issue whose state cannot be read keeps the unit parked, though the mark reads as changed.
+units "$(jq -cn '{units:[{id:"pr-693",issue:693,lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"aaa",supervisor_cap_retry:"spent",cap_exhausted_mark:"aaa|on-hold|0",history:[]}]}')"
+(scheduler_issue_state() { return 1; }; SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 dispatch_supervisor_arbiters)
+[[ "$(field pr-693 .parked_reason)" == supervisor-cap-exhausted ]] || fail "an unreadable issue state must not unpark"
+units "$(jq -cn '{units:[{id:"pr-696",lane:"pr",stage:"parked",parked_reason:"supervisor-cap-exhausted",reviewed_pr_head:"bbb",supervisor_cap_retry:"spent",unpark_condition:"x",cap_exhausted_mark:"aaa||0",history:[]}]}')"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_CAP_TRIAGE=false dispatch_supervisor_arbiters
+jq -e '.units[0] | .parked_reason=="supervisor-arbitration-cap" and (has("supervisor_cap_retry") | not) and (has("unpark_condition") | not)' "$UNITS" >/dev/null \
+  || fail "a changed head must unpark a terminal park and reset its retry: $(jq -c '.units[0]' "$UNITS")"
 
 echo 'supervisor-arbiter.test.sh: all assertions passed'
