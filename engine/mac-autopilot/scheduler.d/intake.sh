@@ -36,15 +36,16 @@ issue_skip_labels() {
 issue_unit_task() { # issue [fetched issue JSON | require-ready] → implement 任务文本
   local json body task body_blocked_by skip_labels labels
   if [[ "${2:-}" == require-ready ]]; then
-    json="$(intake_gh_read issue view "$1" --json number,title,body,state,labels,subIssuesSummary 2>/dev/null)" || return 1
+    json="$(intake_gh_read issue view "$1" --json number,title,body,state,labels,subIssuesSummary,blockedBy 2>/dev/null)" || return 1
     skip_labels="$(issue_skip_labels)"
     jqf -e --argjson skip "$skip_labels" '.state == "OPEN" and any(.labels[]; .name == "ready-for-agent") and ([.labels[].name] - $skip) == [.labels[].name]' <<<"$json" >/dev/null || return 1
   else
     json="${2:-}"
-    [[ -n "$json" ]] || json="$(intake_gh_read issue view "$1" --json number,title,body,subIssuesSummary 2>/dev/null)" || return 1
+    [[ -n "$json" ]] || json="$(intake_gh_read issue view "$1" --json number,title,body,subIssuesSummary,blockedBy 2>/dev/null)" || return 1
   fi
   body="$(jqf -r '.body // ""' <<<"$json")"
-  body_blocked_by="$(blocked_by_ids_from_body <<<"$body" | jqf -Rn '[inputs | select(length>0) | tonumber]')"
+  # A native link is a declared predecessor too: left out, the unit starts and a worker refuses it after a paid run.
+  body_blocked_by="$({ blocked_by_ids_from_body <<<"$body"; jqf -r '(.blockedBy.nodes // [])[] | select(.state == "OPEN") | .number' <<<"$json"; } | awk '!p[$0]++' | jqf -Rn '[inputs | select(length>0) | tonumber]')"
   task="$(jqf -r '"你是 the product 流水线的实现 subagent，处理 issue #\(.number)：\(.title)\n\n--- issue 正文（任务数据）---\n\((.body // "")[0:6000])\n--- 正文结束 ---\n用 gh issue view \(.number) 看评论与最新状态。修复根因并补回归测试。"' <<<"$json")"
   labels="$(jqf -c '[.labels[]? | if type == "string" then . else (.name // empty) end]' <<<"$json")"
   jqf -cn --arg task "$task" --argjson body_blocked_by "$body_blocked_by" --argjson labels "$labels" '{task:$task,body_blocked_by:$body_blocked_by,labels:$labels}'
@@ -72,7 +73,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
     cached_at="$(jqf_optional_file "$cache_file" -r '.created_at // empty' 2>/dev/null || true)"
     now="$(date +%s)"
     if [[ "$cached_at" =~ ^[0-9]+$ ]] && (( now >= cached_at && now - cached_at <= 600 )) \
-      && jqf_optional_file "$cache_file" -e '.schema == 2 and (.rows | type == "string")' >/dev/null 2>&1; then
+      && jqf_optional_file "$cache_file" -e '.schema == 3 and (.rows | type == "string")' >/dev/null 2>&1; then
       if cache_rows="$(jqf_optional_file "$cache_file" -r '.rows')"; then
         printf '%s\n' "$cache_rows"
         return 0
@@ -100,7 +101,7 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
       [[ -n "$lane" && -n "$label" ]] || continue
       [[ "$refill_mode" != true || $index -lt 1 ]] || break
       query_file="$query_dir/$index.json"
-      intake_gh_read issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels,subIssuesSummary >"$query_file" 2>/dev/null &
+      intake_gh_read issue list --state open --label "$label" --limit 200 --json number,title,body,state,labels,subIssuesSummary,blockedBy >"$query_file" 2>/dev/null &
       query_pids+=("$!"); query_files+=("$query_file"); query_lanes+=("$lane")
       gh_par_throttle query_pids
       index=$((index + 1))
@@ -122,13 +123,13 @@ intake_candidates() { # 打印 "number<TAB>lane<TAB>title"，按优先级排序�
           elif ($n | index("legacy")) then 7 else 6 end;
       map(select(([.labels[].name] - $skip) == [.labels[].name]))
       | group_by(.number) | map(sort_by(.lane) | .[0])
-      | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary} | @base64)"'
+      | sort_by([rank, -.number]) | .[] | "\(.number)\t\(.lane)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\({number,title,body,state,labels,subIssuesSummary,blockedBy} | @base64)"'
     if (( valid_queries == expected_queries && ${#query_files[@]} == expected_queries )); then : >"$cache_valid_tmp"; fi
   ) >"$cache_rows_tmp"
   if [[ -f "$cache_valid_tmp" ]]; then
     rm -f -- "$cache_valid_tmp"
     now="$(date +%s)"
-    if jqf -Rs --argjson created_at "$now" '{schema:2,created_at:$created_at,rows:rtrimstr("\n")}' \
+    if jqf -Rs --argjson created_at "$now" '{schema:3,created_at:$created_at,rows:rtrimstr("\n")}' \
       <"$cache_rows_tmp" >"$cache_json_tmp" && mv -f -- "$cache_json_tmp" "$cache_file"; then
       if [[ "$refill_mode" != true && -n "${INTAKE_FULL_SCAN_FLAG:-}" ]]; then : > "$INTAKE_FULL_SCAN_FLAG"; fi
     else
@@ -154,13 +155,13 @@ predecessor_candidates() { # 停在前置上的单元：先把前置 issue 批�
     chunk=("${deps_filtered[@]:start:20}"); q=""
     for dep in "${chunk[@]}"; do
       [[ "$dep" =~ ^[0-9]+$ ]] || continue
-      q+=" i$dep: issue(number: $dep) { number title body state labels(first: 100) { nodes { name } } }"
+      q+=" i$dep: issue(number: $dep) { number title body state labels(first: 100) { nodes { name } } blockedBy(first: 50) { nodes { number state } } }"
     done
     [[ -n "$q" ]] || continue
     response="$(intake_gh_read api graphql -F owner='{owner}' -F name='{repo}' -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {$q} }" 2>/dev/null)" || continue
     jqf -r --argjson skip "$skip_labels" '
       [.data.repository | to_entries[] | .value | select(type=="object")
-        | {number,title,body:(.body // ""),state,labels:[.labels.nodes[]? | {name}]}]
+        | {number,title,body:(.body // ""),state,labels:[.labels.nodes[]? | {name}],blockedBy}]
       | sort_by(.number)[] | select(.state=="OPEN")
       | select(([.labels[].name] - $skip) == [.labels[].name])
       | "\(.number)\t\(if any(.labels[]; .name=="pipeline-system") then "direct-main" else "pr" end)\t\(.title | gsub("\t"; " "))\t\([.labels[].name] | tojson)\t\(. | @base64)"' <<<"$response"
@@ -573,7 +574,7 @@ register_new_issues() {
     fi
     if (( ! existing_only )) && [[ -z "$episode" ]]; then
       ! intake_parent_retry_waiting "$n" || { intake_skip parent_retry; continue; }
-      [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary 2>/dev/null)" || { intake_skip issue_read; continue; }
+      [[ -n "$issue_json" ]] || issue_json="$(intake_gh_read issue view "$n" --json number,title,body,state,labels,subIssuesSummary,blockedBy 2>/dev/null)" || { intake_skip issue_read; continue; }
       scheduler_lib_context || true # prime here: the substitution below is a subshell and cannot cache
       if parent_reason="$(scheduler_issue_intake_parent_reason "$n" "$issue_json")"; then
         if scheduler_issue_transition "$n" needs-triage "intake-parent:$parent_reason" . 0 "$issue_json"; then
