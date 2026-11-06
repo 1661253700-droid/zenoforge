@@ -124,6 +124,9 @@ warn_forbidden_model_config
 INCIDENT_LABELS="$(incident_labels_from_config "$CFG")"
 INCIDENT_RULE="$(incident_rule_text)"
 UNITS="$A/units.json"; WORKERS="$A/workers.json"
+# 终态单元的退休归档（retire_terminal_units）：只增不删；历史读者经 units_history_doc 合并读取。
+UNITS_ARCHIVE="${UNITS_ARCHIVE:-$A/units-archive.json}"
+[[ -f "$UNITS_ARCHIVE" ]] || printf '{"units":[]}\n' > "$UNITS_ARCHIVE"
 [[ -f "$WORKERS" ]] || echo '{"workers":[]}' > "$WORKERS"
 MAX="$(jqf -r .max_workers <<<"$CFG")"
 DISPATCH_PRIORITY_ORDER="$(jqf -c '.dispatch_priority_order // ["hotfix", "opt", "normal"]' <<<"$CFG")"
@@ -535,6 +538,9 @@ main() {
     say "paused by $PAUSE_FILE: harvest and release train only, no dispatch or merge"
     phase run_release_train
   else
+    # 每慢拍一次终态退休（持锁、纯本地）：先把 600+ 终态单元移出热台账，本拍后续的 intake /
+    # dispatch / CI 准入 / 合并车道就不用再为它们付每笔 2 秒的整文件读写。PAUSE 期间不动台账。
+    phase retire_terminal_units
     phase stuck_worker_disposition
     phase_yield_lock release_dependency_blocks
     phase_yield_lock_batch run_issue_intake_phases
@@ -586,6 +592,7 @@ fi
 case "${1:-}" in
   --views) views_entry "${2:-dashboard}" ;;
   --refill) refill_tick ;;
+  --unretire) UNIT_RETIRE_DISABLED=true; acquire_scheduler_lock_wait; unretire_all_units; unretire_rc=$?; release_scheduler_lock; exit "$unretire_rc" ;; # back out retirement; set UNIT_RETIRE_DISABLED or revert before the next tick
   --rule) rule_entry "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;; # hold.sh --rule: record the supervisor ruling that refills the stop-loss budget
   *) main "$@" ;;
 esac
