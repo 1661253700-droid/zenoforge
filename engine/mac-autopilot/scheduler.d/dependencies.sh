@@ -92,8 +92,12 @@ dep_marker_open() { # unit-json → the marked predecessor while it is undeliver
   dep_delivered_in_ledger "$dep" && return 1
   ! dep_dead_ruled "$1" "$dep" || return 1
   state="$(jqf -r '.state // empty' <<<"$(dep_cache_info "$dep")")"
-  [[ "$state" != CLOSED && "$state" != MERGED ]] || return 1
+  [[ "$state" != MERGED ]] || return 1
+  [[ "$state" != CLOSED ]] || dep_has_unit "$dep" || return 1
   printf '%s' "$dep"
+}
+dep_has_unit() { # issue → 0 when the ledger has rows and none is settled: with no delivery, a closed state there is work given up or a stale read, not work done. A wontfix, duplicate, done or parked row will not move on its own, and the sweep could never prove it.
+  jqf -e --argjson d "$1" '[.units[] | select(.issue == $d)] | length > 0 and all(.[]; .stage | IN("wontfix", "duplicate", "done", "parked") | not)' <(units_history_doc) >/dev/null
 }
 park_if_body_blocked() { # unit-json → 0 当按正文前置停住（不派发）
   local id dep
@@ -241,6 +245,8 @@ release_dependency_blocks() {
     state="$(jqf -r '.state // empty' <<<"$info")"; labels="$(jqf -r '.labels // ""' <<<"$info")"
     if (( gh_due )) && [[ "$state" == OPEN && "$real_wait" != true ]] && ! unit_body_declares_dependency "$u" "$dep" \
         && stack_approved_dependency "$id" "$dep" "$u"; then continue; fi
+    # A marker ends on delivery or a ruling: a closed issue that delivered nothing goes to dep_dead_sweep, and a stale closed state cannot release it (#536).
+    if [[ "$real_wait" == true && "$state" == CLOSED ]] && dep_has_unit "$dep"; then continue; fi
     if [[ "$state" == CLOSED || "$state" == MERGED ]]; then
       dep_blocker_forget "$issue" "$dep"
       unblock_unit "$id" "#$dep delivered"; continue
@@ -265,11 +271,13 @@ release_dependency_blocks() {
   done < <(jqf -c '.units[] | select(.stage=="blocked-external" and .blocked_on != null)' "$UNITS")
   # supervisor 搁置（park）的单元仍带着 .blocked_on，却没有任何机制在前置交付后放开它；只放有前置号、无 parked_reason 的
   # （cap/stop-loss/founder 问题的搁置不点名前置，保持搁置）。
-  while IFS=$'\t' read -r id dep; do
+  while IFS=$'\t' read -r id dep marked; do
+    if [[ "$marked" == "$dep" ]] && ! dep_delivered_in_ledger "$dep" && dep_has_unit "$dep" \
+        && [[ "$(jqf -r --arg d "$dep" '.[$d].state // empty' <<<"$dep_cache")" != MERGED ]]; then continue; fi
     if dep_delivered_in_ledger "$dep" || [[ "$(jqf -r --arg d "$dep" '.[$d].state // empty' <<<"$dep_cache")" =~ ^(CLOSED|MERGED)$ ]]; then
       unblock_unit "$id" "parked on #$dep, which is delivered"
     fi
-  done < <(jqf -r '.units[] | select(.stage=="parked" and .parked_reason == null and .size_recut_pending != true and (.blocked_on | type)=="number") | [.id, .blocked_on] | @tsv' "$UNITS")
+  done < <(jqf -r '.units[] | select(.stage=="parked" and .parked_reason == null and .size_recut_pending != true and (.blocked_on | type)=="number") | [.id, .blocked_on, (.dep_wait_delivery // "")] | @tsv' "$UNITS")
   # 停在 blocked-external 却没有前置号的单元没有任何机制会放开它（issue-2536）：交 supervisor。
   for id in $(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true) | .id' "$UNITS"); do
     to_supervisor "$id" "blocked-external without a predecessor: nothing can release it"
