@@ -196,6 +196,49 @@ new_clone
 printf 'edit\n' >> "$wt/a.txt"; git -C "$wt" update-index --assume-unchanged a.txt
 refused_intact "an assume-unchanged edit" "assume-unchanged"
 
+# Live clones are sparse: their absent files must survive in the rescue commit, and they are no reason to refuse.
+new_clone
+mkdir -p "$wt/hidden"; printf 'kept\n' > "$wt/hidden/x.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm hidden; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+git -C "$wt" sparse-checkout set --no-cone '/*' '!/hidden/'
+[[ ! -e "$wt/hidden/x.txt" ]] || fail "fixture: the sparse file is still on disk"
+printf 'dirty\n' >> "$wt/a.txt"
+rescue_handoff_clone 70 "$wt" || fail "a sparse clone was refused: $RESCUE_REFUSED"
+[[ "$(git --git-dir="$origin" show "$RESCUE_START_SHA:hidden/x.txt")" == kept ]] || fail "the rescue commit deleted a sparse clone's absent file"
+[[ -z "$(git -C "$wt" status --porcelain=v1)" && ! -e "$wt/hidden/x.txt" ]] || fail "the sparse clone is not clean after the rescue"
+new_clone
+mkdir -p "$wt/hidden"; printf 'kept\n' > "$wt/hidden/x.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm hidden; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+git -C "$wt" update-index --skip-worktree hidden/x.txt; printf 'edit\n' >> "$wt/hidden/x.txt"
+refused_intact "a skip-worktree edit" "skip-worktree edit"
+flagged_clone() { # a pushed file, flagged with $1, plus a dirty file so a rescue would commit
+  new_clone
+  mkdir -p "$wt/hidden"; printf 'kept\n' > "$wt/hidden/x.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm hidden; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+  git -C "$wt" update-index "$1" hidden/x.txt; printf 'dirty\n' >> "$wt/a.txt"
+}
+flagged_clone --skip-worktree; rm "$wt/hidden/x.txt"; ln -s /nonexistent "$wt/hidden/x.txt"
+refused_intact "a flagged file swapped for a dangling symlink" "skip-worktree edit"
+flagged_clone --skip-worktree; chmod +x "$wt/hidden/x.txt"
+refused_intact "a mode change on a flagged file" "skip-worktree edit"
+flagged_clone --assume-unchanged; rm "$wt/hidden/x.txt"
+refused_intact "an assume-unchanged file deleted on purpose" "assume-unchanged"
+# Names are not pathspecs: ":x" would compare x, and "*" would match the dirty file.
+new_clone
+printf 'one\n' > "$wt/:x.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm colon; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+git -C "$wt" update-index --assume-unchanged ":x.txt"; printf 'edit\n' >> "$wt/:x.txt"; printf 'dirty\n' >> "$wt/a.txt"
+refused_intact "an edit under a name that looks like pathspec magic" "assume-unchanged"
+new_clone
+printf 'one\n' > "$wt/*"; git -C "$wt" add -A; git -C "$wt" commit -qm glob; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+git -C "$wt" update-index --assume-unchanged "*"; printf 'dirty\n' >> "$wt/a.txt"
+rescue_handoff_clone 70 "$wt" || fail "a clean flagged file named * was refused: $RESCUE_REFUSED"
+# A real sparse clone: git drops the flag on a file that shows up on disk, and add -A will not stage it.
+flagged_clone --no-skip-worktree; git -C "$wt" sparse-checkout set --no-cone '/*' '!/hidden/'
+mkdir -p "$wt/hidden"; printf 'edit\n' > "$wt/hidden/x.txt"
+refused_intact "an edit outside the sparse patterns" "leaves out"
+[[ -z "$(remote_rescues)" ]] || fail "a clone that cannot be rescued still pushed a ref"
+new_clone
+printf 'one\n' > "$wt/é.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm named; git -C "$wt" push -q origin HEAD:refs/heads/main; git -C "$wt" fetch -q origin
+git -C "$wt" update-index --skip-worktree "é.txt"; printf 'edit\n' >> "$wt/é.txt"
+refused_intact "a skip-worktree edit under a quoted name" "skip-worktree edit"
+
 # A nested repo would travel as a bare gitlink and its files would be left to deletion.
 new_clone
 git init -q "$wt/nested"; git -C "$wt/nested" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m nested
