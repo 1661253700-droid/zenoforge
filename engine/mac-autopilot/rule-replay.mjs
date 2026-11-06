@@ -154,6 +154,9 @@ function replayUnit(unit, rule, fromMs, untilMs) {
 
   let rounds = 0;
   let firstWriteAt = null;
+  let workerMs = 0;
+  let writeOpenAt = null;
+  let nextRowAt = null;
   let rawTokens = null;
   let previousMatch = false;
   let trigger = null;
@@ -168,6 +171,18 @@ function replayUnit(unit, rule, fromMs, untilMs) {
     if (RULING_STAGES.has(stage)) {
       rounds = 0;
       firstWriteAt = null;
+      workerMs = 0;
+      writeOpenAt = null;
+      nextRowAt = null;
+    }
+    if (stage === 'write-start' || stage === 'write-end') {
+      // A write with no end stopped at the first row after it, as in ticket_budget_reason.
+      const closedAt = stage === 'write-end' ? entry.atMs : nextRowAt ?? entry.atMs;
+      if (writeOpenAt !== null) workerMs += Math.max(0, closedAt - writeOpenAt);
+      writeOpenAt = stage === 'write-start' ? entry.atMs : null;
+      nextRowAt = null;
+    } else if (writeOpenAt !== null) {
+      nextRowAt ??= entry.atMs;
     }
     if (stage === 'write-start') {
       rounds += 1;
@@ -183,6 +198,7 @@ function replayUnit(unit, rule, fromMs, untilMs) {
         rawTokens,
         rounds,
         elapsedSeconds: firstWriteAt === null ? null : Math.max(0, (entry.atMs - firstWriteAt) / 1000),
+        workerSeconds: (workerMs + (nextRowAt === null ? 0 : Math.max(0, nextRowAt - writeOpenAt))) / 1000,
       },
     };
     snapshots.push({ atMs: entry.atMs, snapshot });

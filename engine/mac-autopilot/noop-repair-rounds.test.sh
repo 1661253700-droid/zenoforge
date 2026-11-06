@@ -117,6 +117,60 @@ supervisor_requeue_unit pr-real requeue 'repair the open finding' null
 [[ "$(field pr-real .stage)" == repair-pending ]] \
   || fail "a real failed repair must still requeue to repair-pending (got: $(field pr-real .stage))"
 
+# The wall counts worker time, not queue: 2295 read 1688min after 1 round and was stopped on arrival.
+wall_unit() { # history-json stage → budget reason
+  TICKET_ROUND_BUDGET=3 TICKET_WALL_BUDGET_SECONDS=14400 NOW_EPOCH=1800000000 ticket_budget_reason "$(jq -cn --argjson h "$1" --arg stage "$2" '{stage:$stage,history:$h}')"
+}
+day() { date -u -d "@$(( 1800000000 - $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
+released_days_later="$(jq -cn --arg s "$(day 864000)" --arg e "$(day 863400)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e},{stage:"blocked-on",result:"#1"},{stage:"unblocked",result:"#1 delivered"}]')"
+[[ -z "$(wall_unit "$released_days_later" repair-pending)" ]] || fail "a unit released after days with 10min of work must not stop on arrival: $(wall_unit "$released_days_later" repair-pending)"
+three_rounds="$(jq -cn --arg s "$(day 864000)" --arg e "$(day 863400)" '[range(3) | {stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e},{stage:"repair-delivered"}]')"
+[[ "$(wall_unit "$three_rounds" repair-pending)" == 'rounds 3 of 3' ]] || fail "three rounds must still stop: $(wall_unit "$three_rounds" repair-pending)"
+long_work="$(jq -cn --arg s "$(day 864000)" --arg e "$(day 840000)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e}]')"
+[[ "$(wall_unit "$long_work" repair-pending)" == 'wall 400min of 240min after 1 rounds' ]] || fail "worker time past the budget must stop: $(wall_unit "$long_work" repair-pending)"
+open_now="$(jq -cn --arg s "$(day 18000)" '[{stage:"write-start",work_type:"repair",at:$s}]')"
+[[ "$(wall_unit "$open_now" repair)" == 'wall 300min of 240min after 1 rounds' ]] || fail "a running worker must count to now: $(wall_unit "$open_now" repair)"
+[[ -z "$(wall_unit "$open_now" repair-pending)" ]] || fail "a killed worker must not count queue time: $(wall_unit "$open_now" repair-pending)"
+killed="$(jq -cn --arg s "$(day 864000)" --arg n "$(day 840000)" '[{stage:"write-start",work_type:"repair",at:$s},{stage:"write-start",work_type:"repair",at:$n},{stage:"write-end",at:$n}]')"
+[[ "$(wall_unit "$killed" repair-pending)" == 'wall 400min of 240min after 2 rounds' ]] || fail "a write with no end must close at the next start: $(wall_unit "$killed" repair-pending)"
+noop_only="$(jq -cn --arg sha2 "$sha2" --arg s "$(day 20000)" --arg e "$(day 2000)" '{stage:"repair-pending",
+  review_findings:[{round:1,block:"ok",findings:[],all_findings:[]}],
+  history:[{stage:"review-request-changes",result:$sha2},{stage:"write-start",work_type:"repair",at:$s},{stage:"write-end",at:$e},
+    {stage:"repair-no-push",result:("head "+$sha2+" unchanged after repair")}]}')"
+noop_wall="$(TICKET_ROUND_BUDGET=3 TICKET_WALL_BUDGET_SECONDS=14400 NOW_EPOCH=1800000000 ticket_budget_reason "$noop_only")"
+[[ "$noop_wall" == 'wall 300min of 240min after 0 rounds' ]] || fail "no-op work must still spend the wall: $noop_wall"
+
+# The same history through both implementations: the shell stop-loss and the replay must reach the same wall verdict.
+replay_wall() { # history-json -> "wall Nmin" or nothing
+  node --input-type=module -e '
+    const { replayRule } = await import(process.argv[3]);
+    const unit = { id: "agree", issue: 1, stage: "repair-pending", history: JSON.parse(process.argv[1]) };
+    const rule = { id: "wall", predicate: { path: "metrics.workerSeconds", op: "gt", value: 14400 } };
+    const report = replayRule({ units: [unit] }, rule, { asOf: process.argv[2] });
+    const hit = [...report.falseStops, ...report.intercepted, ...report.unresolved][0];
+    if (hit) console.log(`wall ${Math.floor(hit.trigger.metrics.workerSeconds / 60)}min`);
+  ' "$1" "$(day 0)" "$script_dir/rule-replay.mjs"
+}
+check_wall_agreement() { # label expected (stage seconds-ago)...
+  local label="$1" expected="$2" history='[]' budget replay
+  shift 2
+  while (( $# )); do
+    history="$(jq -c --arg stage "$1" --arg at "$(day "$2")" '. + [{stage:$stage,work_type:"implement",at:$at}]' <<<"$history")"
+    shift 2
+  done
+  budget="$(wall_unit "$history" repair-pending)"
+  replay="$(replay_wall "$history")"
+  [[ "${budget%% of *}" == "$expected" && "$replay" == "$expected" ]] \
+    || fail "$label: stop-loss '$budget' and replay '$replay' must both give '$expected'"
+}
+check_wall_agreement 'queue after short work' '' write-start 300000 write-end 299400 unblocked 3600
+check_wall_agreement 'closed work over budget' 'wall 300min' write-start 20000 write-end 2000
+check_wall_agreement 'killed write closes at next start' 'wall 300min' write-start 20000 write-start 9200 write-end 2000
+check_wall_agreement 'ruling resets worker time' '' write-start 30000 write-end 19200 supervisor-requeue 19000 write-start 18000 write-end 7200
+check_wall_agreement 'expired write stops at its next row' '' write-start 20000 worker-no-output 19400 write-start 5000 write-end 4400
+check_wall_agreement 'unended write with no later write' 'wall 300min' write-start 20000 worker-no-output 2000
+check_wall_agreement 'expired write keeps the time before its next row' 'wall 300min' write-start 20000 worker-no-output 2000 write-start 1000 write-end 1000
+
 node "$script_dir/../lesson-guard-schema.mjs"
 printf 'noop-repair-rounds.test.sh: 3 write-starts -> 2 counted; 3-of-3 stop-loss clear; repair-cap count 1\n'
-printf 'noop-repair-rounds.test.sh: 13 focused assertions passed\n'
+printf 'noop-repair-rounds.test.sh: 27 focused assertions passed\n'
