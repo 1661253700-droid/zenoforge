@@ -63,4 +63,67 @@ grep -Fq 'ceiling 32); handoff issue #902 deferred' "$LOG" || fail 'handoff ceil
 jq 'del(.units[0])' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
 register_new_issues 1 reuse
 jq -e '.units[] | select(.id=="issue-902") | .stage=="implement-pending"' "$UNITS" >/dev/null || fail 'handoff did not resume when ceiling had room'
+# Held target: a full pass takes nothing, does no candidate work, and leaves the hold marker the station reads.
+walked="$test_env_root/walked"; marker="$A/intake-held-since"
+predecessor_candidates() { : > "$walked"; }
+intake_candidates() { : > "$walked"; printf '900\tpr\tfixture\t[]\t%s\n' "$(printf '%s' '{"number":900,"state":"OPEN","subIssuesSummary":{"total":0},"labels":[{"name":"ready-for-agent"}]}' | base64 -w0)"; }
+intake_footprint_snapshot() { : > "$walked"; echo '[]'; }
+CFG='{"issue_intake":{"enabled":true,"max_upstream":16,"max_ready":30,"ready_buffer":0}}'
+jq -n '{units: [range(0;8) | {id:("p-"+tostring),stage:"implement-pending"}]}' > "$UNITS"
+rm -f "$walked" "$marker"; : > "$LOG"
+register_new_issues 0
+grep -Fq 'intake held: startable pending 8 meets target 8 (live 0 max 8)' "$LOG" || fail 'held line text changed or missing'
+[[ ! -e "$walked" ]] || fail 'a held pass did candidate work'
+[[ -s "$marker" ]] || fail 'a held pass left no marker'
+printf '%s\n' 2026-11-07T00:00:00Z > "$marker"
+register_new_issues 0
+[[ "$(cat "$marker")" == 2026-11-07T00:00:00Z ]] || fail 'a second held pass moved the hold start'
+# Handoffs resume known units while held: they are not new intake, and the ceiling still bounds them.
+printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"held"}}' > "$AGENT_HOME/state/903.json"
+existing_handoff_candidates() { printf '903\tpr\thandoff\t[]\n'; }
+jq '.units += [{id:"issue-903",issue:903,stage:"parked",lane:"pr",history:[]}]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+register_new_issues 1 reuse
+jq -e '.units[] | select(.id=="issue-903") | .stage=="implement-pending"' "$UNITS" >/dev/null || fail 'held target blocked a handoff'
+[[ -s "$marker" ]] || fail 'a handoff pass cleared the hold'
+# Room again: the pass adds a unit and the marker goes.
+jq -n '{units: []}' > "$UNITS"
+register_new_issues 0
+jq -e 'any(.units[]; .id=="issue-900")' "$UNITS" >/dev/null || fail 'intake did not add once the target had room'
+[[ ! -e "$marker" ]] || fail 'adding a unit left the hold marker'
+# Two ticks with a consumed handoff row: the existing pass must not clear or restart the hold, so the station can see it age past 2 x bound.
+printf '%s\n' '{"state":"ready-for-agent","scheduler_handoff":{"episode":"done"}}' > "$AGENT_HOME/state/905.json"
+printf '%s\n' '{"state":"ready-for-agent","state_changed_at":"2026-11-06T00:00:00Z"}' > "$AGENT_HOME/state/906.json"
+existing_handoff_candidates() { printf '905\tpr\thandoff\t[]\n'; }
+jq -n '{units: ([range(0;8) | {id:("p-"+tostring),stage:"implement-pending"}] + [{id:"issue-905",issue:905,stage:"review",lane:"pr",hold_handoff_episode:"done",history:[]}])}' > "$UNITS"
+printf '%s\n' 2026-11-07T00:00:00Z > "$marker"
+for tick in 1 2; do
+  : > "$LOG"
+  register_new_issues 1 reuse
+  grep -Fq 'consumed=1' "$LOG" || fail "tick $tick: the handoff row was not consumed"
+  [[ "$(cat "$marker")" == 2026-11-07T00:00:00Z ]] || fail "tick $tick: the existing pass moved the hold start"
+  register_new_issues 0
+  grep -Fq 'intake held: startable pending' "$LOG" || fail "tick $tick: full pass was not held"
+  [[ "$(cat "$marker")" == 2026-11-07T00:00:00Z ]] || fail "tick $tick: the held pass moved the hold start"
+done
+station() { python3 "$script_dir/station_health.py" --runtime "$A" --agent-home "$AGENT_HOME" --pause-file "$AGENT_HOME/PAUSE" --now "$1" >/dev/null; jq -r .stations.intake.status "$A/station-health.json"; }
+[[ "$(station 2026-11-07T01:40:00Z)" == HELD ]] || fail 'a hold under 2 x bound must be HELD'
+[[ "$(station 2026-11-07T03:10:00Z)" == STALLED ]] || fail 'a hold past 2 x bound must be STALLED'
+# units_update: a no-op writes nothing (mtime and inode kept, so the history view cache lives), a change writes, a jq failure keeps the ledger.
+jq -n '{units: [{id:"u1",stage:"implement-pending",history:[]}]}' > "$UNITS"
+units_update '.'
+stat_of() { stat -c '%i %y' "$UNITS"; }
+temps() { compgen -G "$UNITS.noop.*" || compgen -G "$UNITS.tmp.*" || true; }
+read -t 0.05 <> <(:) || true
+before="$(stat_of)"
+units_update '.units[0].stage |= .' || fail 'a no-op update returned nonzero'
+[[ "$(stat_of)" == "$before" ]] || fail 'a no-op update rewrote the ledger'
+read -t 0.05 <> <(:) || true
+units_update '.units[0].stage = "review"' || fail 'a real update returned nonzero'
+jq -e '.units[0].stage == "review"' "$UNITS" >/dev/null || fail 'a real update did not write'
+[[ "$(stat_of)" != "$before" ]] || fail 'a real update kept the old file time and inode'
+cp "$UNITS" "$test_env_root/units.keep"; before="$(stat_of)"; rc=0
+units_update 'error("boom")' 2>/dev/null || rc=$?
+(( rc != 0 )) || fail 'a jq failure returned zero'
+[[ "$(stat_of)" == "$before" ]] && cmp -s "$UNITS" "$test_env_root/units.keep" || fail 'a jq failure touched the ledger'
+[[ -z "$(temps)" ]] || fail "temp file left behind: $(temps)"
 echo 'intake-wip.test.sh: pass'
