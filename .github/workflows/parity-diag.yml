@@ -1,0 +1,32 @@
+name: parity-diag
+# TEMPORARY parity-2604 branch workflow: same suites as engine-tests but on ubuntu-26.04.
+# Removed again before the final engine-tests switch commit.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  suites:
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: git config --global user.name ci && git config --global user.email ci@example.com
+      - run: npm ci
+      - run: bash tools/run-engine-tests.sh ${{ matrix.shard }} 8
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-failures-${{ matrix.shard }}
+          path: |
+            engine-test-failures-${{ matrix.shard }}.txt
+            test-logs/
