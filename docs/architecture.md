@@ -43,14 +43,15 @@ A tick that refuses counts as a failure. After three in a row, it writes an even
 - release batches (`run-release.sh`)
 - one main-red recovery step (`main-red-bisect` in the sweep loop)
 
-Two of these scripts are not in this checkout: `run-release.sh` and `run-advisor-batch.sh`. The implement leg is described in the header as `run-implement.sh`, which is also missing. See [install.md](install.md#not-generic-yet).
+The deployment-specific release runner and `run-advisor-batch.sh` are outside this checkout. `engine/run-release.sh` dispatches to the configured release runner; its verified post-deploy success callback is `record_deploy_evidence` in `engine/lib.d/release-close.sh`, which records the live commit SHA in `$AGENT_HOME/state/live-sha.json`. The implement leg is described in the header as `run-implement.sh`, which is also missing. See [install.md](install.md#not-generic-yet).
 
 ### 1.2 Unit loop
 
 `engine/mac-autopilot/loop.sh` runs forever. Its pieces:
 
-- **Scheduler tick.** Every `tick_seconds` (120 by default, from `engine/mac-autopilot/config.template.json`), it runs `scheduler.sh` under a timeout (`AUTOPI_TICK_LIMIT_SECONDS`, default 1800).
+- **Scheduler tick.** Every `tick_seconds` (120 by default, from `engine/mac-autopilot/config.template.json`), it runs `scheduler.sh` under a timeout (`AUTOPI_TICK_LIMIT_SECONDS`, default 1800). Its dispatch pass walks at most `AUTOPI_TICK_DISPATCH_SECONDS` (420) before it stops starting workers, the views and PR-run snapshot run before worktree cleanup, and a killed tick's `TICK-TIMEOUT` line names the running phase and the finished ones (`.tick-phase`, `.tick-phases`).
 - **Refill pass.** Between ticks, a refill runs every 30 seconds (`AUTOPI_REFILL_SECONDS`), so a freed worker slot is refilled without waiting for the next tick. A worker exit also starts one at once (the loop polls every 5 s and the set of exited workers must change). The refill harvests finished PR-lane implement, review, rereview and repair workers that left a report, at most 2 per refill, so the next stage dispatches in the same pass. Land, eval, supervise, OBSOLETE and report-less workers stay on the full tick.
+- **CI admission station.** Every 120 seconds (`AUTOPI_CI_ADMISSION_SECONDS`) `loop.sh` starts a detached `scheduler.sh --ci-admission`, which runs `ci_admission` alone under its own lock (`.ci-station.lock`), so a free CI slot does not wait on the full tick or the refill. A pass stops before the next unit once `AUTOPI_CI_ADMISSION_LIMIT_SECONDS` (240) is spent or `PAUSE` appears, and a pass still running makes the next launch exit at once. It writes the ledger only through `set_unit`, which takes the scheduler lock per write. The full tick skips its own `ci_admission` phase while a station pass started within 900 seconds, and runs it otherwise.
 - **Bell.** `engine/mac-autopilot/bell-loop.sh` runs `bell.sh`, one anomaly scan, every 120 seconds.
 - **Watcher.** Every 15th loop, it runs `watcher/watch.sh` from the supervisor directory, if that file exists.
 
@@ -91,7 +92,8 @@ They share GitHub labels and the per-issue state files. The issue loop never mer
         |
         +--> needs-recut --> recut (run-recut.sh) --> child issues, parent becomes a tracker
         +--> needs-info          waits for a person's answer, then goes back to triage
-        +--> ready-for-human     a person decides; the pipeline never moves past it
+        +--> ready-for-human / needs-owner model verdict
+        |       --> ready-for-agent by default; advisor-only calls or autonomy refusals --> needs-advisor
 ```
 
 The diagram shows the main path and the common side branches. `ISSUE_TRANSITION_TABLE` in `engine/lib.sh` lists every allowed move.
@@ -105,11 +107,11 @@ The diagram shows the main path and the common side branches. `ISSUE_TRANSITION_
 | `needs-triage` | Waiting for triage |
 | `needs-info` | Waiting for an answer from a person |
 | `ready-for-agent` | Accepted for implementation |
-| `ready-for-human` | A person decides. The code comment says this is the one state the pipeline never automates past |
+| `ready-for-human` | Transient model verdict. Triage defaults to implementation or sends an irreversible, production-data, or security call to the advisor; it never parks for a person |
 | `needs-advisor` | Sent to the advisor for a judgment call |
 | `needs-recut` | Too big. To be cut into child issues |
 | `checks-blocked` | Required checks could not run or could not be read. A sweep re-checks them (`checks_blocked_sweep`) |
-| `needs-owner` | Needs an owner before work can move. The code has no comment for it, so check the callers |
+| `needs-owner` | Transient model verdict treated like `ready-for-human`; triage defaults to implementation or sends an advisor-only call to the advisor |
 | `duplicate`, `wontfix`, `finish-first` | Closed as a duplicate or declined. `finish-first` waits for a blocking PR to land |
 | `awaiting-release` | Merged. Waiting for release |
 | `awaiting-pipeline-sync`, `awaiting-pipeline-health` | Waiting for the pipeline's own sync or health check before release |
@@ -244,7 +246,7 @@ A change enters the hotfix lane when the issue has the `hotfix` label, or the br
 
 ## 8. Health, dashboard, and cost
 
-- **Node health.** `engine/mac-autopilot/node_health.py` scores each node of the flow (intake, implement, review, PR CI, merge, main Postsubmit, release, production, close, plus the scheduler tick, workers, and supervisor). Each node is healthy, unhealthy, or WARN in between. The bounds are in `engine/mac-autopilot/NODE-HEALTH.md`. The `node_health` key in `config.json` overrides a bound for one metric. `--alert` writes unhealthy nodes to the alerts file. `--file-issues` can open or comment on GitHub issues, and runs only when you pass the flag.
+- **Node health.** `engine/mac-autopilot/node_health.py` scores each node of the flow (intake, implement, review, PR CI, merge, main Postsubmit, release, production, close, plus the scheduler tick, workers, and supervisor). Delivery health reads `$AGENT_HOME/state/live-sha.json` and counts first-parent `origin/main` commits after that SHA whose paths are product paths under the merge lane's `NONPRODUCT_PATHS_RE`; a missing record is unhealthy NO-DATA. Each node is healthy, unhealthy, or WARN in between. The bounds are in `engine/mac-autopilot/NODE-HEALTH.md`. The `node_health` key in `config.json` overrides a bound for one metric. `--alert` writes unhealthy nodes to the alerts file. `--file-issues` can open or comment on GitHub issues, and runs only when you pass the flag.
 - **Bell.** `bell.sh` runs every 120 seconds and includes a stale-dashboard check.
 - **Dashboard.** `gen_dashboard.py` writes the dashboard data. `dashboard.html` is a static page in the runtime directory.
 - **Reports.** `health_report.py` and `waste_report.py` are read-only summaries of the pipeline's records, including token and CI-repair waste.

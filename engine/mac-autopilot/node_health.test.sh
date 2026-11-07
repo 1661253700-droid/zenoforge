@@ -96,7 +96,9 @@ echo '{"node_health":{"review.first_pass_pct":[40,10]}}' > "$a/config.json"
 
 pause_since="2026-10-19T11:50:00Z"
 mkdir -p "$AGENT_HOME"
-jq -n --arg timestamp "$pause_since" '{reason:"refactor",caller:"operator",issue:"none",provider:"none",model:"none",timestamp:$timestamp}' > "$AGENT_HOME/PAUSE"
+# owner + future expires_at: this PAUSE is a held line WITH hold metadata, so it must not count as a violation
+jq -n --arg timestamp "$pause_since" --arg expires "2026-10-26T00:00:00Z" \
+  '{reason:"refactor",caller:"operator",issue:"none",provider:"none",model:"none",timestamp:$timestamp,owner:"founder",expires_at:$expires}' > "$AGENT_HOME/PAUSE"
 out="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z --alert --json "$a/node-health.json")"
 source_commit="$(git -C "$repo_root" rev-parse HEAD)"
 jq -e --arg sampled_at '2026-10-19T12:00:00Z' --arg source_commit "$source_commit" --arg pause_since "$pause_since" \
@@ -165,14 +167,15 @@ jq -e '.metrics[] | select(.id == "ci.priority_hold_runs_48h") | .value == 2 and
 ! grep -Fq 'tokens=1649999' <<<"$out" || fail 'run outside the window counted'
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:20:00Z --alert >/dev/null
 [[ "$(grep -c 'metric=loop.rework_token_pct' "$a/alerts/node-health.md")" == 1 ]] || fail "unhealthy metric alerted more than once per hour: $(cat "$a/alerts/node-health.md")"
-# A review with no readable usage is unknown, so it must make the rework share N/A.
+# A review with no readable usage is not measured: the rework share reads the measured runs and says how many were measured.
 unknown_review="$sup/review-99-20261019T112000Z.worker.log"
 printf '{"type":"assistant"}\n' > "$unknown_review"
 touch -d '2026-10-19T11:30:00Z' "$unknown_review"
 python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 5 --now 2026-10-19T12:00:00Z \
   --json "$a/node-health-unknown-review.json" >/dev/null
-jq -e '[.metrics[] | select(.id == "loop.rework_token_pct")][0] | .value == null and .status == "NO-DATA"' \
-  "$a/node-health-unknown-review.json" >/dev/null || fail 'unknown review tokens must make the rework share N/A'
+jq -e '([.metrics[] | select(.id == "loop.rework_token_pct")][0] | .value != null and .status != "NO-DATA")
+  and .rework_token_measured[0] + 1 == .rework_token_measured[1]' \
+  "$a/node-health-unknown-review.json" >/dev/null || fail "one unmeasured review must not void the rework share: $(jq -c '.rework_token_measured' "$a/node-health-unknown-review.json")"
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'measured review usage did not enter the rework metric denominator'
 import json, os, pathlib, re, sys
 from datetime import datetime, timezone
@@ -422,14 +425,15 @@ echo '{"lines":{"1":2000,"2":801,"3":800,"4":2000,"5":2000,"6":100},"nontest_add
 python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now 2026-10-19T12:00:00Z --json "$window/result.json" >/dev/null
 jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value == 50 and .healthy == 10 and .unhealthy == 25 and .status == "UNHEALTHY"' "$window/result.json" >/dev/null \
   || fail 'large-PR share did not honor the 30-day window and 800-line boundary'
+# A window PR with no size row is left out of the share: 1 of the 3 PRs with data is over 800 lines, so 33.3 (not N/A).
 # A temporary failed size fetch must not reset an existing unhealthy episode.
 export FAKE_ISSUE_LIST='[]' FAKE_ISSUE_TITLE='pipeline health: review.large_pr_pct unhealthy'
 size_alert() { python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now "$1" --file-issues >/dev/null; }
 size_alert 2026-10-19T12:00:00Z
 jq 'del(.nontest_added["5"])' "$window/pr-sizes.json" > "$window/sizes.tmp"; mv "$window/sizes.tmp" "$window/pr-sizes.json"
 python3 "$script_dir/node_health.py" --runtime "$window" --audit "$audit" --now 2026-10-19T12:00:00Z --json "$window/result.json" >/dev/null
-jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value == null and .status == "NO-DATA"' "$window/result.json" >/dev/null \
-  || fail 'missing non-test addition count for an active PR must not produce a partial percentage'
+jq -e '[.metrics[] | select(.id == "review.large_pr_pct")][0] | .value > 33.3 and .value < 33.4 and .status == "UNHEALTHY"' "$window/result.json" >/dev/null \
+  || fail "a window PR without a size row must be left out of the share, not void it: $(jq -c '[.metrics[] | select(.id == "review.large_pr_pct")][0]' "$window/result.json")"
 size_alert 2026-10-19T13:00:00Z
 jq -e '.["review.large_pr_pct"].since == "2026-10-19T12:00:00Z"' "$window/node-health-state.json" >/dev/null \
   || fail 'missing size reset the unhealthy episode'
@@ -450,6 +454,9 @@ grep -Eq ' 1 .*WARN$' <<<"$(row 'past a spend bug bound')" || fail "over-standar
 jq -e '.metrics[] | select(.id == "loop.rounds_p90") | .meaning != "" and .healthy == 3 and .unhealthy == 5' "$a/node-health.json" >/dev/null || fail 'scorecard JSON lacks meaning or bounds'
 jq -e '.metrics[] | select(.id == "delivery.cycles_to_pass_30d") | .value == 2 and .source != "" and .healthy == 1.32 and .unhealthy == 2.28' "$a/node-health.json" >/dev/null || fail 'delivery review cycles missing from scorecard JSON'
 jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p50_7d_hours") | .value == null and .source != "" and .healthy == 24 and .unhealthy == 72' "$a/node-health.json" >/dev/null || fail 'delivery lead-time standard missing when there are no acceptance records'
+jq -e '.metrics[] | select(.id == "delivery.merged_not_live") | .value == null and .status == "UNHEALTHY" and .healthy == 0 and .unhealthy == 1 and .source != ""' "$a/node-health.json" >/dev/null || fail 'missing live SHA must be unhealthy NO-DATA for merged-not-live count'
+jq -e '.metrics[] | select(.id == "delivery.oldest_merged_not_live_hours") | .value == null and .status == "NO-DATA" and .healthy == 24 and .unhealthy == 72 and .source != ""' "$a/node-health.json" >/dev/null || fail 'oldest merged-not-live age must publish the delivery bounds'
+grep -Fq 'NODE-UNHEALTHY metric=delivery.merged_not_live node=delivery value=NO-DATA' "$a/alerts/node-health.md" || fail 'missing live SHA did not write an unhealthy alert'
 echo 'node_health.test.sh: PASS'
 
 # A prevented wait is not a collision. Count actual overlapping writers, even
@@ -546,6 +553,47 @@ assert metrics["values"]["delivery.revert_rate_30d_pct"] == 100, metrics
 print("node_health Git revert markers: PASS")
 CHECK
 
+# The release-closer log writes a 9- or 12-character sha: the acceptance regex must read it, or 30 d delivery stays empty.
+python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'short release-closer sha not read as an acceptance'
+import pathlib, sys
+sys.path.insert(0, sys.argv[1]); import node_health as n
+runtime = pathlib.Path(sys.argv[2]) / "short-sha-events"
+(runtime / "alerts").mkdir(parents=True)
+(runtime / "alerts" / "events.md").write_text(
+    "[2026-10-26T11:59:00Z] release-closer: deployed=abc123def closed=[101]\n"
+    "[2026-10-26T12:00:00Z] release-closer: deployed=abc123def456 closed=[102]\n")
+assert n.release_acceptances(str(runtime)) == [
+    {"issue":101,"sha":"abc123def","at":"2026-10-26T11:59:00Z"},
+    {"issue":102,"sha":"abc123def456","at":"2026-10-26T12:00:00Z"}], n.release_acceptances(str(runtime))
+print("node_health short release-closer sha: PASS")
+CHECK
+
+# The PR census pages GraphQL search results and refuses a PR whose reviews or commits would be cut short.
+python3 - "$script_dir" <<'CHECK' || fail 'PR census paging or truncation wrong'
+import sys
+sys.path.insert(0, sys.argv[1]); import pr_census
+def pr(number, reviews=0, commits=0):
+    return {"number":number,"mergedAt":"2026-10-24T00:00:00Z","body":"","mergeCommit":{"oid":"a"*40},
+            "reviews":{"totalCount":reviews,"nodes":[]},"commits":{"totalCount":commits,"nodes":[]}}
+pages = [{"data":{"search":{"pageInfo":{"hasNextPage":True,"endCursor":"c1"},"nodes":[pr(1, 1, 1)]}}},
+         {"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(2)]}}}]
+calls = []
+def fake(args, timeout):
+    calls.append(args)
+    return pages[len(calls) - 1]
+rows = pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30)
+assert [r["number"] for r in rows] == [1, 2], rows
+assert calls[0][:2] == ["api", "graphql"] and calls[1][-1] == "after=c1", calls
+assert "merged:>=2026-10-01" in calls[0][-1], calls[0]
+pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(3, reviews=101)]}}}]
+calls.clear()
+assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
+pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(4, commits=101)]}}}]
+calls.clear()
+assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
+print("node_health PR census pages and refuses truncation: PASS")
+CHECK
+
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
 python3 - "$script_dir" "$test_env_root" <<'CHECK' || fail 'delivery metrics join or percentiles are wrong'
 import datetime as dt, json, os, pathlib, sys
@@ -639,7 +687,9 @@ gh = gh_bin / "gh"
 gh.write_text("""#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]
-if args[:2] in (["issue", "list"], ["pr", "list"]):
+if args[:2] == ["api", "graphql"]:
+    print(json.dumps({"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[]}}}))
+elif args[:2] in (["issue", "list"], ["pr", "list"]):
     print("[]")
 elif args[:3] == ["issue", "view", "101"]:
     print(json.dumps({"number":101,"createdAt":"2026-09-01T00:00:00Z","closedAt":"2026-09-02T00:00:00Z"}))
@@ -676,7 +726,9 @@ args = sys.argv[1:]
 change_active(1)
 try:
     time.sleep(0.1)
-    if args[:2] in (["issue", "list"], ["pr", "list"]):
+    if args[:2] == ["api", "graphql"]:
+        print(json.dumps({"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[]}}}))
+    elif args[:2] in (["issue", "list"], ["pr", "list"]):
         print("[]")
     elif args[:2] == ["issue", "view"]:
         number = int(args[2])
@@ -708,7 +760,9 @@ gh = unavailable_bin / "gh"
 gh.write_text("""#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]
-if args[:2] in (["issue", "list"], ["pr", "list"]):
+if args[:2] == ["api", "graphql"]:
+    print(json.dumps({"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[]}}}))
+elif args[:2] in (["issue", "list"], ["pr", "list"]):
     print("[]")
 elif args[:2] == ["issue", "view"]:
     raise SystemExit(1)
@@ -828,6 +882,79 @@ rm -f "$fa/units.json"; mv "$fa/units.busy.json" "$fa/units.json"; mv "$fa/main-
 rm -f "$AGENT_HOME"/logs/supervisor-alert-seen-*.tsv
 flowrun "$fa" --inbox >/dev/null
 [[ "$(flowlines)" == 8 ]] || fail "re-armed crossing did not emit again after recovery: $(flowlines)"
+
+# --- 线级 hold：release_train.enabled=false 或有效 PAUSE 是把整条线停住的 hold，和 issue 级 hold
+# （hold_issue 的 --holder/--release/--expires）欠同样的元数据。缺 owner、缺到期或已过期计入
+# holds.line_violations（健康 0，异常 ≥1）；过期不自动恢复，只每天告警一次（events.md + supervisor inbox）。 ---
+lhsup="$test_env_root/line-hold-sup"; lha="$lhsup/autopi"; mkdir -p "$lha/alerts" "$lhsup"
+lhval() { # <config-json> → metric value and status（固定 now，PAUSE 用套件级 fixture）
+  printf '%s' "$1" > "$lha/config.json"
+  PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$lha" --audit "$noaudit" \
+    --hours 5 --now 2026-10-19T12:00:00Z --json "$lha/node-health.json" >/dev/null
+  jq -r --arg id holds.line_violations '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$lha/node-health.json"
+}
+[[ "$(lhval '{"release_train":{"enabled":true}}')" == "0 OK" ]] || fail "enabled train is not a hold: $(lhval '{"release_train":{"enabled":true}}')"
+[[ "$(lhval '{"release_train":{"enabled":false}}')" == "1 UNHEALTHY" ]] \
+  || fail "disabled train without hold metadata must be one violation: $(lhval '{"release_train":{"enabled":false}}')"
+[[ "$(lhval '{"release_train":{"enabled":false,"hold":{"owner":"ops","reason":"demo","expires_at":"2026-10-20T12:00:00Z"}}}')" == "0 OK" ]] \
+  || fail "disabled train with owner and future expiry is held on purpose: $(lhval '{"release_train":{"enabled":false,"hold":{"owner":"ops","reason":"demo","expires_at":"2026-10-20T12:00:00Z"}}}')"
+[[ "$(lhval '{"release_train":{"enabled":false,"hold":{"owner":"ops","reason":"demo","expires_at":"2026-10-19T06:00:00Z"}}}')" == "1 UNHEALTHY" ]] \
+  || fail "expired hold metadata is a violation: $(lhval '{"release_train":{"enabled":false,"hold":{"owner":"ops","reason":"demo","expires_at":"2026-10-19T06:00:00Z"}}}')"
+[[ "$(lhval '{"release_train":{"enabled":false,"hold":{"reason":"demo","expires_at":"2026-10-20T12:00:00Z"}}}')" == "1 UNHEALTHY" ]] \
+  || fail "hold without owner is a violation: $(lhval '{"release_train":{"enabled":false,"hold":{"reason":"demo","expires_at":"2026-10-20T12:00:00Z"}}}')"
+# PAUSE：纯文本 = 没有 owner，算违规；JSON 的 owner/expires_at 可选，缺了或过期算违规；
+# 空/坏 JSON 的 PAUSE 两条流水线都不理会（manual_pause_is_valid 拒绝），不算 hold
+lhpause() { # <pause-contents|-> → metric value and status（config 不停线）
+  local pause_home="$lhsup/agent-home"; mkdir -p "$pause_home"
+  if [[ "$1" == - ]]; then rm -f "$pause_home/PAUSE"; else printf '%s\n' "$1" > "$pause_home/PAUSE"; fi
+  printf '%s' '{"release_train":{"enabled":true}}' > "$lha/config.json"
+  AGENT_HOME="$pause_home" PATH="$test_env_root/bin:$PATH" \
+    python3 "$script_dir/node_health.py" --runtime "$lha" --audit "$noaudit" \
+    --hours 5 --now 2026-10-19T12:00:00Z --json "$lha/node-health.json" >/dev/null
+  jq -r --arg id holds.line_violations '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$lha/node-health.json"
+}
+[[ "$(lhpause 'head: prod import window')" == "1 UNHEALTHY" ]] || fail "plain-text PAUSE has no owner and must violate: $(lhpause 'head: prod import window')"
+[[ "$(lhpause '{"caller":"operator","reason":"stop","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-19T11:00:00Z"}')" == "1 UNHEALTHY" ]] \
+  || fail "operator PAUSE without owner/expiry must violate: $(lhpause '{"caller":"operator","reason":"stop","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-19T11:00:00Z"}')"
+[[ "$(lhpause '{"caller":"operator","reason":"stop","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-19T11:00:00Z","owner":"founder","expires_at":"2026-10-20T00:00:00Z"}')" == "0 OK" ]] \
+  || fail "operator PAUSE with owner and future expiry is held on purpose"
+[[ "$(lhpause '{"caller":"operator","reason":"stop","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-19T11:00:00Z","owner":"founder","expires_at":"2026-10-19T09:00:00Z"}')" == "1 UNHEALTHY" ]] \
+  || fail "expired PAUSE hold must violate and stay held"
+[[ "$(lhpause '{')" == "1 UNHEALTHY" ]] || fail "unparseable PAUSE reads as plain text (a pause, no owner): $(lhpause '{')"
+[[ "$(lhpause '{"caller":"automation","reason":"x"}')" == "0 OK" ]] \
+  || fail "JSON PAUSE without the operator contract is ignored by the pipelines and is not a hold: $(lhpause '{"caller":"automation","reason":"x"}')"
+[[ "$(lhpause -)" == "0 OK" ]] || fail "no PAUSE file is not a hold"
+# 告警：违规每个 hold 每天一条 events.md + 一条 supervisor inbox（once helper，key 带天），点名 owner、reason、过期多久
+printf '%s' '{"release_train":{"enabled":false,"hold":{"owner":"ops","reason":"demo revert after 11-03","expires_at":"2026-10-19T06:00:00Z"}}}' > "$lha/config.json"
+lhpause_home="$lhsup/agent-home"
+echo '{"caller":"operator","reason":"stop","issue":"1","provider":"manual","model":"manual","timestamp":"2026-10-19T11:00:00Z"}' > "$lhpause_home/PAUSE"
+lhinbox="$lhpause_home/supervisor-inbox"
+lhrun() { AGENT_HOME="$lhpause_home" PATH="$test_env_root/bin:$PATH" \
+  python3 "$script_dir/node_health.py" --runtime "$lha" --audit "$noaudit" --hours 5 --now "$1" --inbox >/dev/null; }
+lhrun 2026-10-19T12:00:00Z
+lhlines() { grep -c 'line-hold hold=' "$lhinbox" 2>/dev/null || printf '0\n'; }
+lhevents() { grep -c 'LINE-HOLD-VIOLATION hold=' "$lha/alerts/events.md" 2>/dev/null || printf '0\n'; }
+[[ "$(lhlines)" == 2 && "$(lhevents)" == 2 ]] || fail "expected one alert per violating hold: inbox=$(lhlines) events=$(lhevents)"
+grep -Fq 'line-hold hold=release_train.enabled owner=ops reason=demo revert after 11-03 problem=expired expired_ago=6h' "$lhinbox" \
+  || fail "config-hold alert must name owner, reason and hours since expiry: $(cat "$lhinbox")"
+grep -Fq 'line-hold hold=PAUSE owner=missing' "$lhinbox" || fail "PAUSE alert must name the hold and its missing owner: $(cat "$lhinbox")"
+grep -Fq 'LINE-HOLD-VIOLATION hold=release_train.enabled owner=ops' "$lha/alerts/events.md" \
+  || fail "events.md line missing: $(cat "$lha/alerts/events.md")"
+lhrun 2026-10-19T15:00:00Z
+[[ "$(lhlines)" == 2 && "$(lhevents)" == 2 ]] || fail "same hold on the same day alerted again: inbox=$(lhlines) events=$(lhevents)"
+# lib.sh 的同文去重按真实日滚动（supervisor-alert-seen-<day>.tsv）：跨“天”重发要像 flow 测试一样清掉当天记录
+rm -f "$lhpause_home"/logs/supervisor-alert-seen-*.tsv
+lhrun 2026-10-20T12:00:00Z
+[[ "$(lhlines)" == 4 && "$(lhevents)" == 4 ]] || fail "a new day must alert once per hold again: inbox=$(lhlines) events=$(lhevents)"
+grep -Fq 'line-hold hold=release_train.enabled owner=ops reason=demo revert after 11-03 problem=expired expired_ago=30h' "$lhinbox" \
+  || fail "next-day alert must recompute the expiry age: $(grep 'release_train.enabled' "$lhinbox" | tail -1)"
+rm -f "$lhpause_home/PAUSE"
+printf '%s' '{"release_train":{"enabled":false,"hold":{"reason":"missing owner after expiry","expires_at":"2026-10-19T06:00:00Z"}}}' > "$lha/config.json"
+rm -f "$lhpause_home"/logs/supervisor-alert-seen-*.tsv
+lhrun 2026-10-21T12:00:00Z
+[[ "$(lhlines)" == 5 && "$(lhevents)" == 5 ]] || fail "combined missing-owner and expired hold did not alert: inbox=$(lhlines) events=$(lhevents)"
+grep -Fq 'line-hold hold=release_train.enabled owner=missing reason=missing owner after expiry problem=no-owner expired_ago=54h' "$lhinbox" \
+  || fail "a missing owner must not hide how long the hold has been expired: $(grep 'release_train.enabled' "$lhinbox" | tail -1)"
 
 # --- 机制心跳（#4495 M2/#4498 登记接缝；#4500 STPA 全量登记）：登记表机制超过沉默上限计入
 # mechanism.silent，expected_idle 不计。fixture 覆盖全量登记：非 idle 项每项一条新鲜事件

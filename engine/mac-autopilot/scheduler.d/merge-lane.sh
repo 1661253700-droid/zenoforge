@@ -75,6 +75,14 @@ merge_conflict_to_repair() { # id pr cause repair_hint head
   say "merge-conflict-attribution unit=$1 pr=$2 pr_head=${head:-unknown} main_sha=${MAIN_HEAD:-unknown} conflicting_files=unavailable"
 }
 
+# 评审派发前的冲突分流：只读本拍已取的 open-PR census（TICK_PRS，不补取、不逐单元 gh）；census 说 CONFLICTING 才走
+# merge_conflict_to_repair（它自带一次 GitHub 复核，按 unit/head 记账）。返回 0 = 已处理，调用方本拍跳过评审。
+review_conflict_to_repair() { # id pr head
+  [[ "$2" =~ ^[0-9]+$ && -n "${TICK_PRS:-}" ]] || return 1
+  [[ "$(jqf -r --argjson p "$2" '[.[] | select(.number == $p) | .mergeable][0] // empty' <<<"$TICK_PRS")" == CONFLICTING ]] || return 1
+  merge_conflict_to_repair "$1" "$2" "conflicts with main before review" "PR 与最新 main 冲突，评审前发现，评审只会落在合不进去的 head 上。git merge --no-edit origin/main，按两边意图解决冲突，跑受影响测试，推送。" "$3"
+}
+
 # 合入即写 awaiting-release（#4515 发布状态单一事实源）：unit 台账的 unit→issue 关系驱动，
 # 不读 PR 正文。无 issue 的单元（外部 PR，关闭词由 GitHub 在合并时自动关票）无事可写。
 # 写失败不回滚合入（PR 已在 main 上），告警到 alerts/merge.md 人工补 conclude_merged_run。
@@ -131,6 +139,11 @@ run_merge_lane() {
 }
 # A unit that turned ready-to-merge after the tick's merge pass waited for the next full tick (about half a cycle).
 # The refill runs one pass when such a unit exists, at most once per merge_refill_min_seconds.
+# Nothing inside the pre-candidate stages can stop at the refill deadline (5 of 7 refill kills since 05:52Z, 2026-11-08), so check the budget between them.
+merge_refill_budget_spent() { # stage
+  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] && (( SECONDS >= ${AUTOPI_REFILL_LIMIT_SECONDS:-300} - 120 )) || return 1
+  say "merge pass stopped before $1 at ${SECONDS}s: the refill budget is spent; the next refill resumes"
+}
 refill_merge_pass() {
   local now last min
   [[ "$(jqf -r .auto_merge <<<"$CFG")" == "true" ]] || return 0
@@ -139,6 +152,8 @@ refill_merge_pass() {
   min="$(jqf -r '.merge_refill_min_seconds // 120' <<<"$CFG")"; [[ "$min" =~ ^[0-9]+$ ]] || min=120
   now="$(date +%s)"; last="$(cat "$A/.refill-merge-epoch" 2>/dev/null || true)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
   (( now - last >= min )) || return 0
+  ! merge_refill_budget_spent refill_merge_pass || return 0
+  refill_room refill_merge_pass || return 0
   printf '%s\n' "$now" > "$A/.refill-merge-epoch"
   MERGE_LANE_WAIT=0 run_merge_lane
 }
@@ -173,6 +188,7 @@ run_merge_lane_pass() {
   fi
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail refresh_main=${detail_elapsed}s"
+  merge_refill_budget_spent suite_gate_lookup && return 0
   merge_max="$(jqf -r '.batch_max // 4' <<<"$CFG")"
   [[ "$merge_max" =~ ^[1-9][0-9]*$ ]] || merge_max=4
   eval_sha=""; gate_run=""
@@ -194,6 +210,8 @@ run_merge_lane_pass() {
   fi
   detail_elapsed=$((SECONDS - detail_started))
   (( detail_elapsed < 2 )) || say "merge detail suite_gate_lookup=${detail_elapsed}s"
+  merge_refill_budget_spent main_ci_classify && return 0
+  say "merge stage main_ci_classify start"
   detail_started=$SECONDS
   ci_classify_run "$gate_run" "$eval_sha"
   detail_elapsed=$((SECONDS - detail_started))
@@ -250,6 +268,8 @@ run_merge_lane_pass() {
   fi
 
   # 候选的检查行取自 merge_candidates 那一次批量 gh pr list（census），不再逐个 gh pr checks；合并仍用 --match-head-commit 钉住 head。
+  merge_refill_budget_spent candidate_build && return 0
+  say "merge stage candidate_build start"
   tick_prs_prime
   detail_started=$SECONDS
   cands="$(merge_candidates "$((merge_max * 3))")"

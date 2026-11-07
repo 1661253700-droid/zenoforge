@@ -39,19 +39,55 @@ log_reliability_breach() {
   jq -cn --argjson b "$cur" --argjson s "$since" 'if $b == [] then {breached:$b} else {breached:$b, since:$s} end' | write_state "$st"
   say "reliability breach breached=$cur$secs"
 }
+# A killed tick never prints tick-phases: leave the running phase for loop.sh's TICK-TIMEOUT / REFILL-TIMEOUT line.
+# A refill runs beside a full tick, so each keeps its own file.
+phase_mark() {
+  local f=.tick-phase
+  [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || f=.refill-phase
+  printf '%s\n' "$1" > "$A/$f" || :
+}
+# One whole-refill budget. The kill counts from the refill's start and no step could see it coming: a preflight that began at 200s died at 300s.
+# refill_room <stage> refuses a long step when the seconds spent plus that stage's recent cost pass the limit; a full tick is never refused.
+# The cost is the largest of the last 5 measured runs in .refill-stage-cost; a stage with no run yet takes a default.
+# It is capped at half the limit, so a refill that has just started always runs the stage and a stale high cost cannot lock it out.
+refill_stage_cost() { # stage -> seconds
+  local stage="$1" limit="${AUTOPI_REFILL_LIMIT_SECONDS:-300}" secs
+  secs="$(awk -v s="$stage" '$1 == s && $2 ~ /^[0-9]+$/ && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$A/.refill-stage-cost" 2>/dev/null)" || secs=0
+  if (( secs <= 0 )); then
+    case "$stage" in preflight) secs=90 ;; refill_merge_pass) secs=60 ;; *) secs=45 ;; esac
+  fi
+  (( secs <= limit / 2 )) || secs=$((limit / 2))
+  printf '%s\n' "$secs"
+}
+refill_cost_record() { # stage seconds: refill only; runs under 2s are noise and would push a real cost out of the window
+  local f="$A/.refill-stage-cost"
+  [[ "${TICK_LOCAL_REFILL:-false}" == true && "$2" =~ ^[0-9]+$ ]] && (( $2 >= 2 )) || return 0
+  { cat -- "$f" 2>/dev/null || :; printf '%s %s\n' "$1" "$2"; } \
+    | awk '{ line[NR] = $0; key[NR] = $1 } END { for (i = NR; i > 0; i--) if (++seen[key[i]] <= 5) keep[i] = 1; for (i = 1; i <= NR; i++) if (keep[i]) print line[i] }' \
+    > "$f.tmp" && mv -f -- "$f.tmp" "$f" || :
+}
+refill_room() { # stage -> 0 when the stage fits in what is left of the refill, else 1 with one log line
+  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] || return 0
+  local need limit="${AUTOPI_REFILL_LIMIT_SECONDS:-300}"
+  need="$(refill_stage_cost "$1")"
+  (( SECONDS + need > limit )) || return 0
+  say "refill room refused stage=$1 at ${SECONDS}s need=${need}s limit=${limit}s: it waits for the next refill"
+  return 1
+}
 # Dispatch refreshes itself because running workers may have pushed.
 phase() {
   local t0=$SECONDS rc=0 gh_before=0 gh_after=0 gh_delta=0 phase_name="$1" elapsed
   gh_before="$(tick_gh_calls_count)"
-  # A killed refill never prints tick-phases: leave the running phase for loop.sh's REFILL-TIMEOUT line.
-  [[ "${TICK_LOCAL_REFILL:-false}" != true ]] || printf '%s\n' "$phase_name" > "$A/.refill-phase" || :
+  phase_mark "$phase_name"
   [[ "${TICK_LOCAL_REFILL:-false}" == true || "$phase_name" == dispatch_pending || "$phase_name" == tick_prs_prime ]] || tick_prs_prime
   "$@" || rc=$?
   elapsed=$((SECONDS - t0))
   gh_after="$(tick_gh_calls_count)"
   (( gh_after >= gh_before )) && gh_delta=$((gh_after - gh_before))
   TICK_PHASE_DETAILS+="${TICK_PHASE_DETAILS:+,}${phase_name}:${elapsed}s/${gh_delta}gh"
+  [[ "${TICK_LOCAL_REFILL:-false}" == true ]] || printf '%s\n' "${phase_name}:${elapsed}s/${gh_delta}gh" >> "$A/.tick-phases" || :
   (( elapsed < 5 )) || TICK_PHASES+=" $phase_name=${elapsed}s"
+  case "$phase_name" in refill_merge_pass | register_new_issues) refill_cost_record "$phase_name" "$elapsed" ;; esac
   return "$rc"
 }
 

@@ -42,6 +42,7 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | scheduler | seconds between tick starts p50 (`scheduler.tick_gap_p50`) | — | ≤ 240 | ≥ 420 | — |
 | release | current release batch wait in hours (`release.hours_waiting`) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
 | release | production hot patches whose PR is not on main (`release.hotpatch_blockers`) | a hotfix is merged the same day | 0 | ≥ 1 | — |
+| holds | line holds (a disabled release train or a valid PAUSE) without an owner or expiry, or past expiry (`holds.line_violations`; each violating hold appends one alerts/events.md line and one supervisor inbox line per day, naming owner, reason and hours since expiry) | a line hold is the same decision as an issue hold (`hold_issue` requires holder, release condition, expiry) and owes the same metadata; expiry fails loud and never re-enables the held line | 0 | ≥ 1 | first scorecard sample |
 | pipeline | open agent PRs outside the ledger (`pipeline.orphan_prs`) | — | ≤ 3 | ≥ 10 | — |
 | work orders | open work orders past a spend bug bound (`workorders.over_standard`) | — | 0 | ≥ 3 | — |
 | work orders | per-ticket worker fresh tokens p90, tickets closed in 7 d (`workorders.ticket_tokens_p90`) | fresh means uncached input + output; bounds derive only from preceding 30 d of closed tickets with cache splits — healthy p50 x 1.5, unhealthy p90 x 2 (`worker_cost.ticket_bound`); no usable history falls back to the static values here | ≤ 800 k | ≥ 4.8 M | first scorecard sample |
@@ -72,6 +73,8 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | review loop | REQUEST-CHANGES reports without a machine-readable findings block % (`review.findings_missing_pct`, from `review_findings` in `units.json`) | recurrence and per-round history are only as good as the data: a missing block is counted, never read as zero findings | ≤ 5 | ≥ 20 | — |
 | delivery | issue created → release accepted p50, rolling 7 d / 30 d hours (`delivery.issue_to_accept_p50_7d_hours`, `delivery.issue_to_accept_p50_30d_hours`) | DORA elite lead time < 1 day [4]; same bound as `unit.age_hours` | ≤ 24 | ≥ 72 | first scorecard sample |
 | delivery | issue created → release accepted p95, rolling 7 d / 30 d hours (`delivery.issue_to_accept_p95_7d_hours`, `delivery.issue_to_accept_p95_30d_hours`) | engineering estimate: healthy is three days; one week is a stalled delivery | ≤ 72 | ≥ 168 | first scorecard sample |
+| delivery | first-parent product commits on `origin/main` after the recorded live SHA (`delivery.merged_not_live`) | `$AGENT_HOME/state/live-sha.json` plus the merge lane's `NONPRODUCT_PATHS_RE`; every missing live SHA is NO-DATA and unhealthy because this signal was silent for 15 days | 0 | ≥ 1 | — |
+| delivery | age in hours of the oldest such commit (`delivery.oldest_merged_not_live_hours`) | commit time from the same first-parent product commit range; the 24/72 h bounds match issue-to-accept p50 | ≤ 24 | ≥ 72 | — |
 | delivery | fully linked units accepted in the last 30 d that have since been reverted % (`delivery.revert_rate_30d_pct`) | elite change failure rate < 5 % [4]; 10 % is twice that bound | ≤ 5 | ≥ 10 | first scorecard sample |
 | delivery | dated root-cause incident records per 100 release-accepted issue IDs % (`delivery.incident_rate_30d_pct`) | change-failure proxy [4]; no frozen incident-per-unit baseline yet, so 5 / 10 % are the same initial bands as reverts | ≤ 5 | ≥ 10 | first scorecard sample; unlinked incident records remain separately visible |
 | delivery | review rounds through the first approval per merged unit (`delivery.cycles_to_pass_30d`) | Anthropic reported 1.32 reviews-to-pass after its change; the product's pre-pause 112 delivered units averaged 2.28 approvals [alignment §9] | ≤ 1.32 | ≥ 2.28 | first scorecard sample |
@@ -167,6 +170,14 @@ stall is never charged to merge.
 | merge | units in `ready-to-merge` without `ci_wip_wait` | `merged`, `landed` | 150 |
 | CI | `ready-to-merge` units with `ci_wip_wait` | `ci-ready`, `ci-wip-start` (a slot after a wait) | 100 |
 | release | `awaiting-release` with `deploy_state` not `deployed` | `release-closer` line, one per closed issue | 950 |
+
+The CI station is also its own process: `scheduler.sh --ci-admission` runs `ci_admission` every 120 s under its own lock with a
+240 s bound (`AUTOPI_CI_ADMISSION_LIMIT_SECONDS`), not as a phase of the full tick, which took 1329-1668 s. Its `ci wip:` log line ends
+with `deferred N`: the units the pass left for the next one (slot-sync budget spent, run list unavailable, or the bound reached),
+which `0 ready unit(s) wait` alone did not show. The sync budget is the pass's free slots.
+The merge lane can rerun a check that admission cancelled before `ci_wip_wait` is set; each such rerun logs one
+`ci cancel-rerun unit=<id> head=<sha> run=<id>` line (decided from the cancel audit's latest reason for the run being `ci wip` or
+`ci deferred`), so a day's count is one grep.
 
 Status: `STALLED` when the buffer is not empty and the stall exceeds the bound, `PAUSED` while the pipeline pause
 file exists (no alert), else `OK`. Stall minutes are `min(now - last out, oldest wait)` while something waits and 0

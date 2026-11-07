@@ -3,6 +3,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/test-env.sh"
 source "$MODEL_POLICY_TEST_REPO/tools/merge-pr.sh"
 merge_pr_static_scans() { return 0; }
+merge_pr_review_family() { return 0; }
 merge_pr_root() { printf '%s\n' "$repo"; } # the fixture repo stands in for the enclosing checkout: the host's size state and receipts must not reach these fixtures
 
 fixture="$test_env_root/merge-pr"
@@ -33,6 +34,7 @@ PR_HEAD="$sha"
 PR_CHECKS='[]'
 PR_BODY=$'## prior-art\nFollows required status checks: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches\n'
 PR_FILES='["tools/quick-land.sh"]'
+PR_FILE_STATUSES='[]'
 gh() {
   case "$1 $2" in
     'pr view')
@@ -65,6 +67,9 @@ gh() {
     'run cancel')
       printf '%s\n' "$3" >> "$fixture/cancelled"
       ;;
+    'api '*)
+      printf '%s\n' "$PR_FILE_STATUSES"
+      ;;
     *)
       fail "unexpected gh command: $*"
       ;;
@@ -93,7 +98,7 @@ assert_refuses "PR head $PR_HEAD does not match tested SHA $sha" 'stale SHA'
 PR_HEAD="$sha"
 : > "$fixture/gh-calls"
 merge_pr_gate 17 "$sha" "$repo" >/dev/null
-[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'view:pr view 17 --json headRefOid\nchecks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "green matching result did not squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"unit","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -104,7 +109,7 @@ fi
 check_output="$(cat "$fixture/check-output")"
 [[ "$check_output" == *'failed checks: cla, unit'* && "$check_output" == *'checks without a matching ZF_MERGE_OVERRIDE: unit'* ]] \
   || fail "failed check names or unmatched override were not reported: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits' ]] \
   || fail "an unmatched failed check reached merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS='[{"name":"cla","bucket":"fail"},{"name":"CI","bucket":"pending"}]'
@@ -113,7 +118,7 @@ check_output="$(ZF_MERGE_OVERRIDE=cla merge_pr_checks_and_merge 17 2>&1)" \
   || fail "named failed-check override did not allow the merge: $check_output"
 [[ "$check_output" == *'explicit ZF_MERGE_OVERRIDE allows failed checks: cla'* ]] \
   || fail "merge did not print the failed check covered by its override: $check_output"
-[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
+[[ "$(cat "$fixture/gh-calls")" == $'checks:pr checks 17 --json bucket,name\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json headRefOid\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nview:pr view 17 --json body,files,commits\nmerge:pr merge 17 --squash --delete-branch\nview:pr view 17 --json headRefOid' ]] \
   || fail "pending check or named override did not reach squash merge: $(cat "$fixture/gh-calls")"
 
 PR_CHECKS=gh-error
@@ -240,6 +245,17 @@ if merge_pr_static_scans_ok 17 >"$fixture/check-output" 2>&1; then fail 'an unre
 PR_BODY=$'## prior-art\nno external prior art: test fixture'
 merge_pr_static_scans() { return 0; }
 
+# A dispatch-queue change runs review-family.test.sh; a red run refuses, other files skip it.
+merge_pr_review_family() { echo called >> "$fixture/review-family-calls"; echo 'not ok - dispatch line'; return 1; }
+: > "$fixture/review-family-calls"
+PR_CHECKS='[]' PR_FILES='["tools/quick-land.sh"]' PR_BODY=$'## prior-art\nno external prior art: test fixture'
+merge_pr_review_family_ok 17 || fail 'a non-dispatch PR was refused by review-family'
+[[ ! -s "$fixture/review-family-calls" ]] || fail 'a non-dispatch PR ran review-family'
+PR_FILES='["engine/mac-autopilot/scheduler.d/dispatch-queue.sh"]'
+if merge_pr_review_family_ok 17 >"$fixture/check-output" 2>&1; then fail 'a red review-family did not refuse a dispatch-queue PR'; fi
+[[ "$(cat "$fixture/check-output")" == *'review-family.test.sh failed: not ok - dispatch line'* ]] || fail "review-family refusal lost its reason: $(cat "$fixture/check-output")"
+merge_pr_review_family() { return 0; }
+
 # A scheduler change runs the scheduler.test.sh prelude; a red prelude refuses, other changes skip it.
 merge_pr_scheduler_prelude() { echo called >> "$fixture/prelude-calls"; echo 'not ok - stale grep'; return 1; }
 : > "$fixture/prelude-calls"
@@ -275,5 +291,25 @@ for preserved in engine/worktree-lifecycle.sh engine/mac-autopilot/rescued_gc.sh
 done
 PR_FILES='["tools/merge-pr.sh"]'
 ZF_MERGE_OVERRIDE=gate-ci merge_pr_gate_ci_ok 17 "$PR_CHECKS" || fail 'the gate-ci override was ignored'
+
+# A PR that deletes or renames away an engine test suite is refused; a pure move, a modify or a non-engine test passes.
+expect_suite() {
+  local label="$1" statuses="$2" verdict="$3" out
+  PR_FILE_STATUSES="$statuses"
+  if out="$(merge_pr_suite_delete_ok 17 2>&1)"; then
+    [[ "$verdict" == pass ]] || fail "$label was not refused"
+  else
+    [[ "$verdict" == refuse ]] || fail "$label refused: $out"
+    [[ "$out" == *"$4"* ]] || fail "$label refusal lost its file: $out"
+  fi
+}
+expect_suite 'removed suite' '[{"filename":"engine/old.test.sh","status":"removed","changes":9}]' refuse 'engine/old.test.sh'
+expect_suite 'renamed suite with edits' '[{"filename":"engine/new.test.sh","previous_filename":"engine/old.test.sh","status":"renamed","changes":2}]' refuse 'engine/old.test.sh'
+expect_suite 'renamed suite out of engine' '[{"filename":"tools/new.test.sh","previous_filename":"engine/old.test.sh","status":"renamed","changes":0}]' refuse 'engine/old.test.sh'
+expect_suite 'pure suite move' '[{"filename":"engine/new.test.sh","previous_filename":"engine/old.test.sh","status":"renamed","changes":0}]' pass
+expect_suite 'modified suite' '[{"filename":"engine/old.test.sh","status":"modified","changes":4}]' pass
+expect_suite 'removed non-engine test' '[{"filename":"tools/old.test.sh","status":"removed","changes":3}]' pass
+expect_suite 'removed engine script' '[{"filename":"engine/old.sh","status":"removed","changes":3}]' pass
+PR_FILE_STATUSES='[]'
 
 echo 'PASS merge helper enforces the full-gate SHA, refuses failed or unreadable checks, allows pending checks, applies exact named overrides, requires a prior-art section unless test-only or overridden, and requires a green test receipt for the PR head unless the PR is Markdown-only'

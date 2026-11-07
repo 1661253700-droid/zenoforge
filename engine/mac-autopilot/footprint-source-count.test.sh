@@ -177,6 +177,31 @@ rows=$'c1\t["packages/hot/src/f1.ts"]\t["packages/hot/src/f1.ts"]\nc2\t["docs/x.
 new_batch="$(active_footprint_conflicts_batch "$owners" "$rows")"
 [[ "$new_batch" == $'c1\to-dir\nc3\to-file' ]] || fail "batch verdicts changed: [$new_batch]"
 
+# The memoized batch gives what the legacy pair loop gives for every candidate, and classifies each distinct scope once.
+eval "$(declare -f footprint_classify | sed '1s/footprint_classify/footprint_classify_real/')"
+footprint_classify() { printf x >> "$fixture/classify-calls"; footprint_classify_real "$@"; }
+IFS=' ' read -ra all_cands <<<'["packages/hot/src/f1.ts"] ["packages/hot/src/f2.ts"] ["packages/hot/src/f3.ts"] ["packages/cold"] ["packages/cold/src/a.ts"] ["migrations/meta/_journal.json"] ["packages/new/y.ts"] ["packages/new"] ["docs/x.md"] []'
+for mode in 0 1; do
+  for shared in '[]' '["packages/hot/src/f3.ts"]'; do
+    SHARED_APPEND="$shared"; export ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING="$mode"
+    rows=''; expected=''; n=0
+    for cand in "${all_cands[@]}"; do
+      n=$((n + 1)); rows+="c$n"$'\t'"$cand"$'\t'"$cand"$'\n'
+      old="$(legacy_active_footprint_conflict "$cand" "$owners" "c$n" "$cand")"
+      [[ -z "$old" ]] || expected+="c$n"$'\t'"$old"$'\n'
+    done
+    : > "$fixture/classify-calls"
+    got="$(active_footprint_conflicts_batch "$owners" "$rows")"
+    [[ "$got" == "${expected%$'\n'}" ]] || fail "batch differs from the legacy loop mode=$mode shared=$shared: got [$got] want [$expected]"
+    if [[ "$mode" == 0 ]]; then
+      distinct="$( { printf '%s\n' "${all_cands[@]}"; jq -c '.[] | .footprint' <<<"$owners"; } | sort -u | grep -c .)"
+      (( "$(wc -c < "$fixture/classify-calls" | tr -d ' ')" <= distinct )) || fail "batch classified a scope twice: $(wc -c < "$fixture/classify-calls") calls for $distinct distinct scopes"
+    fi
+  done
+done
+SHARED_APPEND='[]'; export ZF_FOOTPRINT_DIRECTORY_PREFIX_MATCHING=0
+unset -f footprint_classify; eval "$(declare -f footprint_classify_real | sed '1s/footprint_classify_real/footprint_classify/')"
+
 # The conflict map after starts: the merge against changed owners must give what a full comparison gives, and may only keep more.
 merge_map() { local id; for id in "${!TICK_FOOTPRINT_PREFLIGHT_CONFLICT[@]}"; do printf '%s\n' "$id"; done | sort | paste -sd,; }
 full_map() ( footprint_refresh_conflicts cached && merge_map )
@@ -305,7 +330,7 @@ register() { # n -> lib loads and wall seconds for one refill intake over n cand
       "$(jq -cn --argjson n "$((9300 + i))" --arg b "Affected files: packages/hot/src/f$i.ts" \
         '{number:$n,title:"candidate",body:$b,state:"OPEN",labels:[{name:"ready-for-agent"}],subIssuesSummary:{total:0,completed:0}}' | base64 -w0)")"$'\n'
   done
-  jq -cn --argjson at "$(date +%s)" --arg rows "${rows%$'\n'}" '{schema:3,created_at:$at,rows:$rows}' > "$A/intake-candidates.json"
+  jq -cn --argjson at "$(date +%s)" --arg rows "${rows%$'\n'}" '{schema:4,created_at:$at,rows:$rows}' > "$A/intake-candidates.json"
   printf '{"units":[]}\n' > "$UNITS"; : > "$LOG"; SCHEDULER_LIB_CONTEXT_FOR=''
   SECONDS=0 # refill intake counts its budget from the tick's start, and this file can pass 270s on a loaded host
   loads_before="$(lib_loads)"; start=$SECONDS

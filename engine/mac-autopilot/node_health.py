@@ -17,7 +17,9 @@ import argparse, glob, json, os, re, socket, subprocess, urllib.parse, urllib.re
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import arbiter_health, ledger_history
+import arbiter_health, ledger_history, live_delivery
+import line_holds
+import pr_census
 import worker_cost
 import workorder_cost
 import usage_reader
@@ -41,7 +43,7 @@ def health_doc_reference():
 
 
 # metric id: (node, description, healthy bound, unhealthy bound, higher_is_better)
-CRITERIA = {**arbiter_health.CRITERIA,
+CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
     "dispatch.collisions_per_day": ("implement", "overlapping implement/repair unit pairs in the last 24h", 0, 1, False),
@@ -118,7 +120,7 @@ GH_DELIVERY_CALL_TIMEOUT = 15
 GH_DELIVERY_CENSUS_TIMEOUT = 30
 GH_DELIVERY_BATCH_TIMEOUT = 60
 # What each number means, in the dashboard's words. Every metric above needs one (node_health.test.sh).
-MEANING = {**arbiter_health.MEANING,
+MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "dispatch.collisions_per_day": "过去 24 小时不同开发单元同时写入同一文件的次数；正常等待不算碰撞，任何一次都是故障。",
@@ -184,7 +186,7 @@ MEANING = {**arbiter_health.MEANING,
     "delivery.human_actions_unattributed_30d": "过去 30 天 maintainer-login PR review 中，有 agent marker 或 commit trailer、但没有相应 scheduler review 事件的动作数；不算成人工动作。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
-SOURCE = {**arbiter_health.SOURCE,
+SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
@@ -192,7 +194,7 @@ SOURCE = {**arbiter_health.SOURCE,
     "review.first_pass_pct": "units.json 每单第一次评审结论（review-approve / review-request-changes / review-block）",
     "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入",
     "loop.rounds_p90": "units.json：每次 review-approve 之前的 review-request-changes 次数",
-    "loop.rework_token_pct": "worker 页脚或 usage_reader 原生 turn 用量减派发基线：repair（含 self-fix）+ rereview ÷ 全部；计数不可用则 N/A",
+    "loop.rework_token_pct": "worker 页脚或 usage_reader 原生 turn 用量减派发基线：repair（含 self-fix）+ rereview ÷ 已计量的 run；未计量的 run 不计入，显示已计量 run 数；全部未计量则 N/A",
     "loop.incremental_rereview_pct": "每次 repair 之后同一单的下一次评审是否为增量复检（rereview）",
     "workers.deaths": "units.json 的 worker-no-output 事件",
     "ci.approve_to_ship_p50": "units.json：review-approve → merged/landed；仍在等的按已等时长计",
@@ -221,7 +223,7 @@ SOURCE = {**arbiter_health.SOURCE,
     "ci.priority_hold_runs_48h": "共享 actions-run-cancellations.jsonl：最近 48 小时不同 run_id 的最后一个非空 reason=ci hold。",
     "ci.shared_append_rebase_conflict_pct": "logs/shared-append-rebases.jsonl（land-direct-main 记录每次改动范围带 shared-append 文件的落地 rebase）：固定滚动 24h 内 conflict_files 非空的比例；无记录不计值。",
     "review.large_pr_pct": "pr-sizes.json（ci_spend.py 取 PR 非测试新增行；测试路径包括名为 test、tests、__tests__、fixture、fixtures、__snapshots__ 的目录，以及名称以 eval 开头且后续只含小写字母、连字符或下划线的目录；文件名含 .test.、.spec. 或以 .snap 结尾也排除）对照最近 30 天有台账活动的 PR；无历史的在途单也计入，缺尺寸时显示无数据",
-    "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），窗口内",
+    "loop.advisor_fail_pct": "units.json：advisor-unavailable ÷（advisor-ruling + advisor-unavailable），24 h 窗口",
     "advisor.last_answer_age_hours": "web-advisor-provider-jobs/*/answer.err 中不含 FAIL: 的最新 mtime；needs-advisor 数来自 gh issue list",
     "review.findings_missing_pct": "units.json 每单的 review_findings：窗口内 block=missing 的打回 ÷ 全部打回（调度器收割打回报告时写入）",
     "host.prereqs_missing": "host-prereqs.json 里每项每次体检做一次 TCP 连接或 HTTP 200 探测",
@@ -249,6 +251,10 @@ SOURCE = {**arbiter_health.SOURCE,
     "delivery.unlinked_incidents_30d": ".zenoforge/state/incident-guards.json explicit issue fields joined to accepted issue IDs",
     "delivery.human_actions_unattributed_30d": "GitHub PR reviews joined to scheduler history and PR/commit bot markers; no reliable actor attribution means unknown",
 }
+# Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
+CRITERIA.update(line_holds.CRITERIA)
+MEANING.update(line_holds.MEANING)
+SOURCE.update(line_holds.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
@@ -498,23 +504,21 @@ def rework_by_size(units, sizes, nontest_added, since, now):
 
     Only PRs with a ledger event in the 30-day window (#4482): the all-ledger share could
     only fall by dilution, so one-off oversized PRs kept it unhealthy indefinitely."""
-    per, large_sizes, missing = [], [], False
+    per, large_sizes = [], []
     for u in size_window_units(units, since, now):
         number = str(u.get("pr"))
         lines = sizes.get(number)
         if lines is not None:
             per.append((lines, sum(1 for h in u.get("history") or [] if h.get("stage") == "repair-delivered")))
         nontest = nontest_added.get(number)
-        if nontest is None:
-            missing = True
-        else:
+        if nontest is not None:  # a PR with no size row is left out of the share, not voiding it
             large_sizes.append(nontest)
     rows = []
     for lo, hi in SIZE_BANDS:
         reps = sorted(r for n, r in per if n >= lo and (hi is None or n < hi))
         rows.append({"band": f"{lo}–{hi}" if hi else f"≥{lo}", "units": len(reps), "median_repairs": pct(reps, .5),
                      "share_4plus": round(100 * sum(1 for r in reps if r >= 4) / len(reps)) if reps else None})
-    large = 100 * sum(1 for n in large_sizes if n > LARGE_PR_LINES) / len(large_sizes) if large_sizes and not missing else None
+    large = 100 * sum(1 for n in large_sizes if n > LARGE_PR_LINES) / len(large_sizes) if large_sizes else None
     return rows, large
 
 
@@ -609,13 +613,12 @@ def worker_runs(rows, since, now):
 
 
 def rework_token_pct(runs):
-    """Repair and rereview share of worker tokens; incomplete run usage makes the metric unavailable."""
-    if not runs or any(r["tokens"] is None for r in runs):
-        return None
-    tokens = sum(r["tokens"] for r in runs)
+    """Repair and rereview share of worker tokens over the runs whose usage was measured (the caller shows how many)."""
+    measured = [r for r in runs if r["tokens"] is not None]
+    tokens = sum(r["tokens"] for r in measured)
     if not tokens:
         return None
-    rework = sum(r["tokens"] for r in runs if r["node"] in ("repair", "rereview"))
+    rework = sum(r["tokens"] for r in measured if r["node"] in ("repair", "rereview"))
     return 100 * rework / tokens
 
 
@@ -990,7 +993,7 @@ def gated_agent_pr_share(repo):
         return None
 
 
-RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{40}) closed=\[([0-9,\s]*)\]")
+RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
 BOT_COMMENT_MARKER = "<!-- vecta-agent-comment -->"
 BOT_DISCLAIMER = "This comment is posted by the automated the product agent pipeline under the maintainer's GitHub account"
 REVIEW_STAGES = {
@@ -1028,14 +1031,10 @@ def release_acceptances(runtime):
 def gh_delivery_rows(repo, now, units=None, release_events=None):
     """Fetch issue creation times and recent merged-PR review activity for delivery metrics."""
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d")
-    commands = {
-        "issues": ["issue", "list", "--repo", repo, "--state", "closed", "--search", f"closed:>={cutoff}",
-                   "--limit", "1000", "--json", "number,createdAt"],
-        "prs": ["pr", "list", "--repo", repo, "--state", "merged", "--search", f"merged:>={cutoff}",
-                "--limit", "1000", "--json", "number,mergedAt,mergeCommit,body,reviews,commits"],
-    }
-    census = _parallel_gh_json(list(commands.values()), GH_DELIVERY_CENSUS_TIMEOUT)
-    rows = {key: value if isinstance(value, list) else None for key, value in zip(commands, census)}
+    issues = _gh_json(["issue", "list", "--repo", repo, "--state", "closed", "--search", f"closed:>={cutoff}",
+                       "--limit", "1000", "--json", "number,createdAt"], GH_DELIVERY_CENSUS_TIMEOUT)
+    rows = {"issues": issues if isinstance(issues, list) else None,
+            "prs": pr_census.fetch(repo, cutoff, _gh_json, GH_DELIVERY_CENSUS_TIMEOUT)}
     if rows["issues"] is not None and rows["prs"] is not None and units is not None and release_events is not None:
         since = now - timedelta(days=30)
         accepted_issues = {_number(event.get("issue")) for event in release_events
@@ -1338,7 +1337,7 @@ def file_issues(a, rows, now):
         title = f"pipeline health: {mid} unhealthy"
         # #4487: per-metric symptom fixes twice replaced the behaviour fix (bound/criteria edits in
         # eee674e0c, 6362c5486). The template routes the worker to the behavioural root cause first.
-        body = (f"<!-- vecta-agent-comment -->\nnode_health.py at {now:%Y-%m-%dT%H:%MZ}: **{desc}** = {v:.0f} "
+        body = (f"<!-- vecta-agent-comment -->\nnode_health.py at {now:%Y-%m-%dT%H:%MZ}: **{desc}** = {live_delivery.display_value(v)} "
                 f"(healthy {'>=' if higher else '<='} {healthy}, unhealthy {'<=' if higher else '>='} {unhealthy}), "
                 f"unhealthy since {entry['since']}.\n\nNode: {node}. Criteria and human baseline: "
                 f"{health_doc_reference()}. Fix the behaviour, not the metric (#4487): "
@@ -1412,7 +1411,7 @@ def score(metrics, criteria):
     rows = []
     for mid, (node, desc, healthy, unhealthy, higher) in criteria.items():
         v = metrics.get(mid)
-        status = status_of(v, healthy, unhealthy, higher)
+        status = live_delivery.no_data_status(mid, v) or status_of(v, healthy, unhealthy, higher)
         rows.append((node, mid, desc, v, healthy, unhealthy, higher, status))
     return rows
 
@@ -1428,15 +1427,6 @@ def source_commit(here):
         ["git", "-C", str(source_dir.parents[1]), "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
-
-
-def pause_state(agent_home):
-    path = Path(agent_home) / "PAUSE"
-    if not path.exists():
-        return None
-    with path.open() as source:
-        state = json.load(source)
-    return {"since": state.get("timestamp"), "reason": state.get("reason")}
 
 
 def main():
@@ -1492,6 +1482,8 @@ def main():
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
     units = ledger_history.load_units(a)
     metrics.update(ledger_metrics(units, since, now))
+    # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
+    metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
     release_events = release_acceptances(a)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
@@ -1499,7 +1491,7 @@ def main():
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
-    metrics.update(delivery["values"])
+    metrics.update(delivery["values"]); metrics.update(live_delivery.collect_health_metrics(agent_home, now))
     try:
         shared_append = frozenset((json.load(open(os.path.join(a, "config.json")))
                                    .get("footprint_mutex") or {}).get("shared_append") or [])
@@ -1592,6 +1584,7 @@ def main():
         )
     blockers = read_json(os.path.join(a, "release-blockers.json"))
     metrics["release.hotpatch_blockers"] = len(blockers["blockers"]) if isinstance(blockers.get("blockers"), list) else None
+    line_holds.collect(metrics, a, agent_home, now)
     registry = (zf_mechanism_registry() or {}).get("mechanisms")
     if isinstance(registry, list) and registry:
         mechanism_rows, metrics["mechanism.silent"] = mechanism_heartbeat(registry, a, agent_home, now)
@@ -1622,17 +1615,19 @@ def main():
 
     if args.inbox:
         flow_inbox(a, rows, now, agent_home, repo_root)
+        line_holds.alert(a, agent_home, repo_root, now)
 
     if args.json:
         sampled_at = f"{now:%Y-%m-%dT%H:%M:%SZ}"
         doc = {"generated": sampled_at, "generated_at": sampled_at,
-               "source_commit": source_commit(here), "paused": pause_state(agent_home),
+               "source_commit": source_commit(here), "paused": line_holds.pause_state(agent_home),
                "window_hours": args.hours,
                "metrics": [{"id": mid, "node": node, "desc": desc, "meaning": MEANING.get(mid, ""), "value": v,
                             "healthy": healthy, "unhealthy": unhealthy, "higher_is_better": higher, "status": status,
                             "source": SOURCE.get(mid, "")}
                            for node, mid, desc, v, healthy, unhealthy, higher, status in rows],
                "time_sinks": sinks, "time_sink_hours": TIME_SINK_HOURS, "rework_by_size": by_size,
+               "rework_token_measured": [sum(r["tokens"] is not None for r in runs), len(runs)],
                "delivery": delivery["details"], "flow": flow_details, "mechanisms": mechanism_rows,
                "ci_standards": {k: {"desc": d, "healthy": h, "unhealthy": u, "higher_is_better": hi, "meaning": m, "source": src}
                                 for k, (d, h, u, hi, m, src) in CI_STANDARDS.items()},
@@ -1653,7 +1648,7 @@ def main():
             for node, mid, desc, v, healthy, unhealthy, higher, status in bad:
                 if f"[{hour}" in seen and f"NODE-UNHEALTHY metric={mid} " in seen.split(f"[{hour}", 1)[1]:
                     continue
-                out.write(f"[{now:%Y-%m-%dT%H:%M:%SZ}] NODE-UNHEALTHY metric={mid} node={node} value={v:.0f} "
+                out.write(f"[{now:%Y-%m-%dT%H:%M:%SZ}] NODE-UNHEALTHY metric={mid} node={node} value={live_delivery.display_value(v)} "
                           f"unhealthy-bound={unhealthy} ({desc}; see {health_doc_reference()})\n")
 
 
