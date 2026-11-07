@@ -37,6 +37,8 @@ measured distribution on 2026-10-20 (`24h` = window ending 15:55Z).
 | CI + merge | approved units that then saw CI red % (`ci.red_after_approve_pct`) | elite change failure ≈ 5 % [4] | ≤ 15 | ≥ 30 | — |
 | CI + merge | local prechecks skipped because affected packages could not be selected (`ci.precheck_setup_failures`) | 0; this setup failure can make CI the first test run | 0 | ≥ 1 | — |
 | supervisor | escalation → decision min p50 (`supervisor.latency_p50`) | ≤ 60 (estimate, on-call style) | ≤ 60 | ≥ 180 | — |
+| supervisor | arbiter dispatches in 24 h (`supervisor.arbiter_dispatches_24h`) | 1,003 arbitrations in the 7 days to 2026-11-06 (≈143/day, 801 on the hard tier, 4.6/merge; 20 units spent 71%); the per-unit lifetime cap `supervisor_arbiter.unit_cap` (default 4) now ends each unit's arbitration itself | ≤ 48 | ≥ 120 | first scorecard sample |
+| supervisor | supervisor-cap-default decisions in 24 h (`supervisor.cap_default_24h`; measured, no bound — the sentinel bounds 0/-1 keep any measured count OK) | every default decision ends a capped unit in the same tick with no model run and no founder question; watch the rate to see how often arbitration fails to converge | — | — | first scorecard sample |
 | scheduler | seconds between tick starts p50 (`scheduler.tick_gap_p50`) | — | ≤ 240 | ≥ 420 | — |
 | release | current release batch wait in hours (`release.hours_waiting`) | elite: deploy on demand, lead time < 1 day [4] | ≤ 4 | ≥ 12 | — |
 | release | production hot patches whose PR is not on main (`release.hotpatch_blockers`) | a hotfix is merged the same day | 0 | ≥ 1 | — |

@@ -149,6 +149,30 @@ CONCLUDE_NC_REFUSE_NEEDS_OUT="$(
 assert_contains "conclude_run refuses not-completed at the cap but with an empty needs_md -- a bare attempt count is not an account" \
   "$CONCLUDE_NC_REFUSE_NEEDS_OUT" "exit=1"
 
+echo '{"attempts":0}' > "$CONCLUDE_HOME/state/500016.json"
+CONCLUDE_NC_CAP_DEFAULT_NEEDS_OUT="$(
+  AGENT_HOME="$CONCLUDE_HOME" AGENT_DRY_RUN=1 REPO="test/repo" bash -c '
+    source "$0/lib.sh"
+    conclude_run 500016 not-completed "" "" "" supervisor-cap-default
+    echo "exit=$?"
+  ' "$SCRIPT_DIR" 2>&1
+)"
+assert_contains "a supervisor cap-default still requires a reason for not-completed" \
+  "$CONCLUDE_NC_CAP_DEFAULT_NEEDS_OUT" "exit=1"
+
+echo '{"attempts":0}' > "$CONCLUDE_HOME/state/500017.json"
+CONCLUDE_NC_CAP_DEFAULT_OUT="$(
+  AGENT_HOME="$CONCLUDE_HOME" AGENT_DRY_RUN=1 REPO="test/repo" bash -c '
+    source "$0/lib.sh"
+    conclude_run 500017 not-completed "Supervisor arbitration stopped at its lifetime cap; prior recut was tried." "" "" supervisor-cap-default
+    echo "exit=$?"
+  ' "$SCRIPT_DIR" 2>&1
+)"
+assert_contains "the scheduler cap-default can conclude not-completed below the implement-attempt cap with a reason" \
+  "$CONCLUDE_NC_CAP_DEFAULT_OUT" "exit=0"
+assert_contains "...and uses the ordinary not-completed issue-comment path" \
+  "$CONCLUDE_NC_CAP_DEFAULT_OUT" "[dry-run] gh issue comment 500017"
+
 echo '{"attempts":4,"requeued_at":"2026-09-30T16:49:03Z","run":{"outcome":"not-completed","implement_started_at":"2026-10-04T09:41:21Z","concluded_at":"2026-10-04T09:41:22Z"},"model_policy":{"unit":"implement","step":"conclude","failure":{"reason":"delivery failed","recorded_at":"2026-10-04T09:41:21Z"}}}' > "$CONCLUDE_HOME/state/500013.json"
 CONCLUDE_NC_CAP_AFTER_HOLD_OUT="$(
   AGENT_HOME="$CONCLUDE_HOME" AGENT_DRY_RUN=1 REPO="test/repo" bash -c '

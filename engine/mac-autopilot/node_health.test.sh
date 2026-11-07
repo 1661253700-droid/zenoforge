@@ -74,15 +74,21 @@ cat > "$a/units.json" <<'JSON'
    {"stage":"merged","at":"2026-10-19T11:34:00Z"}]},
  {"id":"pr-12","stage":"ready-to-merge","history":[
    {"stage":"review-approve","at":"2026-10-19T10:00:00Z"},
-   {"stage":"ci-red","at":"2026-10-19T10:30:00Z"}]},
+   {"stage":"ci-red","at":"2026-10-19T10:30:00Z"},
+   {"stage":"supervisor-arbiter","at":"2026-10-17T10:00:00Z"}]},
  {"id":"pr-14","stage":"ready-to-merge","history":[{"stage":"review-approve","at":"2026-10-19T09:30:00Z"},
    {"stage":"precheck","result":"PRECHECK: SKIP workspace package selection failed","at":"2026-10-19T09:35:00Z"},
-   {"stage":"ci-test-red","at":"2026-10-19T09:40:00Z"}]},
+   {"stage":"ci-test-red","at":"2026-10-19T09:40:00Z"},
+   {"stage":"supervisor-cap-default","at":"2026-10-17T09:00:00Z"}]},
+ {"id":"pr-11b","stage":"closed","history":[{"stage":"supervisor-arbiter","at":"2026-10-19T10:40:00Z"}]},
  {"id":"pr-13","stage":"supervisor-review","history":[
+   {"stage":"supervisor-arbiter","at":"2026-10-19T06:30:00Z"},
    {"stage":"supervisor-escalated","at":"2026-10-19T09:00:00Z"},
    {"stage":"supervisor-requeue","at":"2026-10-19T11:00:00Z"},
+   {"stage":"supervisor-arbiter","at":"2026-10-19T08:00:00Z"},
    {"stage":"advisor-ruling","at":"2026-10-19T11:01:00Z"},{"stage":"advisor-unavailable","at":"2026-10-19T11:02:00Z"},
-   {"stage":"worker-no-output","at":"2026-10-19T11:10:00Z"}]}
+   {"stage":"worker-no-output","at":"2026-10-19T11:10:00Z"},
+   {"stage":"supervisor-cap-default","at":"2026-10-19T10:45:00Z"}]}
 ]}
 JSON
 printf '[2026-10-19T11:00:00Z] tick done units=3 live=1\n[2026-10-19T11:05:00Z] tick done units=3 live=1\n[2026-10-19T11:12:00Z] tick done units=3 live=1\n' > "$a/scheduler.log"
@@ -114,6 +120,35 @@ grep -Eq ' 50 .*UNHEALTHY$' <<<"$(row 'advisor asks that got no ruling')" || fai
 grep -Eq ' 300 .*WARN$' <<<"$(row 'between tick starts')" || fail "tick gap wrong: $(row 'tick starts')"
 # 打回报告缺发现块的比例：窗口内 3 次打回记录里 2 次 missing（窗口外那条不算）；窗口内没有记录时为空，不算 0
 grep -Eq ' 67 .*UNHEALTHY$' <<<"$(row 'without a findings block')" || fail "findings-block gap wrong: $(row 'findings block')"
+# 仲裁调度与触顶默认决定：固定滚动 24h（pr-12/pr-14 的 10-17 事件在窗外，pr-13 的 06:30 在 5h 窗外仍在 24h 内）
+grep -Eq ' 3 .*OK$' <<<"$(row 'arbiter dispatches in 24')" || fail "arbiter dispatches in 24h wrong: $(row 'arbiter dispatches in 24')"
+grep -Eq ' 1 .*OK$' <<<"$(row 'supervisor-cap-default decisions in 24')" || fail "cap-default count wrong: $(row 'supervisor-cap-default decisions in 24')"
+jq -e '.metrics[] | select(.id == "supervisor.arbiter_dispatches_24h")
+  | .value == 3 and .status == "OK" and .healthy == 48 and .unhealthy == 120 and .source != ""' \
+  "$a/node-health.json" >/dev/null || fail 'arbiter dispatch metric lacks its value, bounds or source'
+jq -e '.metrics[] | select(.id == "supervisor.cap_default_24h")
+  | .value == 1 and .status == "OK" and .source != ""' \
+  "$a/node-health.json" >/dev/null || fail 'cap-default metric lacks its value or source (measured, no bound)'
+python3 - "$script_dir" <<'CHECK' || fail 'supervisor arbitration metrics wrong at the seam'
+import datetime as dt, sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-10-19T12:00:00Z")
+units = [
+  {"id": "a", "history": [{"stage": "supervisor-arbiter", "at": "2026-10-18T12:00:01Z"}]},
+  {"id": "b", "history": [{"stage": "supervisor-arbiter", "at": "2026-10-18T11:59:59Z"},
+                          {"stage": "supervisor-arbiter-round", "at": "2026-10-19T10:00:00Z"},
+                          {"stage": "supervisor-cap-default", "at": "2026-10-19T10:30:00Z"}]},
+  {"id": "c", "history": [{"stage": "supervisor-arbiter", "at": "2026-10-19T11:00:00Z"}]},
+]
+metrics = n.ledger_metrics(units, now - dt.timedelta(hours=5), now)
+assert metrics["supervisor.arbiter_dispatches_24h"] == 2, metrics   # the round marker never counts
+assert metrics["supervisor.cap_default_24h"] == 1, metrics
+dispatches = n.CRITERIA["supervisor.arbiter_dispatches_24h"]
+assert n.status_of(48, dispatches[2], dispatches[3], dispatches[4]) == "OK"
+assert n.status_of(120, dispatches[2], dispatches[3], dispatches[4]) == "UNHEALTHY"
+cap_default = n.CRITERIA["supervisor.cap_default_24h"]  # measured, no bound: any value stays OK
+assert all(n.status_of(v, cap_default[2], cap_default[3], cap_default[4]) == "OK" for v in (0, 1, 9, 999))
+print("node_health supervisor arbitration metrics: PASS")
+CHECK
 quiet="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 0.2 --now 2026-10-19T12:00:00Z)"
 grep -Eq 'findings block % +-  .*NO-DATA' <<<"$quiet" || fail "no rejection records in the window must show no value, not 0: $(grep -F 'findings block' <<<"$quiet")"
 grep -Eq ' 1 .*WARN$' <<<"$(row 'M1 audited cancelled runs/day: ci deferred')" || fail "M1 did not count one unique audited deferred run: $(row 'ci deferred')"

@@ -293,7 +293,10 @@ supervisor_recut_refused_hold() { # unit-json → 0 while the refused head is st
 }
 
 # A stop for any verdict: no unit may spend more than this many arbitration runs in 24h.
-supervisor_arbiter_over_daily_max() { # unit-json → 0 at the ceiling; one alert per unit and day
+# 触顶不再是「停一天、只告警」：调用方（dispatch_supervisor_arbiters）当拍转 supervisor_cap_default，
+# 这个单元的仲裁就此结束；这里只留计数与日内触顶标记，不通知 founder。默认 unit_cap(4) < daily_max(6) 时终身上限先触发，
+# 本上限只保护把 unit_cap 配得比 daily_max_per_unit 大的部署。
+supervisor_arbiter_over_daily_max() { # unit-json → 0 at the ceiling; one marker per unit and day
   local id count day
   count="$(jqf -r --argjson since "$(($(date +%s) - 86400))" '[(.history // [])[] | select(.stage == "supervisor-arbiter")
     | select((((.at // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601?) // 0) >= $since)] | length' <<<"$1")"
@@ -301,10 +304,81 @@ supervisor_arbiter_over_daily_max() { # unit-json → 0 at the ceiling; one aler
   id="$(jqf -r .id <<<"$1")"; day="${STAMP%%T*}"
   [[ "$(jqf -r '.arbiter_daily_max_alerted // empty' <<<"$1")" != "$day" ]] || return 0
   set_unit "$id" ".arbiter_daily_max_alerted=$(js "$day")"
-  say "supervisor arbitration ceiling unit=$id: $count dispatches in 24h"
-  (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "arbiter-daily-max:$id:$day" \
-    "arbiter-daily-max unit=$id: $count dispatches in 24h, ceiling $SUPERVISOR_ARBITER_DAILY_MAX; no more today") \
-    || say "arbitration ceiling unit=$id: escalation not delivered"
+  return 0
+}
+
+# 终身仲裁上限（supervisor_arbiter.unit_cap，默认 4）：按整份历史数 supervisor-arbiter 事件。
+# supervisor-arbiter-round 轮标记会清零两轮预算的计数（RULE 重排后单元反复触顶回到 cap triage：
+# 7 天里 345 次 supervisor-cap-triage-park、221 次 supervisor-cap-founder），所以这里是终身计数，不看轮标记。
+supervisor_arbiter_lifetime_runs() { # unit-json → supervisor-arbiter 事件数
+  jqf -r '[(.history // [])[] | select(.stage == "supervisor-arbiter")] | length' <<<"$1"
+}
+
+# 触顶默认决定：不派模型、不去 founder、不等 人，当拍结束这个单元的仲裁。分支：
+# a. issue 已关闭/结论/进发布/成 tracker，或工作已在别处合入 → 既有 obsolete 词汇关单元（issue 由它自己的车道收尾）；
+# b. 最近一次有效终局裁决是 RECUT，或该单元从未走过 recut → 既有 supervisor_budget_recut 一次；
+# c. 其余 → 既有终局路径关单元，issue 上留一条说明并记录 not-completed；这个 scheduler-owned
+#    仲裁终局不依赖实现尝试次数，但仍要求 conclude_run 成功写入票据结论。
+# 每个单元只执行一次：历史里已有 supervisor-cap-default 就直接返回。
+supervisor_cap_default() { # id unit-json [lifetime|daily] → 0 当该单元已有（或刚得到）默认决定
+  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr state="" delivered=false verdict recut_done="" branch reason decision comment tried pstate limit_reason
+  jqf -e 'any((.history // [])[]?; .stage == "supervisor-cap-default")' <<<"$u" >/dev/null && return 0
+  issue="$(jqf -r '.issue // empty' <<<"$u")"; pr="$(jqf -r '.pr // empty' <<<"$u")"
+  if [[ "$trigger" == daily ]]; then
+    limit_reason="24-hour arbitration ceiling ($SUPERVISOR_ARBITER_DAILY_MAX dispatches)"
+  else
+    limit_reason="arbitration cap ($SUPERVISOR_ARBITER_UNIT_CAP lifetime dispatches)"
+  fi
+  decision="$(decision_entry 'Supervisor cap default' "unit $id: $limit_reason reached" "supervisor-arbiter history events" '[]' scheduler)"
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+    state="$(scheduler_issue_state "$issue" 2>/dev/null | jqf -r '.state // empty')" || state=""
+  fi
+  [[ "$state" =~ ^(closed|awaiting-release|released|concluded|tracker)$ ]] && delivered=true
+  # merge-reverted 在 merged 之后意味着交付已被撤回：那不是「已交付」，不进分支 a。
+  [[ "$(jqf -r '[(.history // [])[] | select(.stage == "merged" or .stage == "landed" or .stage == "merge-reverted") | .stage] | last // ""' <<<"$u")" =~ ^(merged|landed)$ ]] && delivered=true
+  if [[ "$delivered" != true && "$pr" =~ ^[0-9]+$ ]]; then
+    [[ "$(tick_pr_state "$pr" 2>/dev/null || true)" == MERGED ]] && delivered=true
+  fi
+  verdict="$(jqf -r '.supervisor_cap_verdict // .recut_refused_verdict // ""' <<<"$u")" || verdict=""
+  recut_done="$(jqf -r 'any((.history // [])[]?; .stage == "supervisor-budget-recut" or .stage == "supervisor-cap-triage-recut") or .recut_routed == true' <<<"$u")" || recut_done=false
+  if [[ "$delivered" == true ]]; then
+    branch=obsolete
+    reason="issue state ${state:-unknown} or the work is already merged elsewhere"
+    cap_set_unit "$id" obsolete "$reason" "" "$(hist obsolete "$reason") | .stage=\"closed\" | .note=$(js "obsolete: $reason") | del(.parked_reason)" || return 1
+  elif [[ "$verdict" == RECUT || "$recut_done" != true ]]; then
+    branch=recut
+    reason="$limit_reason reached; recut the unit once"
+    supervisor_budget_recut "$id" "supervisor cap default: $reason" "$decision" \
+      "supervisor cap default could not complete the recut route" "supervisor cap default recut" \
+      supervisor-cap-triage-park supervisor-cap-triage-recut true || return 1
+  else
+    branch=close
+    reason="$limit_reason reached; recut already tried and last cap verdict (${verdict:-none}) did not converge"
+    tried="$(jqf -r '[(.history // [])[] | select(.stage == "supervisor-arbiter" or (.stage | startswith("supervisor-cap-")) or .stage == "supervisor-budget-recut" or .stage == "supervisor-recut-refused") | "\(.stage): \(.result // "")"] | join("; ")' <<<"$u")" || tried=""
+    tried="${tried:0:500}"
+    comment="Autopilot supervisor arbitration: this unit stopped at the $limit_reason. Last cap verdict: ${verdict:-none}. The scheduler recorded it as not completed. Tried: ${tried:-none}."
+    if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+      scheduler_conclude_not_completed "$issue" "$comment" || {
+        say "supervisor cap default unit=$id: not-completed conclusion failed for issue #$issue"
+        return 1
+      }
+    elif [[ "$pr" =~ ^[0-9]+$ ]]; then
+      gh pr comment "$pr" --body "$comment" >/dev/null 2>&1 || :
+    else
+      echo "[$STAMP] CAP-DEFAULT-UNDELIVERED unit=$id no reachable issue/PR: $reason" >> "$A/alerts/state.md"
+    fi
+    if [[ "$pr" =~ ^[0-9]+$ ]]; then
+      pstate="$(tick_pr_state "$pr" 2>/dev/null || true)"
+      if [[ "$pstate" != CLOSED && "$pstate" != MERGED ]]; then
+        tick_prs_changed
+        gh pr close "$pr" --comment "$comment" >/dev/null 2>&1 || say "supervisor cap default unit=$id: could not close PR #$pr"
+      fi
+    fi
+    cap_set_unit "$id" close "$reason" "" "$(hist supervisor-cap-close "$reason" "$decision") | .stage=\"closed\" | .note=$(js "$reason") | del(.parked_reason)" || return 1
+  fi
+  cap_set_unit "$id" supervisor-cap-default "branch=$branch: $reason" "" \
+    "$(hist supervisor-cap-default "branch=$branch: $reason" "$decision")" || return 1
+  say "supervisor cap default unit=$id branch=$branch trigger=$trigger"
   return 0
 }
 

@@ -136,7 +136,8 @@
     "profile": "terra",
     "needs_info_per_tick": 3,
     "cap_triage": true,
-    "cap_triage_per_tick": 3
+    "cap_triage_per_tick": 3,
+    "unit_cap": 4
   },
   "notes": "发布批次需要 release train 出车。",
   "implement_cap": 8,

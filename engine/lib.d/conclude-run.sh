@@ -123,7 +123,7 @@ mark_awaiting_release() {
 }
 
 
-# conclude_run <n> <outcome> <needs_md> [quota_provider] -- records every
+# conclude_run <n> <outcome> <needs_md> [quota_provider] [expected_hold] [scheduler_terminal] -- records every
 # terminal run result and performs the production-proven close. Refuses
 # (prints why, returns 1, writes nothing) unless the record already carries
 # the artifact $outcome requires:
@@ -136,8 +136,9 @@ mark_awaiting_release() {
 #   not-completed state_attempts(n) at CONCLUDE_RUN_ATTEMPT_CAP, a real
 #                 implement start since the last requeue/conclusion, and
 #                 $needs_md names the missing capability -- not a bare attempt
-#                 count. `duplicate` keeps its existing independent terminal
-#                 behavior.
+#                 count. Scheduler-owned `supervisor-cap-default` conclusions
+#                 still require $needs_md but do not depend on implement attempts.
+#                 `duplicate` keeps its existing independent terminal behavior.
 agent_owned_issue_ids() {
   local owner="$1" explicit="${2:-}" roster="$AGENT_HOME/night/agents.txt" row
   local pid name model effort worktree brief report log attempt started_at role start_ticks owned_issues owned_nodes lib_dir
@@ -272,7 +273,7 @@ split_followups_note() { # issue -> close-comment text, empty when none is open
 }
 
 conclude_run() {
-  local n="$1" outcome="$2" needs_md="${3:-}" quota_provider="${4:-}" expected_hold="${5:-}" state pr_number pr_head_sha review_verdict ci_outcome attempts acceptor duplicate_of deploy_state deployed_sha real_user_path policy_exhausted implement_episode implement_after_requeue implementation_run pipeline_sha pipeline_close_comment health_target health_detail health_target_json health_detail_json issue_state mandatory_check_status="" check_report_json conclusion_json='null'
+  local n="$1" outcome="$2" needs_md="${3:-}" quota_provider="${4:-}" expected_hold="${5:-}" scheduler_terminal="${6:-}" state pr_number pr_head_sha review_verdict ci_outcome attempts acceptor duplicate_of deploy_state deployed_sha real_user_path policy_exhausted implement_episode implement_after_requeue implementation_run pipeline_sha pipeline_close_comment health_target health_detail health_target_json health_detail_json issue_state mandatory_check_status="" check_report_json conclusion_json='null'
   if [ -n "$quota_provider" ] && provider_quota_exhausted "$quota_provider"; then
     echo "conclude_run: refusing outcome=$outcome for #$n -- $quota_provider provider quota hold is open" >&2
     return 1
@@ -327,10 +328,10 @@ conclude_run() {
       implement_after_requeue="$(echo "$state" | jq -r '(. as $s | ([$s.requeued_at // "", $s.run.concluded_at // "", $s.run.previous_concluded_at // ""] | max) as $boundary | ($s.run.implement_started_at // "") as $started | ($started != "" and ($boundary == "" or $started >= $boundary)))')"
       # At the cap no new implement can start (only a requeue resets attempts), so demanding one after the
       # last conclusion livelocked hold-expired issues: issues 1758/1820/1952/1970/2144 sat 5 days re-refused every tick.
-      if { [ "$implement_episode" = true ] && [ "$attempts" -lt "$CONCLUDE_RUN_ATTEMPT_CAP" ] \
-          && { [ "$attempts" -eq 0 ] || [ "$implement_after_requeue" != true ]; }; } \
-        || { [ "$attempts" -lt "$CONCLUDE_RUN_ATTEMPT_CAP" ] && [ "$policy_exhausted" != true ]; } \
-        || [ -z "$needs_md" ]; then
+      if [ -z "$needs_md" ] || { [ "$scheduler_terminal" != supervisor-cap-default ] \
+          && { { [ "$implement_episode" = true ] && [ "$attempts" -lt "$CONCLUDE_RUN_ATTEMPT_CAP" ] \
+              && { [ "$attempts" -eq 0 ] || [ "$implement_after_requeue" != true ]; }; } \
+            || { [ "$attempts" -lt "$CONCLUDE_RUN_ATTEMPT_CAP" ] && [ "$policy_exhausted" != true ]; }; }; }; then
         echo "conclude_run: refusing outcome=not-completed for #$n -- attempts=$attempts (cap $CONCLUDE_RUN_ATTEMPT_CAP), needs_md=${needs_md:+set}${needs_md:-<empty>}" >&2
         return 1
       fi

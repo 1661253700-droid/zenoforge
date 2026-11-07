@@ -172,6 +172,10 @@ SUPERVISOR_CAP_TRIAGE_PER_TICK="$(jqf -r '.supervisor_arbiter.cap_triage_per_tic
 SUPERVISOR_ARBITER_MAX="$(jqf -r '.supervisor_arbiter.max_in_flight // 4' <<<"$CFG")"
 SUPERVISOR_ARBITER_DAILY_MAX="$(jqf -r '.supervisor_arbiter.daily_max_per_unit // 6' <<<"$CFG")"
 [[ "$SUPERVISOR_ARBITER_DAILY_MAX" =~ ^[0-9]+$ ]] || SUPERVISOR_ARBITER_DAILY_MAX=6
+# 终身仲裁上限：按整份历史数 supervisor-arbiter 事件（supervisor-arbiter-round 轮标记会清零轮计数，挡不住循环）。
+# 触顶由调度器当拍给默认决定（supervisor_cap_default），不再派模型，也不问人。
+SUPERVISOR_ARBITER_UNIT_CAP="$(jqf -r '.supervisor_arbiter.unit_cap // 4' <<<"$CFG")"
+[[ "$SUPERVISOR_ARBITER_UNIT_CAP" =~ ^[0-9]+$ ]] || SUPERVISOR_ARBITER_UNIT_CAP=4
 CODEX_CREDITS_ROLES="$(jqf -r '(.models.codex_credits.roles // []) | join(" ")' <<<"$CFG")"
 CODEX_CREDITS_CAP="$(jqf -r '.models.codex_credits.cap // empty' <<<"$CFG")"
 CODEX_CREDITS_START_BALANCE="$(jqf -r '.models.codex_credits.start_balance // empty' <<<"$CFG")"

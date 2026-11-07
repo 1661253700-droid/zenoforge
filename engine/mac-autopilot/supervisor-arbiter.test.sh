@@ -27,6 +27,7 @@ printf '%s\n' '{"required":[],"current_regression":"","legacy_regression":[]}' >
 export AUTOPI_TEST_LIBRARY_ONLY=true
 source "$script_dir/scheduler.sh"
 unset AUTOPI_TEST_LIBRARY_ONLY
+[[ "$SUPERVISOR_ARBITER_UNIT_CAP" == 4 ]] || { echo 'supervisor-arbiter.test.sh: config must default supervisor_arbiter.unit_cap to 4' >&2; exit 1; }
 decision_eval_stages() { printf '\n'; }
 [[ "$(review_contract_rule)" == *"$ZF_CONFIG_ROOT/prompts/review-contract.md"* ]] \
   || { echo 'supervisor-arbiter.test.sh: review contract must use target config override' >&2; exit 1; }
@@ -149,7 +150,8 @@ git -C "$WT_ROOT/wt-pr-650" -c user.name=t -c user.email=t@t commit -q --allow-e
 ZF_ENGINE_DIR="$script_dir/.." dispatch_supervisor_arbiters
 [[ "$(jq '[.workers[] | select(.unit=="pr-650")] | length' "$WORKERS")" == 1 ]] || fail "a moved head must reach cap triage again"
 SUPERVISOR_CAP_TRIAGE="$saved_cap_triage"
-# Daily ceiling: any verdict, one alert.
+# Daily ceiling: any verdict, one alert. The day stall is gone: the ceiling now ends the
+# unit's arbitration through the scheduler's own default decision in the same tick.
 now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '%s\n' "$(jq -cn --arg at "$now_iso" '{units:[{id:"pr-651",stage:"supervisor-review",history:[{stage:"supervisor-arbiter",result:"x",at:$at}]},
   {id:"pr-652",stage:"supervisor-review",history:[{stage:"supervisor-arbiter",result:"x",at:"2026-10-27T00:00:00Z"}]}]}')" > "$UNITS"
@@ -159,6 +161,11 @@ dispatch_supervisor_arbiters
 SUPERVISOR_ARBITER_DAILY_MAX="$saved_daily"
 ! jq -e 'any(.workers[]; .unit=="pr-651")' "$WORKERS" >/dev/null || fail "a unit at the daily ceiling must not dispatch"
 [[ "$(field pr-651 .arbiter_daily_max_alerted)" == "${STAMP%%T*}" ]] || fail "the ceiling must be recorded once"
+jq -e --arg id pr-651 'any(.units[] | select(.id==$id) | .history[]; .stage == "supervisor-cap-default")' "$UNITS" >/dev/null \
+  || fail "the daily ceiling must apply the default decision instead of stalling a day: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(field pr-651 .stage)" != supervisor-review ]] || fail "the daily ceiling must take the unit out of supervisor-review"
+! grep -q 'arbiter-daily-max unit=pr-651' "$AGENT_HOME/supervisor-inbox" 2>/dev/null \
+  || fail "the daily ceiling default must not create a founder handoff"
 jq -e 'any(.workers[]; .unit=="pr-652")' "$WORKERS" >/dev/null || fail "old dispatches must not count against the ceiling"
 echo '{"units":[]}' > "$UNITS"; echo '{"workers":[]}' > "$WORKERS"
 
@@ -596,5 +603,104 @@ ROUTE_RC=0 CLOSE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triag
 : > "$route_calls"
 ROUTE_RC=1 supervisor_budget_recut pr-651 "too large" null "cap triage could not complete the recut route" "recut" supervisor-cap-triage-park supervisor-cap-triage-recut true
 [[ "$(cat "$route_calls")" == 'close ' && "$(field pr-651 .stage)" == closed ]] || fail "the retry must skip the route and close: calls=$(cat "$route_calls") stage=$(field pr-651 .stage)"
+
+# ---- 终身仲裁上限（supervisor_arbiter.unit_cap，默认 4）：触顶不派模型，调度器当拍自己给默认决定 ----
+# 上限按整份历史数 supervisor-arbiter 事件（忽略 supervisor-arbiter-round 轮标记），先于两轮预算与
+# 每日天花板；已给过默认决定（历史有 supervisor-cap-default）的单元不再来第二次。
+arb_hist() { # n → n 条 supervisor-arbiter 事件并穿插轮标记，终身计数不能看轮数
+  jq -cn --argjson n "$1" '[range($n) as $i
+    | {stage:"supervisor-arbiter",result:"dispatched",at:"2026-10-26T00:00:00Z"},
+      {stage:"supervisor-arbiter-round",result:("round " + ($i|tostring)),at:"2026-10-26T00:01:00Z"}]'
+}
+route2="$fixture/route-calls-2"; : > "$route2"
+scheduler_route_to_recut() { printf 'route ' >> "$route2"; return 0; }
+tick_prs_changed() { :; }
+tick_pr_state() { printf 'OPEN\n'; }
+close_calls="$fixture/close-calls"; : > "$close_calls"
+gh() {
+  case "$1 $2" in
+    'issue close') printf 'issue-close: %s\n' "$*" >> "$close_calls"; return 0 ;;
+    'pr close') printf 'pr-close: %s\n' "$*" >> "$close_calls"; return 0 ;;
+    'issue comment') printf 'issue-comment: %s\n' "$*" >> "$close_calls"; return 0 ;;
+    'pr comment') return 0 ;;
+  esac
+  return 0
+}
+default_unit() { # id issue extra-fields-json extra-history-json → 一个 supervisor-review 单元，带 N 条仲裁历史
+  printf '%s\n' "$(jq -cn --arg id "$1" --argjson issue "$2" --argjson extra "$3" --argjson past "$4" \
+    --argjson arbs "$(arb_hist "${5:-4}")" \
+    '{units:[({id:$id,issue:$issue,pr:$issue,lane:"pr",stage:"supervisor-review"} + $extra)
+      | .history = ($arbs + $past + [{stage:"supervisor-escalated",result:"stop-loss: wall 300min of 240min after 3 rounds",at:"2026-10-27T00:00:00Z"}])]}' )" > "$UNITS"
+  echo '{"workers":[]}' > "$WORKERS"
+}
+cap_default_stage() { jq -r --arg id "$1" '.units[] | select(.id==$id) | .stage' "$UNITS"; }
+cap_default_history() { jq -r --arg id "$1" --arg stage "$2" '[.units[] | select(.id==$id) | .history[] | select(.stage==$stage)] | length' "$UNITS"; }
+
+# 上限以下（1 条）照旧派模型：上限是边界，不是新刹车。
+default_unit pr-634 634 '{}' '[]' 1
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+jq -e 'any(.workers[]; .type=="supervise" and .unit=="pr-634")' "$WORKERS" >/dev/null \
+  || fail "a unit under the lifetime cap must still dispatch: $(jq -c '.units' "$UNITS")"
+
+# 分支 a：issue 已结论/进发布，或工作已在别处合入 → 按既有 obsolete 词汇关单元，不动 issue。
+default_unit pr-630 630 '{}' '[]' 4
+jq -n '{state:"concluded",run:{outcome:"merged"}}' > "$AGENT_HOME/state/630.json"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+! jq -e 'any(.workers[]; .unit=="pr-630")' "$WORKERS" >/dev/null || fail "a unit at the lifetime cap must cost no model run"
+[[ "$(cap_default_stage pr-630)" == closed ]] || fail "branch a must close the unit: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(cap_default_history pr-630 obsolete)" == 1 && "$(cap_default_history pr-630 supervisor-cap-default)" == 1 ]] \
+  || fail "branch a must record obsolete + supervisor-cap-default: $(jq -c '.units[0].history[-2:]' "$UNITS")"
+[[ "$(field pr-630 '.history[-1].result')" == branch=obsolete:* ]] || fail "the default-decision entry must name its branch"
+! grep -q 'issue-close' "$close_calls" || fail "branch a must not touch an already-concluded issue"
+
+# 分支 a 也包括 GitHub issue 已关闭；不能把它重新送进 recut。
+default_unit pr-636 636 '{}' '[]' 4
+jq -n '{state:"closed"}' > "$AGENT_HOME/state/636.json"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_history pr-636 supervisor-cap-default)" == 1 ]] || fail "a closed issue must take the obsolete default branch"
+[[ "$(field pr-636 '.history[-1].result')" == branch=obsolete:* ]] || fail "a closed issue must be recorded as obsolete"
+
+# 分支 b（从未走过 recut）：走既有 supervisor_budget_recut 一次，路由后单元关闭。
+default_unit pr-631 631 '{}' '[]' 4
+jq -n '{state:"ready-for-agent",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/631.json"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cat "$route2")" == 'route ' ]] || fail "branch b must take the existing recut route once: calls=$(cat "$route2")"
+[[ "$(cap_default_stage pr-631)" == closed ]] || fail "a routed recut closes the unit: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(cap_default_history pr-631 supervisor-cap-triage-recut)" == 1 && "$(cap_default_history pr-631 supervisor-cap-default)" == 1 ]] \
+  || fail "branch b must record the recut route and the default decision: $(jq -c '.units[0].history[-2:]' "$UNITS")"
+
+# 分支 b（最近一次有效终局裁决是 RECUT）：即使更早走过一次预算 recut，仍按 RECUT 再走一次。
+default_unit pr-632 632 '{"supervisor_cap_verdict":"RECUT"}' '[{"stage":"supervisor-budget-recut","result":"r","at":"2026-10-25T00:00:00Z"}]' 4
+jq -n '{state:"ready-for-agent",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/632.json"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cat "$route2")" == 'route route ' ]] || fail "a RECUT verdict must take the recut route: calls=$(cat "$route2")"
+
+# 分支 c：已 recut 过、最后的裁决不是 RECUT → 既有终局关闭路径 + issue 上一条说明评论。
+default_unit pr-633 633 '{"supervisor_cap_verdict":"RULE"}' '[{"stage":"supervisor-cap-triage-recut","result":"r","at":"2026-10-26T01:00:00Z"}]' 4
+jq -n '{state:"ready-for-agent",attempts:0,recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/633.json"
+: > "$close_calls"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_stage pr-633)" == closed ]] || fail "branch c must close the unit: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(cap_default_history pr-633 supervisor-cap-close)" == 1 && "$(cap_default_history pr-633 supervisor-cap-default)" == 1 ]] \
+  || fail "branch c must record the terminal close and the default decision: $(jq -c '.units[0].history[-2:]' "$UNITS")"
+[[ "$(grep -c '^issue-comment: issue comment 633 ' "$close_calls")" == 1 ]] || fail "branch c must add exactly one issue comment through not-completed: $(cat "$close_calls")"
+[[ "$(jq -r '.run.outcome // empty' "$AGENT_HOME/state/633.json")" == not-completed ]] || fail "branch c must leave the issue recorded as not-completed: $(cat "$AGENT_HOME/state/633.json")"
+grep -q 'pr-close' "$close_calls" || fail "branch c must close the unit PR: $(cat "$close_calls")"
+[[ "$(cat "$route2")" == 'route route ' ]] || fail "branch c must not route another recut: calls=$(cat "$route2")"
+! grep -q 'cap-triage-founder unit=pr-63' "$AGENT_HOME/supervisor-inbox" || fail "the default decision must never reach the founder"
+
+# 一次性：已有 supervisor-cap-default 的触顶单元不再重复给默认决定，也不派模型。
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_history pr-633 supervisor-cap-default)" == 1 ]] || fail "the default decision must run once per unit"
+[[ "$(grep -c '^issue-comment: issue comment 633 ' "$close_calls")" == 1 ]] || fail "a handled unit must not receive a duplicate issue comment: $(cat "$close_calls")"
+! jq -e 'any(.workers[]; .unit=="pr-633")' "$WORKERS" >/dev/null || fail "a handled capped unit must never dispatch again"
+
+# A full in-flight cap must not postpone default decisions for already-capped units.
+default_unit pr-637 637 '{}' '[]' 4
+jq -n '{state:"ready-for-agent",recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/637.json"
+echo '{"workers":[{"unit":"other","type":"supervise","harvested":false}]}' > "$WORKERS"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=1 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_history pr-637 supervisor-cap-default)" == 1 ]] \
+  || fail "a capped unit must take its default decision even when another arbiter fills the worker cap"
 
 echo 'supervisor-arbiter.test.sh: all assertions passed'
