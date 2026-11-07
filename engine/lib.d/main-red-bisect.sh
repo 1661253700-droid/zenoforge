@@ -362,10 +362,10 @@ main_red_completed_runs() {
   local postsubmit suites
   postsubmit="$(ci_main_completed_push_runs ci.yml)" || return 1
   suites="$(ci_main_completed_push_runs pipeline-suites.yml)" || return 1
-  jq -cn --argjson postsubmit "$postsubmit" --argjson suites "$suites" '
+  jq -cn --slurpfile postsubmit <(printf '%s' "$postsubmit") --slurpfile suites <(printf '%s' "$suites") '
     {workflow_runs:
-      ([$postsubmit.workflow_runs[]? | . + {red_workflow:"ci.yml"}]
-       + [$suites.workflow_runs[]? | . + {red_workflow:"pipeline-suites.yml"}])}'
+      ([$postsubmit[0].workflow_runs[]? | . + {red_workflow:"ci.yml"}]
+       + [$suites[0].workflow_runs[]? | . + {red_workflow:"pipeline-suites.yml"}])}'
 }
 
 
@@ -384,12 +384,24 @@ main_red_latest_failed_run() {
 }
 
 
+# An old red may not start anything: pipeline-suites.yml was deleted with a failed last run, which would open a session on a week-old SHA.
+# A session already open keeps advancing on its own run. Fails closed: with no clock, no new session.
+main_red_run_is_current() { # run_json
+  local created now cutoff
+  created="$(jq -r '.created_at // empty' <<< "$1" 2>/dev/null)"
+  now="$(date +%s)" && [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  cutoff="$(date -u -d "@$((now - MAIN_RED_MAX_RUN_AGE_SECONDS))" +%FT%TZ)" || return 1
+  [[ -n "$created" && ! "$created" < "$cutoff" ]]
+}
+
+
 # While manually paused, discover a main red and wake the supervisor without
 # creating a session or starting the rerun/bisect/revert state machine.
 main_red_paused_discovery() {
   local runs run sha workflow run_id
   runs="$(main_red_completed_runs)" || return 1
   run="$(main_red_latest_failed_run "$runs")" || return 0
+  main_red_run_is_current "$run" || return 0
   sha="$(jq -r '.head_sha // empty' <<< "$run")"
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
   workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$run")"
@@ -405,7 +417,7 @@ main_red_paused_discovery() {
 # (that red was flaky and the latest verdict is green again, so the step
 # path above can no longer see it).
 main_red_bisect_sweep() {
-  local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head recovery_status
+  local runs run verdict sha session_file session red_sha rerun_verdict workflow focused_head recovery_status status idle
   if [ "${MAIN_CI_RED_RECONCILIATION_DONE:-0}" = 1 ]; then
     [ "${MAIN_CI_RED_RECOVERY_HELD:-0}" != 1 ] || return 0
   elif ZF_REPO_DIR="$REPO_DIR" bash "${ZF_ENGINE_DIR:-$REPO_DIR/engine}/night/main-ci-recovery.sh" reconcile-red; then
@@ -422,12 +434,14 @@ main_red_bisect_sweep() {
   fi
   if ! runs="$(main_red_completed_runs)"; then
     echo "main-red-bisect: could not read the completed main verdict list" >&2
-    return 0
+    return 1
   fi
+  MAIN_RED_RUNS_READ=1
   if run="$(main_red_latest_failed_run "$runs")" && [ -n "$run" ]; then
     verdict="$(jq -r '.conclusion // empty' 2>/dev/null <<< "$run")"
     sha="$(jq -r '.head_sha // empty' 2>/dev/null <<< "$run")"
-    if [ "$verdict" = failure ] && [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    if [ "$verdict" = failure ] && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] \
+      && { [ -n "$(main_red_session_read "$sha" 2>/dev/null || true)" ] || main_red_run_is_current "$run"; }; then
       # Sessions compare commits; the red SHA must be present locally.
       git_fetch_bounded "$REPO_DIR" main >/dev/null 2>&1 || true
       if ! git -C "$REPO_DIR" rev-parse -q --verify "${sha}^{commit}" >/dev/null 2>&1; then
@@ -441,20 +455,31 @@ main_red_bisect_sweep() {
   while IFS= read -r session_file; do
     [ -n "$session_file" ] || continue
     session="$(main_red_session_read_for_file "$session_file" 2>/dev/null || true)"
-    [ "$(jq -r '.status // empty' <<< "$session" 2>/dev/null)" = rerun-requested ] || continue
+    status="$(jq -r '.status // empty' <<< "$session" 2>/dev/null)"
+    case "$status" in rerun-requested|bisecting|culprit-found|revert-open) ;; *) continue ;; esac
     red_sha="$(jq -r '.red_sha // empty' <<< "$session")"
     [[ "$red_sha" =~ ^[0-9a-f]{40}$ ]] || continue
-    workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
-    focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
-    if [[ "$workflow" == pipeline-suites.yml && ! "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
-      focused_head="__full__"
-    elif [[ "$workflow" == pipeline-suites.yml && "$focused_head" == "$red_sha" ]]; then
-      focused_head="__rerun__"
+    if [ "$status" = rerun-requested ]; then
+      workflow="$(jq -r '.red_workflow // "ci.yml"' <<< "$session")"
+      focused_head="$(jq -r '.focused_head_sha // empty' <<< "$session")"
+      if [[ "$workflow" == pipeline-suites.yml && ! "$focused_head" =~ ^[0-9a-f]{40}$ ]]; then
+        focused_head="__full__"
+      elif [[ "$workflow" == pipeline-suites.yml && "$focused_head" == "$red_sha" ]]; then
+        focused_head="__rerun__"
+      fi
+      rerun_verdict="$(main_red_probe_verdict "$red_sha" "$workflow" "$focused_head")" || rerun_verdict=""
+      if [ "$rerun_verdict" = success ]; then
+        if main_red_session_write "$red_sha" flaky; then
+          main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
+          continue
+        fi
+      fi
     fi
-    rerun_verdict="$(main_red_probe_verdict "$red_sha" "$workflow" "$focused_head")" || continue
-    if [ "$rerun_verdict" = success ]; then
-      main_red_session_write "$red_sha" flaky
-      main_red_log "red ${red_sha:0:12}: same-SHA rerun went green; recorded flaky, no revert"
+    # A session steps only while its run is the latest verdict, so it can stop with nobody told. Alert only: a pending probe or an open revert PR writes nothing either, and a terminal status would strand them.
+    idle=$(( $(date +%s) - $(stat -c %Y "$session_file" 2>/dev/null || date +%s) ))
+    if [ "$idle" -ge "$MAIN_RED_MAX_RUN_AGE_SECONDS" ]; then
+      supervisor_inbox_append_once "main-red-session-idle:$red_sha" \
+        "main-red-bisect red=${red_sha:0:12} status=$status reason=session-idle idle_seconds=$idle" || true
     fi
   done < <(printf '%s\n' "$MAIN_RED_DIR"/*.json)
   return 0
