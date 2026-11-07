@@ -5387,8 +5387,9 @@ sched_run_case supervisor_cap_triage_verdicts
 sched_case_supervisor_cap_triage_rule_twice() {
   local ZF_EXECUTION_MODULE_DIR="${ZF_EXECUTION_MODULE_DIR:-}" ZF_ROADMAP_TREE_CACHE_FILE="${ZF_ROADMAP_TREE_CACHE_FILE:-}"
   new_tick_fixture supervisor-cap-triage-rule-twice
+  # A third cap is only reachable when unit_cap is set above the default; at 4 the lifetime cap ends arbitration first.
   command jq '.max_workers=1 | .supervisor_arbiter.enabled=true | .supervisor_arbiter.max_in_flight=1
-    | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=1' \
+    | .supervisor_arbiter.cap_triage=true | .supervisor_arbiter.cap_triage_per_tick=1 | .supervisor_arbiter.unit_cap=99' \
     "$TF/supervisor/autopi/config.json" > "$TF/config.tmp" && mv "$TF/config.tmp" "$TF/supervisor/autopi/config.json"
   cap_triage_fixture_prompt
   printf 'RULE\n' > "$TF/cap-verdict-cap-rule-repeat"
