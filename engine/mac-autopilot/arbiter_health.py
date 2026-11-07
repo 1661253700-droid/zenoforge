@@ -10,7 +10,7 @@ CRITERIA = {
 
 MEANING = {
     "supervisor.arbiter_dispatches_24h": "24 小时内派出的 supervisor 仲裁 run 数（supervisor-arbiter 历史，固定滚动 24h）。高 = 仲裁在空转：单元反复升级而裁决不收敛；单单元总量由 supervisor_arbiter.unit_cap 终身上限约束。",
-    "supervisor.cap_default_24h": "24 小时内触顶后由调度器按默认决定（obsolete/recut/close）收尾的单元数。只测量不设界：每个默认决定都省下一次模型 run，也无人被问到。",
+    "supervisor.cap_default_24h": "24 小时内触顶后由调度器按默认决定（obsolete/recut/park）收尾的单元数。只测量不设界：每个默认决定都省下一次模型 run，也无人被问到。",
 }
 
 SOURCE = {

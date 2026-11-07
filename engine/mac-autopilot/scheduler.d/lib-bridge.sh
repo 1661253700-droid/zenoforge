@@ -77,15 +77,6 @@ scheduler_conclude_merged_pr() ( # issue pr：合入即写发布状态（#4515 �
 
   conclude_merged_run "$1" "$2" "PR #$2 was merged by the autopilot merge lane. Waiting on Postsubmit validate before release."
 )
-scheduler_conclude_not_completed() ( # issue needs-md：票据以 not-completed 结案（终顶默认决定的分支 c）
-  local preserved_gh=""
-  declare -F gh >/dev/null 2>&1 && preserved_gh="$(declare -f gh)"
-  REPO_DIR="$ROOT"
-  source "$SCHEDULER_AGENT_LIB" || return 1
-  [[ -z "$preserved_gh" ]] || eval "$preserved_gh"
-
-  conclude_run "$1" not-completed "$2" "" "" supervisor-cap-default
-)
 scheduler_issue_state() (
   local f lock_fd
   source "${SCHEDULER_SCOPE_LIB_DIR%/lib.d}/write-guard.sh" && agent_pipeline_write_guard 'scheduler_issue_state' "$AGENT_HOME" || return 1
