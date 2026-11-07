@@ -267,7 +267,9 @@ if printf '%s\0' "${shell_suites[@]}" "${node_suites[@]}" | xargs -0 -r -n1 -P "
   set -e
   status="${child_statuses[0]}"
   if ((status != 0)); then
-    if ((status == 137)) && grep -Fq "timeout: sending signal KILL" "$suite_log"; then
+    # GNU timeout -s KILL kills its own group and dies as 137; uutils timeout kills only the child and
+    # exits 124. Both print the verbose KILL line, which stays the real evidence of an expiry.
+    if ((status == 137 || status == 124)) && grep -Fq "timeout: sending signal KILL" "$suite_log"; then
       first_error="suite $suite timed out after ${suite_timeout}s"
       printf "[pipeline suites] %s\n" "$first_error"
     else
