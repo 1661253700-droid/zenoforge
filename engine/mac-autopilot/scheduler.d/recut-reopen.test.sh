@@ -77,5 +77,9 @@ intake_reopen_refused_recut 16 "$AGENT_HOME/state/16.json" || fail "archived clo
 [[ "$(jq -r '.stage' <<<"$(unit_json issue-16)")" == implement-pending ]] || fail "archived unit not reopened"
 [[ "$(jq '[.units[] | select(.id == "issue-16")] | length' "$UNITS")" == 1 ]] || fail "reopen duplicated issue-16 in the ledger"
 echo "$(jq -c . "$UNITS_ARCHIVE")" | jq -e 'any(.units[]; .id == "issue-16")' >/dev/null || fail "archive row must stay (append-only)"
+# The cap default records its decision after the recut event; a refused recut must still reopen that unit.
+jq --argjson u "$(closed_unit 17 supervisor-cap-triage-recut 2026-01-02T00:00:00Z | jq -c '.history += [{stage:"supervisor-cap-default",at:"2026-01-02T00:00:00Z"}]')" '.units += [$u]' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+state_file 17 ready-for-agent 2026-01-02T00:10:00Z
+intake_reopen_refused_recut 17 "$AGENT_HOME/state/17.json" || fail "a cap-default recut must reopen when recut refuses"
 grep -qF '(( existing_only )) || ! intake_reopen_refused_recut' "$engine_dir/mac-autopilot/scheduler.d/intake.sh" || fail "intake call site missing"
 echo "recut-reopen.test.sh ok"
