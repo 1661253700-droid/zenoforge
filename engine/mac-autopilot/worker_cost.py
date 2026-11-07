@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 
 from usage_reader import Usage, codex_stream_facts, zcode_stream_usage
 
-LOG_RE = re.compile(r"^(impl|review|land|triage)-(.+?)-(\d{8}T\d{6})Z\.worker\.log$")
+LOG_RE = re.compile(r"^(impl|review|land|triage|supervise)-(.+?)-(\d{8}T\d{6})Z\.worker\.log$")
 UNIT_KEY_RE = re.compile(r"-(?:selfcheck[0-9]+-)?(?:fix|r)$")
 FOOTER_RE = re.compile(r"tokens used\n([\d,]+)")
 # build_codex_command's reasons for not taking the preferred path; initial, no-recorded-session,

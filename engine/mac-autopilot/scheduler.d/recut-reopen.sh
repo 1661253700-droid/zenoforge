@@ -8,7 +8,7 @@ intake_reopen_refused_recut() { # issue state-file → 0 when the issue's single
   u="$(jqf -c --argjson n "$n" --arg refused "$refused" '
     [.units[] | select(.issue == $n or .branch == ("agent/issue-" + ($n | tostring)))] as $us
     | select(($us | length) == 1) | $us[0]
-    | select(.stage == "closed" and ((.history // [])[-1] | (.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut")) and .at < $refused))' <(units_history_doc))" || return 1
+    | select(.stage == "closed" and ((.history // []) | map(select(.stage != "supervisor-cap-default")) | last | (.stage | IN("supervisor-budget-recut", "supervisor-cap-triage-recut")) and .at < $refused))' <(units_history_doc))" || return 1
   [[ -n "$u" ]] || return 1
   id="$(jqf -r '.id' <<<"$u")"
   restore_archived_unit "$id" || return 1 # a retired closed unit lives in the archive; bring it back to the hot ledger before set_unit

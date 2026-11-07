@@ -219,6 +219,37 @@ class Ledger(unittest.TestCase):
                          ("repair", "11"))  # repair from the -fix suffix, PR key from the name
         self.assertEqual(rows["review-11-r-20261020T121000Z.worker.log"]["phase"], "rereview")
 
+    def test_supervise_runs_reach_the_unit_metrics(self):
+        # The arbiter dispatch writes supervise-<unit>-<stamp>.worker.log with worker type
+        # "supervise"; the unit-end ledger (roi_collect) must carry that spend, not drop it.
+        self.workers([{"log": "supervise-pr-9-20261020T120000Z.worker.log", "unit": "pr-9",
+                       "type": "supervise", "model": "profile:terra"}])
+        self.log("supervise-pr-9-20261020T120000Z.worker.log",
+                 codex_json_stream("aaaaaaaa-0000-0000-0000-000000000009",
+                                   [{"input_tokens": 50_000, "cached_input_tokens": 10_000,
+                                     "output_tokens": 5_000}]))
+        row = wc.run_rows(self.sup)[0]
+        self.assertEqual((row["phase"], row["unit"]), ("supervise", "pr-9"))
+        self.assertEqual((row["usage"].input, row["usage"].output), (50_000, 5_000))
+        event = roi_collect._worker_event(row, {"pr-9": {"id": "pr-9", "issue": 4369}}, "test-host")
+        self.assertEqual(event["unit"]["stage"], "supervise")
+        self.assertEqual(event["tickets"], [4369])
+        self.workers([{"log": "supervise-pr-9-20261020T120000Z.worker.log", "unit": "pr-9",
+                       "type": "supervise", "model": "profile:terra", "harvested": True}])
+        result = roi_collect.collect(self.root, self.sup, os.path.join(self.sup, "autopi"))
+        self.assertEqual((result["appended"], result["unchanged"]), (1, 0))
+        ledger = os.path.join(self.root, "metrics", "units-2026-10.jsonl")
+        with open(ledger, encoding="utf-8") as source:
+            written = json.loads(source.readline())
+        self.assertEqual(written["unit"]["stage"], "supervise")
+        self.assertEqual(written["models"][0]["input"], 50_000)
+        self.assertEqual(written["models"][0]["output"], 5_000)
+        # A trimmed worker row keeps the phase from the log's file-name kind.
+        self.workers([])
+        trimmed = wc.run_rows(self.sup)[0]
+        self.assertEqual(trimmed["phase"], "supervise")
+        self.assertIsNone(trimmed["usage"])  # markerless and rowless: the counters stay unknown
+
     def test_trimmed_implement_row_uses_dispatched_model_from_log(self):
         name = "impl-issue-4355-20261020T120000Z.worker.log"
         self.log(name,

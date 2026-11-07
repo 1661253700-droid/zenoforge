@@ -30,24 +30,52 @@ supervisor_arbiter_input() { # unit-json [cap-triage] → frozen record JSON
     }' <<<"$u"
 }
 
+supervisor_arbiter_candidates() {
+  jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[]
+    | select((.stage=="supervisor-review" or .stage=="parked")
+      and (.hold_handoff_waiting // false)==false and (.supervisor_owned // false)==false
+      and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap"
+        or .parked_reason=="supervisor-cap-triage-reask" or .parked_reason=="recut-refused-unpushed"
+        or .parked_reason=="supervisor-cap-founder" or .parked_reason=="supervisor-cap-exhausted"
+        or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re)))
+        or any((.history // [])[]?; .stage=="supervisor-cap-triage-park")))' "$UNITS"
+}
+
 dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 worker；在途上限 SUPERVISOR_ARBITER_MAX，两轮上限
   [[ "$SUPERVISOR_ARBITER" == true ]] || return 0
   local prompt_file cap_contract_file
   prompt_file="$(sched_config_file prompts/supervisor-arbiter.md)"
-  [[ -r "$prompt_file" ]] || return 0
   # 终局裁决的动词契约由引擎自带文件保证（不走 sched_config_file）：目标配置可以把六动作 prompt
   # 覆盖成没有 cap-triage 段的旧版，但盖不掉这里追加的四个动词，任何 arbiter profile 都拿到同一契约。
   cap_contract_file="${ZF_ENGINE_DIR:-$ROOT/engine}/prompts/supervisor-cap-triage.md"
   local mark u id report log q pid w pid_file converted=0 cap_triaged=0 arbi_runs entries in_flight arbiter_input judge_input judge_output judge_answer judge_confidence judge_ready judge_rollout_ready event_id judge_metadata cap_triage is_swept return_stage cap_reasks cap_reask_notice
   local -a launcher=() worker_command=()
   local over_stop=false arbiter_profile="$SUPERVISOR_ARBITER_PROFILE" arbiter_effort=""
-  if codex_week_stopped && ! codex_credits_open arbiter; then over_stop=true; fi
-  in_flight="$(jqf -r '[.workers[] | select(.type=="supervise" and .harvested != true)] | length' "$WORKERS")"
-  (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
+  # Apply terminal defaults before prompt availability, the in-flight ceiling, or dispatch budgets can
+  # return from this tick. Active arbitration workers keep their own result; all other capped units stop now.
   while IFS= read -r u; do
     [[ -n "$u" ]] || continue
     id="$(jqf -r .id <<<"$u")"
     jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
+    if (( "$(supervisor_arbiter_lifetime_runs "$u")" >= SUPERVISOR_ARBITER_UNIT_CAP )); then
+      supervisor_cap_default "$id" "$u" lifetime || :
+    elif supervisor_arbiter_over_daily_max "$u"; then
+      supervisor_cap_default "$id" "$u" daily || :
+    fi
+  done < <(supervisor_arbiter_candidates)
+  if codex_week_stopped && ! codex_credits_open arbiter; then over_stop=true; fi
+  in_flight="$(jqf -r '[.workers[] | select(.type=="supervise" and .harvested != true)] | length' "$WORKERS")"
+  (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
+  [[ -r "$prompt_file" ]] || return 0
+  while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    id="$(jqf -r .id <<<"$u")"
+    jqf -e --arg id "$id" 'any(.workers[]; .type=="supervise" and .harvested != true and .unit==$id)' "$WORKERS" >/dev/null && continue
+    # The prepass applies the default; retain a hard dispatch guard if a state write failed there.
+    (( "$(supervisor_arbiter_lifetime_runs "$u")" < SUPERVISOR_ARBITER_UNIT_CAP )) || continue
+    if supervisor_arbiter_over_daily_max "$u"; then
+      continue
+    fi
     if [[ "$(jqf -r '.cap_exhausted_by // empty' <<<"$u")" == no-answer ]]; then
       [[ "${SUPERVISOR_CAP_TRIAGE:-true}" == true ]] || continue  # a parked unit cannot run: keep the probe for one that can
       supervisor_no_answer_unpark "$u" || continue
@@ -190,7 +218,7 @@ dispatch_supervisor_arbiters() { # supervisor-review 单元各派一个裁决 wo
     in_flight=$((in_flight + 1))
     [[ "$cap_triage" == true ]] && cap_triaged=$((cap_triaged + 1))
     (( in_flight < SUPERVISOR_ARBITER_MAX )) || return 0
-  done < <(jqf -c --arg cap_park_result_re "$SUPERVISOR_CAP_PARK_RESULT_RE" '.units[] | select((.stage=="supervisor-review" or .stage=="parked") and (.hold_handoff_waiting // false) == false and (.supervisor_owned // false) == false and (.stage!="parked" or .parked_reason=="supervisor-arbitration-cap" or .parked_reason=="supervisor-cap-triage-reask" or .parked_reason=="recut-refused-unpushed" or .parked_reason=="supervisor-cap-founder" or .parked_reason=="supervisor-cap-exhausted" or any((.history // [])[]?; .stage=="supervisor-budget-park" and ((.result // "") | test($cap_park_result_re))) or .stage=="supervisor-cap-triage-park"))' "$UNITS")
+  done < <(supervisor_arbiter_candidates)
 }
 
 supervisor_action_of() { # report-path → 唯一 ACTION 行的动作名；无法判定返回 1
@@ -484,6 +512,8 @@ supervisor_apply_cap_verdict() { # id report-path verdict → cap-triage action
   reason="$(supervisor_cap_field_line "$rep" REASON)"
   evidence="$(supervisor_cap_field_line "$rep" EVIDENCE)"
   decision="$(decision_entry "Supervisor cap triage: $verdict" "$reason" "$evidence" '[]' supervisor)"
+  # 记住最近一次有效终局裁决：终身触顶的默认决定（supervisor_cap_default）据此选 recut 分支。
+  set_unit "$id" ".supervisor_cap_verdict=$(js "$verdict")"
   retry="$(unit_field "$id" '.supervisor_cap_retry // empty')"
   case "$verdict" in
     CLOSE)
