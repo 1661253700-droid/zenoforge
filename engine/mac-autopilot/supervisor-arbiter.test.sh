@@ -613,14 +613,14 @@ arb_hist() { # n → n 条 supervisor-arbiter 事件并穿插轮标记，终身�
       {stage:"supervisor-arbiter-round",result:("round " + ($i|tostring)),at:"2026-10-26T00:01:00Z"}]'
 }
 route2="$fixture/route-calls-2"; : > "$route2"
-scheduler_route_to_recut() { printf 'route ' >> "$route2"; return 0; }
+scheduler_route_to_recut() { printf 'route ' >> "$route2"; [[ "${ROUTE_RC:-0}" == 0 ]] || { echo 'refused tracker parent' >&2; return 1; }; }
 tick_prs_changed() { :; }
 tick_pr_state() { printf 'OPEN\n'; }
 close_calls="$fixture/close-calls"; : > "$close_calls"
 gh() {
   case "$1 $2" in
     'issue close') printf 'issue-close: %s\n' "$*" >> "$close_calls"; return 0 ;;
-    'pr close') printf 'pr-close: %s\n' "$*" >> "$close_calls"; return 0 ;;
+    'pr close') printf 'pr-close: %s\n' "$*" >> "$close_calls"; [[ "${RECUT_CLOSE_RC:-0}" == 0 ]] && return 0; return 1 ;;
     'issue comment') printf 'issue-comment: %s\n' "$*" >> "$close_calls"; return 0 ;;
     'pr comment') return 0 ;;
   esac
@@ -694,6 +694,89 @@ SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 
 [[ "$(cap_default_history pr-633 supervisor-cap-default)" == 1 ]] || fail "the default decision must run once per unit"
 [[ "$(grep -c '^issue-comment: issue comment 633 ' "$close_calls")" == 1 ]] || fail "a handled unit must not receive a duplicate issue comment: $(cat "$close_calls")"
 ! jq -e 'any(.workers[]; .unit=="pr-633")' "$WORKERS" >/dev/null || fail "a handled capped unit must never dispatch again"
+
+# If the one permitted recut route refuses, finish this cap default as not-completed in the same tick.
+default_unit pr-638 638 '{}' '[]' 4
+jq -n '{state:"ready-for-agent",attempts:0,recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/638.json"
+: > "$close_calls"; : > "$route2"
+ROUTE_RC=1 SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+unset ROUTE_RC
+[[ "$(cat "$route2")" == 'route ' ]] || fail "a failed cap recut must be attempted once: calls=$(cat "$route2")"
+[[ "$(cap_default_stage pr-638)" == closed ]] || fail "a refused cap recut must finish with a terminal decision: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(cap_default_history pr-638 supervisor-cap-close)" == 1 && "$(field pr-638 '.history[-1].result')" == branch=close:* ]] \
+  || fail "a refused cap recut must record the terminal fallback branch: $(jq -c '.units[0].history[-2:]' "$UNITS")"
+[[ "$(jq -r '.run.outcome // empty' "$AGENT_HOME/state/638.json")" == not-completed ]] || fail "a refused cap recut must conclude the issue as not-completed"
+[[ "$(grep -c '^issue-comment: issue comment 638 ' "$close_calls")" == 1 ]] || fail "a refused cap recut must leave one issue comment: $(cat "$close_calls")"
+grep -q 'recut route failed' "$close_calls" || fail "the not-completed comment must say the recut route failed: $(cat "$close_calls")"
+! grep -q 'cap-triage-founder unit=pr-638\|recut-refused unit=pr-638' "$AGENT_HOME/supervisor-inbox" \
+  || fail "a cap default recut refusal must not create a founder handoff"
+
+# Unpushed work also blocks recut; cap default records the refusal without an inbox handoff, then closes not-completed.
+default_unit pr-639 639 '{}' '[]' 4
+jq -n '{state:"ready-for-agent",attempts:0,recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/639.json"
+rm -rf "$WT_ROOT/wt-pr-639"; mkdir -p "$WT_ROOT/wt-pr-639"
+git -C "$WT_ROOT/wt-pr-639" init -q
+git -C "$WT_ROOT/wt-pr-639" -c user.name=t -c user.email=t@t commit -q --allow-empty -m fixture
+: > "$close_calls"; : > "$route2"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cat "$route2")" == '' ]] || fail "unpushed work must not reach the recut route"
+[[ "$(cap_default_stage pr-639)" == closed && "$(jq -r '.run.outcome // empty' "$AGENT_HOME/state/639.json")" == not-completed ]] \
+  || fail "unpushed cap recut must finish with a not-completed terminal decision: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(grep -c '^issue-comment: issue comment 639 ' "$close_calls")" == 1 ]] || fail "unpushed cap recut must leave one issue comment"
+! grep -q 'recut-refused unit=pr-639' "$AGENT_HOME/supervisor-inbox" || fail "unpushed cap default must not create a founder handoff"
+
+# A route only completes when the helper closes the unit; recut_routed alone is insufficient after a PR close failure.
+default_unit pr-640 640 '{}' '[]' 4
+jq -n '{state:"ready-for-agent",attempts:0,recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/640.json"
+: > "$close_calls"; : > "$route2"
+RECUT_CLOSE_RC=1
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+unset RECUT_CLOSE_RC
+[[ "$(cat "$route2")" == 'route ' ]] || fail "a failed PR close must not repeat the recut route: calls=$(cat "$route2")"
+[[ "$(cap_default_stage pr-640)" == closed && "$(field pr-640 '.history[-1].result')" == branch=close:* ]] \
+  || fail "a failed PR close after recut must take the terminal fallback: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(jq -r '.run.outcome // empty' "$AGENT_HOME/state/640.json")" == not-completed ]] \
+  || fail "a failed PR close after recut must conclude not-completed"
+[[ "$(grep -c '^issue-comment: issue comment 640 ' "$close_calls")" == 1 ]] \
+  || fail "a failed PR close after recut must leave one issue comment: $(cat "$close_calls")"
+[[ "$(grep -c '^pr-close:' "$close_calls")" == 2 ]] || fail "the failed PR close should be retried once by the terminal path"
+
+# Legacy issue units can recover their ticket number from the canonical issue id or agent/issue-N branch.
+[[ "$(supervisor_cap_default_issue '{"id":"issue-641"}')" == 641 ]] || fail "the canonical issue unit id must recover its issue number"
+[[ "$(supervisor_cap_default_issue '{"id":"pr-1641","branch":"agent/issue-641-fix"}')" == 641 ]] \
+  || fail "an issue branch with a suffix must recover its issue number"
+default_unit pr-1641 641 '{"supervisor_cap_verdict":"RULE"}' '[{"stage":"supervisor-cap-triage-recut","result":"r","at":"2026-10-26T01:00:00Z"}]' 4
+jq '(.units[0] |= (del(.issue, .pr) | .branch="agent/issue-641-fix"))' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+jq -n '{state:"ready-for-agent",attempts:0,recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/641.json"
+: > "$close_calls"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_stage pr-1641)" == closed && "$(jq -r '.run.outcome // empty' "$AGENT_HOME/state/641.json")" == not-completed ]] \
+  || fail "a canonical issue branch must allow the issue-less legacy unit to conclude: $(jq -c '.units[0]' "$UNITS")"
+[[ "$(grep -c '^issue-comment: issue comment 641 ' "$close_calls")" == 1 ]] || fail "an issue recovered from branch must receive one comment"
+
+# A PR-only unit has no linked issue field, but its PR number is also a GitHub issue endpoint and must receive the not-completed outcome.
+default_unit pr-noop 91 '{"supervisor_cap_verdict":"RULE"}' '[{"stage":"supervisor-cap-triage-recut","result":"r","at":"2026-10-26T01:00:00Z"}]' 4
+jq '(.units[0] |= (del(.issue) | .branch="agent/pr-noop"))' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+jq -n '{state:"ready-for-agent",attempts:0,recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/91.json"
+: > "$close_calls"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_stage pr-noop)" == closed && "$(jq -r '.run.outcome // empty' "$AGENT_HOME/state/91.json")" == not-completed ]] \
+  || fail "a PR-only unit must record not-completed against its shared issue number: $(cat "$AGENT_HOME/state/91.json")"
+[[ "$(grep -c '^issue-comment: issue comment 91 ' "$close_calls")" == 1 ]] \
+  || fail "a PR-only unit must leave one comment on its shared issue endpoint: $(cat "$close_calls")"
+
+# Legacy IDs can carry the PR/issue number when all explicit link fields are absent.
+[[ "$(supervisor_cap_default_issue '{"id":"pr-3576-seed"}')" == 3576 ]] \
+  || fail "a suffixed legacy PR unit id must recover its issue number"
+default_unit pr-3576-seed 3576 '{"supervisor_cap_verdict":"RULE"}' '[{"stage":"supervisor-cap-triage-recut","result":"r","at":"2026-10-26T01:00:00Z"}]' 4
+jq '(.units[0] |= (del(.issue, .pr, .branch)))' "$UNITS" > "$UNITS.tmp" && mv "$UNITS.tmp" "$UNITS"
+jq -n '{state:"ready-for-agent",attempts:0,recut_children:[],recut_comment_scanned:true}' > "$AGENT_HOME/state/3576.json"
+: > "$close_calls"
+SUPERVISOR_ARBITER=true SUPERVISOR_ARBITER_MAX=99 SUPERVISOR_ARBITER_UNIT_CAP=4 dispatch_supervisor_arbiters
+[[ "$(cap_default_stage pr-3576-seed)" == closed && "$(jq -r '.run.outcome // empty' "$AGENT_HOME/state/3576.json")" == not-completed ]] \
+  || fail "a PR-number legacy ID must record the ticket as not-completed: $(cat "$AGENT_HOME/state/3576.json")"
+[[ "$(grep -c '^issue-comment: issue comment 3576 ' "$close_calls")" == 1 ]] \
+  || fail "a PR-number legacy ID must leave one ticket comment: $(cat "$close_calls")"
 
 # A full in-flight cap must not postpone default decisions for already-capped units.
 default_unit pr-637 637 '{}' '[]' 4

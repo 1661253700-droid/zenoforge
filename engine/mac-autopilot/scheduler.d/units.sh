@@ -269,13 +269,14 @@ supervisor_budget_park() { # id evidence → parked，留给 supervisor，不发
 SUPERVISOR_CAP_PARK_RESULT_RE='^(third entry into supervisor-review; arbitration cap is 2|arbitration budget exhausted for )'
 
 # RECUT cannot finish over unpushed work, so triaging the same head again only spends a run: 148 of 625 dispatches on 11-06.
-supervisor_recut_refuse() { # id evidence decision worktree
-  local id="$1" evidence="$2" decision="$3" wt="$4" head note key
+supervisor_recut_refuse() { # id evidence decision worktree [notify-supervisor]
+  local id="$1" evidence="$2" decision="$3" wt="$4" notify_supervisor="${5:-true}" head note key
   head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
   note="RECUT refused: unpushed work at ${head:0:12}. Unparks when that head changes or the worktree is gone."
   cap_set_unit "$id" park "$note $evidence" "" "$(hist supervisor-recut-refused "$evidence" "$decision") | .stage=\"parked\" | .parked_reason=\"recut-refused-unpushed\" | .unpark_condition=\"the unit head changes\" | .recut_refused_head=$(js "$head") | .recut_refused_verdict=\"RECUT\" | .note=$(js "$note $evidence")" \
     || return 1
   say "supervisor recut refused unit=$id head=${head:0:12}: unpushed work"
+  [[ "$notify_supervisor" == true ]] || return 0
   key="recut-refused:$id:$head"
   (source "$SCHEDULER_AGENT_LIB"; supervisor_inbox_append_once "$key" "recut-refused unit=$id: $note") \
     || say "recut refused unit=$id: escalation not delivered"
@@ -320,10 +321,59 @@ supervisor_arbiter_lifetime_runs() { # unit-json → supervisor-arbiter 事件�
 # c. 其余 → 既有终局路径关单元，issue 上留一条说明并记录 not-completed；这个 scheduler-owned
 #    仲裁终局不依赖实现尝试次数，但仍要求 conclude_run 成功写入票据结论。
 # 每个单元只执行一次：历史里已有 supervisor-cap-default 就直接返回。
+supervisor_cap_default_issue() { # unit-json → linked issue, canonical id/branch, or PR issue number
+  local issue id branch pr
+  issue="$(jqf -r '.issue // empty' <<<"$1")"
+  [[ "$issue" =~ ^[1-9][0-9]*$ ]] && { printf '%s\n' "$issue"; return 0; }
+  id="$(jqf -r '.id // empty' <<<"$1")"
+  if [[ "$id" =~ ^issue-([1-9][0-9]*)(-|$) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"; return 0
+  fi
+  branch="$(jqf -r '.branch // empty' <<<"$1")"
+  if [[ "$branch" =~ ^agent/(auto-)?issue-([1-9][0-9]*)(-|$) ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"; return 0
+  fi
+  # GitHub pull requests share the issue-number API for state and comments.
+  # PR-only review units can therefore use their own PR as the not-completed ticket.
+  pr="$(jqf -r '.pr // empty' <<<"$1")"
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] && { printf '%s\n' "$pr"; return 0; }
+  if [[ "$id" =~ ^pr-([1-9][0-9]*)(-|$) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"; return 0
+  fi
+  return 1
+}
+
+supervisor_cap_default_close() { # id issue pr reason limit-reason verdict decision → not-completed close
+  local id="$1" issue="$2" pr="$3" reason="$4" limit_reason="$5" verdict="$6" decision="$7"
+  local u tried comment pstate
+  u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+  tried="$(jqf -r '[(.history // [])[] | select(.stage == "supervisor-arbiter" or (.stage | startswith("supervisor-cap-")) or .stage == "supervisor-budget-recut" or .stage == "supervisor-recut-refused") | "\(.stage): \(.result // \"\")"] | join("; ")' <<<"$u")" || tried=""
+  tried="${tried:0:500}"
+  comment="Autopilot supervisor arbitration: this unit stopped at the $limit_reason. Last cap verdict: ${verdict:-none}. The scheduler recorded it as not completed. Reason: $reason. Tried: ${tried:-none}."
+  if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
+    scheduler_conclude_not_completed "$issue" "$comment" || {
+      say "supervisor cap default unit=$id: not-completed conclusion failed for issue #$issue"
+      return 1
+    }
+  elif [[ "$pr" =~ ^[0-9]+$ ]]; then
+    gh pr comment "$pr" --body "$comment" >/dev/null 2>&1 || :
+  else
+    echo "[$STAMP] CAP-DEFAULT-UNDELIVERED unit=$id no reachable issue/PR: $reason" >> "$A/alerts/state.md"
+  fi
+  if [[ "$pr" =~ ^[0-9]+$ ]]; then
+    pstate="$(tick_pr_state "$pr" 2>/dev/null || true)"
+    if [[ "$pstate" != CLOSED && "$pstate" != MERGED ]]; then
+      tick_prs_changed
+      gh pr close "$pr" --comment "$comment" >/dev/null 2>&1 || say "supervisor cap default unit=$id: could not close PR #$pr"
+    fi
+  fi
+  cap_set_unit "$id" close "$reason" "" "$(hist supervisor-cap-close "$reason" "$decision") | .stage=\"closed\" | .note=$(js "$reason") | del(.parked_reason)"
+}
+
 supervisor_cap_default() { # id unit-json [lifetime|daily] → 0 当该单元已有（或刚得到）默认决定
-  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr state="" delivered=false verdict recut_done="" branch reason decision comment tried pstate limit_reason
+  local id="$1" u="$2" trigger="${3:-lifetime}" issue pr state="" delivered=false verdict recut_done="" recut_completed branch reason decision tried limit_reason
   jqf -e 'any((.history // [])[]?; .stage == "supervisor-cap-default")' <<<"$u" >/dev/null && return 0
-  issue="$(jqf -r '.issue // empty' <<<"$u")"; pr="$(jqf -r '.pr // empty' <<<"$u")"
+  issue="$(supervisor_cap_default_issue "$u" || true)"; pr="$(jqf -r '.pr // empty' <<<"$u")"
   if [[ "$trigger" == daily ]]; then
     limit_reason="24-hour arbitration ceiling ($SUPERVISOR_ARBITER_DAILY_MAX dispatches)"
   else
@@ -350,31 +400,20 @@ supervisor_cap_default() { # id unit-json [lifetime|daily] → 0 当该单元已
     reason="$limit_reason reached; recut the unit once"
     supervisor_budget_recut "$id" "supervisor cap default: $reason" "$decision" \
       "supervisor cap default could not complete the recut route" "supervisor cap default recut" \
-      supervisor-cap-triage-park supervisor-cap-triage-recut true || return 1
+      supervisor-cap-triage-park supervisor-cap-triage-recut true false || return 1
+    u="$(jqf -c --arg id "$id" '[.units[] | select(.id==$id)][0]' "$UNITS")"
+    recut_completed="$(jqf -r '(.stage == "closed") and ([(.history // [])[] | .stage] | last == "supervisor-cap-triage-recut")' <<<"$u")" || recut_completed=false
+    if [[ "$recut_completed" != true ]]; then
+      branch=close
+      reason="$limit_reason reached; the recut route was attempted but could not complete"
+      tried="$(jqf -r '[ (.history // [])[] | select(.stage == "supervisor-cap-triage-park" or .stage == "supervisor-recut-refused") | .result ] | last // "recut route unavailable"' <<<"$u")" || tried="recut route unavailable"
+      reason="$reason: $tried"
+      supervisor_cap_default_close "$id" "$issue" "$pr" "$reason" "$limit_reason" "$verdict" "$decision" || return 1
+    fi
   else
     branch=close
     reason="$limit_reason reached; recut already tried and last cap verdict (${verdict:-none}) did not converge"
-    tried="$(jqf -r '[(.history // [])[] | select(.stage == "supervisor-arbiter" or (.stage | startswith("supervisor-cap-")) or .stage == "supervisor-budget-recut" or .stage == "supervisor-recut-refused") | "\(.stage): \(.result // "")"] | join("; ")' <<<"$u")" || tried=""
-    tried="${tried:0:500}"
-    comment="Autopilot supervisor arbitration: this unit stopped at the $limit_reason. Last cap verdict: ${verdict:-none}. The scheduler recorded it as not completed. Tried: ${tried:-none}."
-    if [[ "$issue" =~ ^[1-9][0-9]*$ ]]; then
-      scheduler_conclude_not_completed "$issue" "$comment" || {
-        say "supervisor cap default unit=$id: not-completed conclusion failed for issue #$issue"
-        return 1
-      }
-    elif [[ "$pr" =~ ^[0-9]+$ ]]; then
-      gh pr comment "$pr" --body "$comment" >/dev/null 2>&1 || :
-    else
-      echo "[$STAMP] CAP-DEFAULT-UNDELIVERED unit=$id no reachable issue/PR: $reason" >> "$A/alerts/state.md"
-    fi
-    if [[ "$pr" =~ ^[0-9]+$ ]]; then
-      pstate="$(tick_pr_state "$pr" 2>/dev/null || true)"
-      if [[ "$pstate" != CLOSED && "$pstate" != MERGED ]]; then
-        tick_prs_changed
-        gh pr close "$pr" --comment "$comment" >/dev/null 2>&1 || say "supervisor cap default unit=$id: could not close PR #$pr"
-      fi
-    fi
-    cap_set_unit "$id" close "$reason" "" "$(hist supervisor-cap-close "$reason" "$decision") | .stage=\"closed\" | .note=$(js "$reason") | del(.parked_reason)" || return 1
+    supervisor_cap_default_close "$id" "$issue" "$pr" "$reason" "$limit_reason" "$verdict" "$decision" || return 1
   fi
   cap_set_unit "$id" supervisor-cap-default "branch=$branch: $reason" "" \
     "$(hist supervisor-cap-default "branch=$branch: $reason" "$decision")" || return 1
@@ -452,17 +491,17 @@ supervisor_cap_triage_park() { # id evidence → durable retry marker swept by t
 
 # 轮数或墙钟止损已用尽且仍没有 PR：交给 recut 拆成可交付的子票。
 # 走 lib.sh 唯一的 needs-recut 入口 route_to_recut；有未提交、stash 或未推送改动时不关单元，照旧 park。
-supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close
+supervisor_budget_recut() { # id evidence decision park-reason recut-reason park-stage recut-stage allow-pr-close notify-refusal
   local id="$1" evidence="$2" decision="${3:-null}" park_reason="${4:-supervisor budget exhausted}"
   local recut_reason="${5:-ticket stop-loss reached}" park_stage="${6:-supervisor-budget-park}" recut_stage="${7:-supervisor-budget-recut}"
-  local allow_pr_close="${8:-false}" issue pr err note pr_comment pr_state
+  local allow_pr_close="${8:-false}" notify_refusal="${9:-true}" issue pr err note pr_comment pr_state
   issue="$(unit_field "$id" '.issue // empty')"; pr="$(unit_field "$id" '.pr // empty')"
   local d
   for d in "$WT_ROOT/wt-$id" "/tmp/wt-$id"; do # cleanup_tick 删的两个位置；stash 是 ensure_clone 收起的未提交进度
     if [[ -d "$d" ]] && { [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]] || [[ -n "$(git -C "$d" stash list 2>/dev/null)" ]] \
         || [[ -z "$(git -C "$d" branch -r --contains HEAD 2>/dev/null)" ]]; }; then
       if [[ "$park_stage" == supervisor-cap-triage-park ]]; then
-        supervisor_recut_refuse "$id" "$evidence" "$decision" "$d"; return 0
+        supervisor_recut_refuse "$id" "$evidence" "$decision" "$d" "$notify_refusal"; return 0
       fi
       supervisor_budget_park "$id" "$evidence (worktree has unpushed work; not sent to recut)" "$decision" "$park_reason" "$park_stage"; return 0
     fi
