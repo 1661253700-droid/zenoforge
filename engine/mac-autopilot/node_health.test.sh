@@ -218,7 +218,7 @@ project_dir.mkdir(parents=True)
 ]) + "\n")
 
 rows = worker_cost.run_rows(str(sup))
-n.attach_claude_usage(rows, str(projects), str(clone))
+worker_cost.attach_provider_usage(rows, [], str(projects), str(clone))
 runs = n.worker_runs(rows, now-n.timedelta(hours=5), now)
 assert {r["node"]: r["tokens"] for r in runs} == {
     "implement": 100, "repair": 20, "review": 80, "rereview": 15
@@ -321,6 +321,25 @@ gaps += [f"source:{m}" for m in n.CRITERIA if not n.SOURCE.get(m)] + [f"source:{
 gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in doc]
 sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
+# 裁决副本对账：引擎实际读取的 state/rulings.json 与 pack 的那份，只有一边有的行数计入 rulings.copies_differ
+# （健康 0，异常 ≥1）；按 (date, scope) 对账因为引擎副本构建时会改 id 和路径；任一文件缺失记 NO-DATA。
+rch="$test_env_root/rulings-copies"; mkdir -p "$rch/config/state" "$rch/pack/scripts/agent/state" "$rch/runtime"
+rcrows() { printf '{"rulings":[%s]}\n' "$1"; }
+rcval() { # <engine rows> <pack rows|-> → metric value and status（引擎副本缺失时 zf_config_file 回落到引擎自带的那份，所以只测 pack 缺失）
+  rm -f "$rch/config/state/rulings.json" "$rch/pack/scripts/agent/state/rulings.json"
+  rcrows "$1" > "$rch/config/state/rulings.json"
+  [[ "$2" == - ]] || rcrows "$2" > "$rch/pack/scripts/agent/state/rulings.json"
+  AGENT_HOME="$rch" ZF_CONFIG_ROOT="$rch/config" ZF_PACK_DIR='' PATH="$test_env_root/bin:$PATH" \
+    python3 "$script_dir/node_health.py" --runtime "$rch/runtime" --audit "$audit" \
+    --hours 5 --now 2026-10-19T12:00:00Z --json "$rch/node-health.json" >/dev/null
+  jq -r --arg id rulings.copies_differ '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$rch/node-health.json"
+}
+rc_a='{"id":"a","date":"2026-11-01","scope":"ops"}'
+rc_b='{"id":"b","date":"2026-11-02","scope":"pipeline"}'
+rc_a2='{"id":"a-renamed","date":"2026-11-01","scope":"ops"}'
+[[ "$(rcval "$rc_a,$rc_b" "$rc_a2,$rc_b")" == "0 OK" ]] || fail "copies with renamed ids must match: $(rcval "$rc_a,$rc_b" "$rc_a2,$rc_b")"
+[[ "$(rcval "$rc_a" "$rc_a2,$rc_b")" == "1 UNHEALTHY" ]] || fail "a ruling only in the pack must be one difference: $(rcval "$rc_a" "$rc_a2,$rc_b")"
+[[ "$(rcval "$rc_a" -)" == "null NO-DATA" ]] || fail "a missing pack copy must be NO-DATA, not 0: $(rcval "$rc_a" -)"
 # 工作单标准：在途单超过 bug 线计入 workorders.over_standard；已合并的不算；--json 给看板
 # 29 M 有缓存拆分（无缓存读）的 review 轮：未缓存 token 计入工单；只有页脚的轮不计 token
 rjs="$sup/review-15-20261019T113000Z.worker.log"
@@ -523,6 +542,23 @@ python3 "$script_dir/node_health.py" --runtime "$mr" --audit "$audit" --now 2026
 jq -e '[.metrics[] | select(.id == "flow.merge_rate_per_hour")][0].value | . > 0.041 and . < 0.042' "$mr/result.json" >/dev/null \
   || fail "merge rate must use a 24 h window: $(jq -c '[.metrics[] | select(.id == "flow.merge_rate_per_hour")]' "$mr/result.json")"
 
+# PR opened -> first verdict, 7 d: the first verdict of each PR only, a PR still in review-pending counts its age,
+# a verdict older than 7 d does not count; the 5 h window of the other ledger rows does not shorten it.
+python3 - "$script_dir" <<'CHECK' || fail 'open to first review wait wrong'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-11-07T12:00:00Z")
+def u(i, stage, *ev): return {"id": i, "stage": stage, "history": [{"stage": k, "at": a} for k, a in ev]}
+units = [
+ u("a", "merged", ("pr-opened", "2026-11-07T08:00:00Z"), ("review-request-changes", "2026-11-07T08:30:00Z"), ("review-approve", "2026-11-07T09:00:00Z")),
+ u("b", "merged", ("pr-opened", "2026-11-06T08:00:00Z"), ("review-approve", "2026-11-06T08:10:00Z")),
+ u("old", "merged", ("pr-opened", "2026-10-01T08:00:00Z"), ("review-approve", "2026-10-02T08:00:00Z")),
+ u("waiting", "review-pending", ("pr-opened", "2026-11-07T06:00:00Z")),
+ u("parked", "parked", ("pr-opened", "2026-11-07T06:00:00Z")),
+]
+waits = sorted(n.ledger_history.first_review_waits(units, now, n.ts))
+assert waits == [10, 30, 360], waits
+assert n.ledger_metrics(units, now - n.timedelta(hours=5), now)["review.open_to_first_review_p90_min"] == 360
+CHECK
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
 python3 - "$script_dir" "$test_env_root" <<'CHECK'
