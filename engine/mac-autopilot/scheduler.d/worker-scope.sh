@@ -28,11 +28,19 @@ worker_scope_prepare() { # config/systemd probe, cached for this scheduler tick
     worker_scope_unavailable 'systemd-run unavailable'
     return 0
   fi
+  # systemd-run expands $VAR/${VAR}/$$ in the command line before exec; from systemd v256 on that also applies
+  # to --scope children, so the launcher script ($$ and ${st[19]} included) would reach bash rewritten (systemd
+  # logs "Invalid environment variable name evaluates to an empty string" and empties each shell expansion).
+  # Turn expansion off where the switch exists; older systemd-run never expanded --scope children.
+  WORKER_SCOPE_NO_EXPAND=()
+  if "$WORKER_SCOPE_SYSTEMD_RUN" --help 2>&1 | grep -q -- '--expand-environment'; then
+    WORKER_SCOPE_NO_EXPAND=(--expand-environment=no)
+  fi
   probe="$(type -P true 2>/dev/null || true)"
   [[ -n "$probe" ]] || probe=true
   status=0
-  "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" -- "$probe" \
-    >/dev/null 2>&1 || status=$?
+  "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet ${WORKER_SCOPE_NO_EXPAND[@]+"${WORKER_SCOPE_NO_EXPAND[@]}"} \
+    -p "TasksMax=$WORKER_TASKS_MAX" -- "$probe" >/dev/null 2>&1 || status=$?
   if (( status != 0 )); then
     worker_scope_unavailable "systemd-run --user probe failed (exit $status)"
     return 0
@@ -68,7 +76,8 @@ worker_scope_exec() { # pid-file output-file launcher... -- command...; executed
   shift
   worker_command=("$@")
   if [[ "$WORKER_SCOPE_MODE" == scope ]]; then
-    exec "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet -p "TasksMax=$WORKER_TASKS_MAX" -- \
+    exec "$WORKER_SCOPE_SYSTEMD_RUN" --user --scope --quiet \
+      ${WORKER_SCOPE_NO_EXPAND[@]+"${WORKER_SCOPE_NO_EXPAND[@]}"} -p "TasksMax=$WORKER_TASKS_MAX" -- \
       setsid bash -c 'pid_file=$1; st=$(</proc/$$/stat); st=(${st##*) }); printf "%s %s\n" "$$" "${st[19]}" > "$pid_file" || exit 125
         [[ -z $6 ]] || printf "%s\n" "$$" > "$6" || exit 125
         setsid bash -c "$5" worker-scope-watch "$$" "$2" "$3" "$4" & shift 6; exec "$@"' \
