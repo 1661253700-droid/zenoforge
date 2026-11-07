@@ -9,10 +9,6 @@ repo_root="$(cd -- "$script_dir/../.." && pwd -P)"
 fail() { echo "node_health.test.sh: $*" >&2; exit 1; }
 config_root="$test_env_root/config/.zenoforge"
 mkdir -p "$config_root/state" "$config_root/mac-autopilot"
-printf '{"incidents":[{"id":"config-only-incident"}]}\n' > "$config_root/state/incident-guards.json"
-config_incidents="$(PYTHONPATH="$script_dir" ZF_CONFIG_ROOT="$config_root" ZF_PACK_DIR='' \
-  python3 -c 'import node_health; print(node_health.load_incident_guards()[0]["id"])')"
-[[ "$config_incidents" == config-only-incident ]] || fail 'incident metrics did not read target config'
 cp "$script_dir/NODE-HEALTH.md" "$config_root/mac-autopilot/NODE-HEALTH.md"
 health_doc="$(PYTHONPATH="$script_dir" ZF_CONFIG_ROOT="$config_root" python3 -c 'import node_health; print(node_health.health_doc_reference())')"
 [[ "$health_doc" == "$config_root/mac-autopilot/NODE-HEALTH.md" ]] || fail 'health documentation did not resolve from target config'
@@ -150,6 +146,12 @@ assert n.status_of(120, dispatches[2], dispatches[3], dispatches[4]) == "UNHEALT
 cap_default = n.CRITERIA["supervisor.cap_default_24h"]  # measured, no bound: any value stays OK
 assert all(n.status_of(v, cap_default[2], cap_default[3], cap_default[4]) == "OK" for v in (0, 1, 9, 999))
 print("node_health supervisor arbitration metrics: PASS")
+CHECK
+python3 - "$script_dir" <<'CHECK' || fail 'parked-cancel bound must come from the measured 7-day p50/p90 (healthy 3, bug 6), not the frozen M1 baseline'
+import sys; sys.path.insert(0, sys.argv[1]); import node_health as n
+parked = n.CRITERIA["ci.cancel_parked_per_day"]
+assert parked[2:4] == (3, 6), parked
+assert [n.status_of(v, parked[2], parked[3], parked[4]) for v in (0, 3, 5, 6)] == ["OK", "OK", "WARN", "UNHEALTHY"]
 CHECK
 quiet="$(python3 "$script_dir/node_health.py" --runtime "$a" --audit "$audit" --hours 0.2 --now 2026-10-19T12:00:00Z)"
 grep -Eq 'findings block % +-  .*NO-DATA' <<<"$quiet" || fail "no rejection records in the window must show no value, not 0: $(grep -F 'findings block' <<<"$quiet")"
@@ -320,7 +322,10 @@ gaps += [k for k in list(n.TIME_SINKS) + list(n.CI_STANDARDS) if f"`{k}`" not in
 sys.exit(print("missing:", gaps) or 1 if gaps else 0)
 CHECK
 # 工作单标准：在途单超过 bug 线计入 workorders.over_standard；已合并的不算；--json 给看板
-run review-15-20261019T113000Z 11:30 20 29000000 1
+# 29 M 有缓存拆分（无缓存读）的 review 轮：未缓存 token 计入工单；只有页脚的轮不计 token
+rjs="$sup/review-15-20261019T113000Z.worker.log"
+printf '{"type":"pipeline.execution","mode":"fresh"}\n{"type":"thread.started","thread_id":"aaaaaaaa-0000-0000-0000-000000000001"}\n{"type":"turn.completed","usage":{"input_tokens":29000000,"cached_input_tokens":0,"output_tokens":0}}\n' > "$rjs"
+touch -d "$(date -u -d "2026-10-19T11:30:00Z + 20 minutes" +%Y-%m-%dT%H:%M:%SZ)" "$rjs"; echo report > "$sup/review-15-20261019T113000Z.md"
 jq '.units += [{"id":"pr-15","pr":15,"stage":"review-pending","history":[{"stage":"review-request-changes","at":"2026-10-19T11:50:00Z"}]},
                {"id":"pr-16","pr":16,"stage":"merged","history":[{"stage":"pr-opened","at":"2026-09-01T00:00:00Z"},{"stage":"merged","at":"2026-09-02T00:00:00Z"}]}]' "$a/units.json" > "$a/u.tmp" && mv "$a/u.tmp" "$a/units.json"
 # 时间都花在哪：返工触发→派出（排队）、返工干活、交付→复检派出、复检干活、批准→CI 判红，取自台账事件 + dispatch 行
@@ -453,7 +458,9 @@ grep -Eq ' 1 .*WARN$' <<<"$(row 'past a spend bug bound')" || fail "over-standar
 [[ "$(jq -c '[.work_orders[] | select(.over != []) | [.id, .over]]' "$a/node-health.json")" == '[["pr-15",["tokens"]]]' ]] || fail "work-order bug bounds wrong: $(jq -c .work_orders "$a/node-health.json")"
 jq -e '.metrics[] | select(.id == "loop.rounds_p90") | .meaning != "" and .healthy == 3 and .unhealthy == 5' "$a/node-health.json" >/dev/null || fail 'scorecard JSON lacks meaning or bounds'
 jq -e '.metrics[] | select(.id == "delivery.cycles_to_pass_30d") | .value == 2 and .source != "" and .healthy == 1.32 and .unhealthy == 2.28' "$a/node-health.json" >/dev/null || fail 'delivery review cycles missing from scorecard JSON'
-jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p50_7d_hours") | .value == null and .source != "" and .healthy == 24 and .unhealthy == 72' "$a/node-health.json" >/dev/null || fail 'delivery lead-time standard missing when there are no acceptance records'
+jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p50_30d_hours") | .value == null and .source != "" and .healthy == 24 and .unhealthy == 72' "$a/node-health.json" >/dev/null || fail 'delivery lead-time standard missing when there are no acceptance records'
+jq -e '[.metrics[].id | select(test("^delivery[.]human_actions"))] == []' "$a/node-health.json" >/dev/null || fail 'removed human-action rows are still published'
+jq -e '.metrics[] | select(.id == "delivery.issue_to_accept_p95_7d_hours") | .value == null and .status == "NO-DATA" and .healthy == 72 and .unhealthy == 168' "$a/node-health.json" >/dev/null || fail 'the 7 d lead-time row must stay published as NO-DATA without acceptances'
 jq -e '.metrics[] | select(.id == "delivery.merged_not_live") | .value == null and .status == "UNHEALTHY" and .healthy == 0 and .unhealthy == 1 and .source != ""' "$a/node-health.json" >/dev/null || fail 'missing live SHA must be unhealthy NO-DATA for merged-not-live count'
 jq -e '.metrics[] | select(.id == "delivery.oldest_merged_not_live_hours") | .value == null and .status == "NO-DATA" and .healthy == 24 and .unhealthy == 72 and .source != ""' "$a/node-health.json" >/dev/null || fail 'oldest merged-not-live age must publish the delivery bounds'
 grep -Fq 'NODE-UNHEALTHY metric=delivery.merged_not_live node=delivery value=NO-DATA' "$a/alerts/node-health.md" || fail 'missing live SHA did not write an unhealthy alert'
@@ -483,6 +490,10 @@ assert n.dispatch_collisions([open_unit("x", "merged"), open_unit("y", "implemen
 assert n.dispatch_collisions([open_unit("x", "ready-to-merge"), open_unit("y", "repair")], now) == 0
 assert n.dispatch_collisions([open_unit("x", "implement"), open_unit("y", "repair")], now) == 1
 assert n.dispatch_collisions([a, c], now) == 0
+# A directory-vs-file overlap is no collision: footprint_owner_conflict skips it by default.
+p = unit("p", "2026-10-24T10:00:00Z", "2026-10-24T11:00:00Z", ["engine/x"], ["engine/x"])
+q = unit("q", "2026-10-24T10:30:00Z", "2026-10-24T11:30:00Z", ["engine/x/y.py"], ["engine/x/y.py"])
+assert n.dispatch_collisions([p, q], now) == 0
 assert n.dispatch_collisions([], now) is None
 assert n.dispatch_collisions([a, b], now + n.timedelta(days=2)) == 0
 assert n.CRITERIA["dispatch.collisions_per_day"][2:4] == (0, 1)
@@ -499,6 +510,18 @@ echo '{"footprint_mutex":{"shared_append":["reg.ts"]}}' > "$coll/config.json"
 python3 "$script_dir/node_health.py" --runtime "$coll" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$coll/result.json" >/dev/null
 jq -e '[.metrics[] | select(.id == "dispatch.collisions_per_day")][0].value == 1' "$coll/result.json" >/dev/null \
   || fail "collisions must count the archived overlap once and skip the shared-append pair: $(jq -c '[.metrics[] | select(.id == "dispatch.collisions_per_day")]' "$coll/result.json")"
+# A merge conflict counts only when a repair run followed it in the same unit, within 24 h.
+rep="$test_env_root/repairs"; mkdir -p "$rep"
+echo '{"units":[{"id":"r1","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-24T10:00:00Z"},{"stage":"write-start","at":"2026-10-24T10:05:00Z"}]},{"id":"r2","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-24T10:00:00Z"}]},{"id":"r3","stage":"merged","history":[{"stage":"merge-conflict","at":"2026-10-22T10:00:00Z"},{"stage":"write-start","at":"2026-10-22T10:05:00Z"}]}]}' > "$rep/units.json"
+python3 "$script_dir/node_health.py" --runtime "$rep" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$rep/result.json" >/dev/null
+jq -e '[.metrics[] | select(.id == "dispatch.conflict_repairs_per_day")][0].value == 1' "$rep/result.json" >/dev/null \
+  || fail "conflict repairs must count only the repaired conflict in the window: $(jq -c '[.metrics[] | select(.id == "dispatch.conflict_repairs_per_day")]' "$rep/result.json")"
+# The merge rate is a 24 h window: one merge 10 h ago reads 1/24 h, not a starved 5 h queue.
+mr="$test_env_root/mergerate"; mkdir -p "$mr"
+echo '{"units":[{"id":"m1","stage":"merged","history":[{"stage":"implement","at":"2026-10-23T20:00:00Z"},{"stage":"merged","at":"2026-10-24T02:00:00Z"}]}]}' > "$mr/units.json"
+python3 "$script_dir/node_health.py" --runtime "$mr" --audit "$audit" --now 2026-10-24T12:00:00Z --json "$mr/result.json" >/dev/null
+jq -e '[.metrics[] | select(.id == "flow.merge_rate_per_hour")][0].value | . > 0.041 and . < 0.042' "$mr/result.json" >/dev/null \
+  || fail "merge rate must use a 24 h window: $(jq -c '[.metrics[] | select(.id == "flow.merge_rate_per_hour")]' "$mr/result.json")"
 
 # First-pass BLOCK is a failed first review; native resumed workers count only
 # the new turn's fresh tokens, so pre-review repair cannot disappear from spend.
@@ -568,30 +591,27 @@ assert n.release_acceptances(str(runtime)) == [
 print("node_health short release-closer sha: PASS")
 CHECK
 
-# The PR census pages GraphQL search results and refuses a PR whose reviews or commits would be cut short.
-python3 - "$script_dir" <<'CHECK' || fail 'PR census paging or truncation wrong'
+# The PR census pages GraphQL search results and reads only merge time and merge commit, so a PR with over 100
+# reviews or commits no longer blanks the whole window.
+python3 - "$script_dir" <<'CHECK' || fail 'PR census paging or big-PR handling wrong'
 import sys
 sys.path.insert(0, sys.argv[1]); import pr_census
 def pr(number, reviews=0, commits=0):
-    return {"number":number,"mergedAt":"2026-10-24T00:00:00Z","body":"","mergeCommit":{"oid":"a"*40},
+    return {"number":number,"mergedAt":"2026-10-24T00:00:00Z","mergeCommit":{"oid":"a"*40},
             "reviews":{"totalCount":reviews,"nodes":[]},"commits":{"totalCount":commits,"nodes":[]}}
 pages = [{"data":{"search":{"pageInfo":{"hasNextPage":True,"endCursor":"c1"},"nodes":[pr(1, 1, 1)]}}},
-         {"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(2)]}}}]
+         {"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(2, reviews=101, commits=101)]}}}]
 calls = []
 def fake(args, timeout):
     calls.append(args)
     return pages[len(calls) - 1]
 rows = pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30)
 assert [r["number"] for r in rows] == [1, 2], rows
+assert rows[1] == {"number": 2, "mergedAt": "2026-10-24T00:00:00Z", "mergeCommit": {"oid": "a" * 40}}, rows
 assert calls[0][:2] == ["api", "graphql"] and calls[1][-1] == "after=c1", calls
 assert "merged:>=2026-10-01" in calls[0][-1], calls[0]
-pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(3, reviews=101)]}}}]
-calls.clear()
-assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
-pages = [{"data":{"search":{"pageInfo":{"hasNextPage":False,"endCursor":None},"nodes":[pr(4, commits=101)]}}}]
-calls.clear()
-assert pr_census.fetch("example-maintainer/example-repo", "2026-10-01", fake, 30) is None
-print("node_health PR census pages and refuses truncation: PASS")
+assert "reviews" not in pr_census.PR_CENSUS_QUERY and "commits" not in pr_census.PR_CENSUS_QUERY
+print("node_health PR census pages and keeps a big PR: PASS")
 CHECK
 
 # Delivery metrics join only recorded issue -> unit -> PR -> merge -> release links.
@@ -660,19 +680,19 @@ incidents = [{"id":"incident-1", "date":"2026-10-25", "issue":101},
 result = n.delivery_metrics(units, issues, prs, releases, incidents, now, repo="example-maintainer/example-repo",
                             reverted_merge_times={f"{1001:040x}": n.ts("2026-10-25T10:00:00Z")})
 values, details = result["values"], result["details"]
-assert values["delivery.issue_to_accept_p50_7d_hours"] == 72, values
-assert values["delivery.issue_to_accept_p95_7d_hours"] == 120, values
-assert values["delivery.issue_to_accept_p50_30d_hours"] == 72, values
+# Lead time counts all 8 accepted issues, including the 2 whose join is broken: 24 48 72 96 120 120 120 240.
+assert values["delivery.issue_to_accept_p50_30d_hours"] == 120, values
 assert values["delivery.issue_to_accept_p95_30d_hours"] == 240, values
+# 7 d window: 7 of the 8 accepted issues (the 240 h one was accepted 8 days ago): 24 48 72 96 120 120 120.
+assert values["delivery.issue_to_accept_p50_7d_hours"] == 96 and values["delivery.issue_to_accept_p95_7d_hours"] == 120, values
+assert details["accepted_units_7d"] == 7, details
 assert values["delivery.revert_rate_30d_pct"] == 100 / 6, values
-assert values["delivery.incident_rate_30d_pct"] == 300 / 8, values
+assert values["delivery.incident_rate_30d_pct"] == 200 / 8, values
 assert values["delivery.cycles_to_pass_30d"] == 9 / 7, values
 assert values["delivery.approvals_per_merge_30d"] == 1, values
-assert values["delivery.human_actions_per_merge_30d"] == 2 / 7, values
-assert values["delivery.human_actions_unattributed_30d"] == 1, values
 assert values["delivery.unlinked_units_30d"] == 2, values
 assert values["delivery.unlinked_incidents_30d"] == 1, values
-assert details["unlinked_incidents_30d"] == 1 and details["human_actions_unattributed_30d"] == 1, details
+assert details["unlinked_incidents_30d"] == 1, details
 assert details["accepted_units_30d"] == 8, details
 acceptance = n.delivery_metrics(
     [{"id":"pr-201", "issue":101, "pr":201, "merge_sha":"a"*40,
@@ -681,6 +701,15 @@ acceptance = n.delivery_metrics(
     [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}, "reviews":[]}],
     [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
 assert acceptance["values"]["delivery.issue_to_accept_p50_30d_hours"] == 120, acceptance
+# An accepted issue whose unit left the ledger still counts for lead time; it only raises unlinked_units.
+unitless = n.delivery_metrics(
+    [{"id":"pr-201", "issue":101, "pr":201, "merge_sha":"a"*40,
+      "history":[{"stage":"merged", "at":"2026-10-24T20:00:00Z"}]}],
+    [{"number":101, "createdAt":"2026-10-20T00:00:00Z"}, {"number":102, "createdAt":"2026-10-24T00:00:00Z"}],
+    [{"number":201, "mergedAt":"2026-10-24T20:00:00Z", "mergeCommit":{"oid":"a"*40}}],
+    [{"issue":101, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}, {"issue":102, "sha":"b"*40, "at":"2026-10-25T00:00:00Z"}], [], now)
+assert unitless["values"]["delivery.issue_to_accept_p50_30d_hours"] == 24, unitless
+assert unitless["values"]["delivery.issue_to_accept_p95_30d_hours"] == 120 and unitless["values"]["delivery.unlinked_units_30d"] == 1, unitless
 gh_bin = pathlib.Path(sys.argv[2]) / "delivery-gh"
 gh_bin.mkdir()
 gh = gh_bin / "gh"
@@ -801,6 +830,33 @@ assert known["values"]["delivery.unlinked_incidents_30d"] == 1, known["values"]
 print("node_health empty accepted set reports unknown unlinked incidents: PASS")
 CHECK
 
+# 事故率分子是被事故点名的接受单元数（上限 100%），而不是事故记录数；线上事故读负责人邮件账本。
+python3 - "$script_dir" <<'CHECK' || fail 'incident rate must count accepted issues named by a production incident, from the owner ledger'
+import json, os, sys, tempfile
+sys.path.insert(0, sys.argv[1]); import node_health as n
+now = n.ts("2026-10-26T12:00:00Z")
+incidents = [{"id":f"i{k}", "date":"2026-10-25", "issue":101} for k in range(5)]
+rows = n.delivery_metrics([], [], [], [{"issue":101, "sha":"a"*40, "at":"2026-10-25T00:00:00Z"}], incidents, now)
+assert rows["values"]["delivery.incident_rate_30d_pct"] == 100, rows["values"]
+assert rows["values"]["delivery.unlinked_incidents_30d"] == 0, rows["values"]
+home = tempfile.mkdtemp(); os.makedirs(os.path.join(home, "night"))
+assert n.load_prod_incidents(home) is None
+json.dump({"incidents":[{"issue":"4061", "opened_at":"1793000000"}, {"opened_at":1793000000}]},
+          open(os.path.join(home, "night", "founder-health-mail.json"), "w"))
+assert n.load_prod_incidents(home) is None  # alert log missing: unknown, not a partial count
+os.makedirs(os.path.join(home, "logs"))
+open(os.path.join(home, "logs", "head-watch.alerts"), "w").write(
+    "2026-10-25T01:00:00Z PROD-DB-TIMEOUT postgres-statement-time\n2026-10-25T01:10:00Z PROD-DB-TIMEOUT postgres-statement-time\n"
+    "2026-10-25T01:50:00Z MAIN-CI-RED other\n2026-10-25T03:00:00Z PROD-DB-TIMEOUT x\n")
+got = n.load_prod_incidents(home)
+assert [row["issue"] for row in got[:2]] == ["4061", None] and got[0]["date"] == "2026-10-26", got
+assert [row.get("date") for row in got[2:]] == ["2026-10-25", "2026-10-25"], got  # 3 alerts, 2 episodes
+# Alerts name no issue: they are unlinked and never part of the rate (only 4061, accepted, is); no-issue ledger row + 2 episodes = 3.
+mixed = n.delivery_metrics([], [], [], [{"issue":4061, "sha":"a"*40, "at":"2026-10-25T00:00:00Z"}], got, now)
+assert mixed["values"]["delivery.incident_rate_30d_pct"] == 100 and mixed["values"]["delivery.unlinked_incidents_30d"] == 3, mixed["values"]
+print("node_health incident rate counts named accepted issues: PASS")
+CHECK
+
 # --- 流动指标（#4366）：fixture 账本算数值；阈值内不发事件，越限每个指标只发一次 ---
 fsup="$test_env_root/flow-sup"; fa="$fsup/autopi"; mkdir -p "$fa" "$fsup"
 noaudit="$test_env_root/no-audit.jsonl"
@@ -812,7 +868,9 @@ cat > "$fa/units.json" <<'JSON'
  {"id":"pr-23","stage":"ready-to-merge","history":[{"stage":"created","at":"2026-10-19T06:30:00Z"},{"stage":"review-approve","at":"2026-10-19T11:50:00Z"}]},
  {"id":"pr-24","stage":"implement","history":[{"stage":"created","at":"2026-10-18T22:00:00Z"},{"stage":"implement-started","at":"2026-10-18T23:00:00Z"}]},
  {"id":"pr-26","stage":"repair-pending","history":[{"stage":"created","at":"2026-10-19T06:00:00Z"},{"stage":"review-request-changes","at":"2026-10-19T07:50:00Z"}]},
- {"id":"pr-27","stage":"repair-pending","history":[{"stage":"created","at":"2026-10-19T06:00:00Z"},{"stage":"review-request-changes","at":"2026-10-19T10:00:00Z"}]}
+ {"id":"pr-27","stage":"repair-pending","history":[{"stage":"created","at":"2026-10-19T06:00:00Z"},{"stage":"review-request-changes","at":"2026-10-19T10:00:00Z"}]},
+ {"id":"pr-28","stage":"blocked-external","history":[{"stage":"blocked-on","at":"2026-10-10T00:00:00Z"}]},
+ {"id":"pr-29","stage":"parked","history":[{"stage":"supervisor-budget-park","at":"2026-10-11T00:00:00Z"}]}
 ]}
 JSON
 printf '[2026-10-19T09:00:00Z] dispatch mode=fresh pid=1 type=repair unit=pr-26\n[2026-10-19T11:00:00Z] dispatch mode=fresh pid=2 type=repair unit=pr-27\n' > "$fa/scheduler.log"
@@ -835,31 +893,39 @@ printf '{"red_sha":"%s","status":"flaky","created_at":"2026-10-19T09:30:00Z","up
 printf 'not json' > "$fa/main-red/stale.json.tmp"
 flowrun "$fa" --json "$fa/node-health.json" >/dev/null
 flowval() { jq -r --arg id "$1" '.metrics[] | select(.id == $id) | "\(.value) \(.status)"' "$fa/node-health.json"; }
-[[ "$(flowval flow.merge_rate_per_hour)" == "0.6 UNHEALTHY" ]] || fail "merge rate wrong: $(flowval flow.merge_rate_per_hour)（3 merged / 5h，有积压）"
+[[ "$(flowval flow.merge_rate_per_hour)" == "0.125 UNHEALTHY" ]] || fail "merge rate wrong: $(flowval flow.merge_rate_per_hour)（3 merged / 24h，有积压）"
 [[ "$(flowval flow.in_out_imbalance)" == "1 OK" ]] || fail "in/out imbalance wrong: $(flowval flow.in_out_imbalance)（entered 2, merged 3）"
 [[ "$(flowval flow.wip_age_stage_p90_hours)" == "13.0 UNHEALTHY" ]] || fail "wip stage age wrong: $(flowval flow.wip_age_stage_p90_hours)"
 [[ "$(flowval flow.slot_idle_hours)" == "1.83 UNHEALTHY" ]] || fail "slot idle wrong: $(flowval flow.slot_idle_hours)"
 [[ "$(flowval flow.main_red_hours)" == "3.67 UNHEALTHY" ]] || fail "main-red hours wrong: $(flowval flow.main_red_hours)（flaky 0.67 + 未终结 3.0，与未终结重叠的 flaky 只算一次，窗口外 reverted 不算）"
 jq -e '.flow.entered == 2 and .flow.merged == 3
   and (.flow.wip_age[] | select(.stage == "implement") | .count == 1 and .p90_hours == 13)
-  and (.flow.wip_age[] | select(.stage == "ready-to-merge") | .p90_hours == 0.2)' \
+  and (.flow.wip_age[] | select(.stage == "ready-to-merge") | .p90_hours == 0.2)
+  and (.flow.wip_age[] | select(.stage == "blocked-external") | .waiting == true and .p90_hours == 228)
+  and (.flow.wip_age[] | select(.stage == "parked") | .waiting == true and .p90_hours == 204)
+  and (.flow.wip_age[] | select(.stage == "implement") | .waiting == false)' \
   "$fa/node-health.json" >/dev/null || fail "flow details wrong: $(jq -c .flow "$fa/node-health.json")"
+# 等待阶段单独成行：计数 = blocked-external + parked 的单数，p90 落在两阶段最老的单之间（指标行不进最差阶段）。
+[[ "$(flowval flow.wait_stage_units)" == "$(jq -r '[.flow.wip_age[] | select(.waiting) | .count] | add' "$fa/node-health.json") OK" ]] \
+  || fail "waiting unit count wrong: $(flowval flow.wait_stage_units) vs $(jq -c '[.flow.wip_age[] | select(.waiting)]' "$fa/node-health.json")"
+[[ "$(flowval flow.wait_stage_p90_hours)" =~ ^(204|20[5-9]|21[0-9]|22[0-8])(\.[0-9])?\ UNHEALTHY$ ]] \
+  || fail "waiting age p90 wrong: $(flowval flow.wait_stage_p90_hours)"
 # 无积压（全部终态且在窗口前）：合入速率不计值，不读成 0
 ssup="$test_env_root/starve-sup"; sa="$ssup/autopi"; mkdir -p "$sa" "$ssup"
 printf '{"units":[{"id":"pr-31","stage":"merged","history":[{"stage":"created","at":"2026-10-18T10:00:00Z"},{"stage":"merged","at":"2026-10-18T11:00:00Z"}]}]}' > "$sa/units.json"
 out="$(flowrun "$sa")"
 grep -F '6.5 target' <<<"$out" | grep -Eq ' - +>=6.5 .*NO-DATA$' || fail "starved queue must show no value, not 0: $(grep -F '6.5 target' <<<"$out")"
-# 阈值内（33 单 / 5h = 6.6/h，全部当天完成）：全 OK，且不发事件
+# 阈值内（157 单 / 24h = 6.54/h，全部当天完成）：全 OK，且不发事件
 rsup="$test_env_root/rate-sup"; ra="$rsup/autopi"; mkdir -p "$ra" "$rsup"
 python3 - "$ra" <<'PY'
 import json, sys
 units = [{"id": f"pr-{i}", "stage": "merged",
           "history": [{"stage": "created", "at": "2026-10-19T08:00:00Z"},
-                      {"stage": "merged", "at": "2026-10-19T09:00:00Z"}]} for i in range(100, 133)]
+                      {"stage": "merged", "at": "2026-10-19T09:00:00Z"}]} for i in range(100, 257)]
 json.dump({"units": units}, open(sys.argv[1] + "/units.json", "w"))
 PY
 flowrun "$ra" --json "$ra/node-health.json" >/dev/null
-jq -e '.metrics[] | select(.id == "flow.merge_rate_per_hour") | .value == 6.6 and .status == "OK"' "$ra/node-health.json" >/dev/null \
+jq -e '.metrics[] | select(.id == "flow.merge_rate_per_hour") | .value > 6.5 and .status == "OK"' "$ra/node-health.json" >/dev/null \
   || fail "healthy merge rate wrong: $(jq '.metrics[] | select(.id == "flow.merge_rate_per_hour")' "$ra/node-health.json")"
 # 事件：越限每个 flow 指标只发一条；同一越限期内重跑不再发；恢复清记录；再越限重新可发
 inbox="$AGENT_HOME/supervisor-inbox"
@@ -867,22 +933,23 @@ state_file="$fa/flow-inbox-state.json"
 rm -f "$inbox" "$state_file" "$AGENT_HOME"/logs/supervisor-alert-seen-*.tsv
 flowrun "$fa" --inbox >/dev/null
 flowlines() { grep -c 'flow metric=flow\.' "$inbox" 2>/dev/null || printf '0\n'; }
-[[ "$(flowlines)" == 4 ]] || fail "expected one inbox event per unhealthy flow metric, got $(flowlines): $(cat "$inbox" 2>/dev/null)"
-grep -Fq 'flow metric=flow.merge_rate_per_hour status=UNHEALTHY value=0.6' "$inbox" || fail "inbox event lacks metric id and value: $(cat "$inbox")"
+# 5 = the fixture's four flow rows plus wait_stage_p90_hours (228 h > 160 h); a healthy run has none (no waiting units)
+[[ "$(flowlines)" == 5 ]] || fail "expected one inbox event per unhealthy flow metric, got $(flowlines): $(cat "$inbox" 2>/dev/null)"
+grep -Fq 'flow metric=flow.merge_rate_per_hour status=UNHEALTHY value=0.1' "$inbox" || fail "inbox event lacks metric id and value: $(cat "$inbox")"
 flowrun "$fa" --inbox >/dev/null
-[[ "$(flowlines)" == 4 ]] || fail "same unhealthy episode emitted again: $(flowlines)"
+[[ "$(flowlines)" == 5 ]] || fail "same unhealthy episode emitted again: $(flowlines)"
 # 恢复：同一 runtime 换回健康账本（无越限 flow 指标）→ 越限记录清空，不再发事件
 mv "$fa/units.json" "$fa/units.busy.json"
 mv "$fa/main-red" "$fa/main-red.busy"
 cp "$ra/units.json" "$fa/units.json"
 flowrun "$fa" --inbox >/dev/null
 jq -e 'length == 0' "$state_file" >/dev/null || fail "recovered metrics still recorded as alerted: $(cat "$state_file")"
-[[ "$(flowlines)" == 4 ]] || fail "healthy run emitted events: $(flowlines)"
+[[ "$(flowlines)" == 5 ]] || fail "healthy run emitted events: $(flowlines)"
 # 再越限：恢复后状态已重新武装；lib.sh 的同文去重按天滚动（supervisor-alert-seen-<day>.tsv），跨天后可重发
 rm -f "$fa/units.json"; mv "$fa/units.busy.json" "$fa/units.json"; mv "$fa/main-red.busy" "$fa/main-red"
 rm -f "$AGENT_HOME"/logs/supervisor-alert-seen-*.tsv
 flowrun "$fa" --inbox >/dev/null
-[[ "$(flowlines)" == 8 ]] || fail "re-armed crossing did not emit again after recovery: $(flowlines)"
+[[ "$(flowlines)" == 10 ]] || fail "re-armed crossing did not emit again after recovery: $(flowlines)"
 
 # --- 线级 hold：release_train.enabled=false 或有效 PAUSE 是把整条线停住的 hold，和 issue 级 hold
 # （hold_issue 的 --holder/--release/--expires）欠同样的元数据。缺 owner、缺到期或已过期计入
@@ -1209,3 +1276,12 @@ json.dump({"outcome": "completed"}, open(home + "/logs/advisor-batch-x.result.js
 assert n.advisor_answer_age_hours(home, "r", now) < 1
 print("node_health advisor answer age: PASS")
 CHECK2
+# 实施/返工耗时看 24 h：一张 13 h 前交报告的开发轮（5 h 窗口外）必须进 implement.wall_p50
+w24="$test_env_root/wall24"; mkdir -p "$w24/autopi"
+printf 'codex\ntokens used\n1000\ndone\n' > "$w24/impl-pr-40-20261018T230000Z.worker.log"
+printf 'report\n' > "$w24/impl-pr-40-20261018T230000Z.md"
+touch -d "2026-10-19T00:30:00Z" "$w24/impl-pr-40-20261018T230000Z.worker.log"
+PATH="$test_env_root/bin:$PATH" python3 "$script_dir/node_health.py" --runtime "$w24/autopi" --audit "$noaudit" \
+  --main-red-dir "$w24/autopi/main-red" --hours 5 --now 2026-10-19T12:00:00Z --json "$w24/node-health.json" >/dev/null
+jq -e '.metrics[] | select(.id == "implement.wall_p50") | .value == 90' "$w24/node-health.json" >/dev/null \
+  || fail "implement wall p50 ignored a run inside the 24 h window: $(jq -c '.metrics[] | select(.id == "implement.wall_p50")' "$w24/node-health.json")"

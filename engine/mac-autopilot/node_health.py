@@ -20,11 +20,13 @@ from pathlib import Path
 import arbiter_health, ledger_history, live_delivery
 import line_holds
 import release_age
+import station_standards
 import pr_census
+import watch_alerts
 import worker_cost
 import workorder_cost
 import usage_reader
-from config_paths import zf_config_file, zf_host_ops_file, zf_incident_guards, zf_mechanism_registry
+from config_paths import zf_config_file, zf_host_ops_file, zf_mechanism_registry
 
 
 def is_test_path(path):
@@ -47,7 +49,8 @@ def health_doc_reference():
 CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "implement.wall_p50":      ("implement", "implement run minutes p50", 30, 60, False),
     "implement.no_output_pct": ("implement", "implement runs with no report %", 5, 15, False),
-    "dispatch.collisions_per_day": ("implement", "overlapping implement/repair unit pairs in the last 24h", 0, 1, False),
+    "dispatch.collisions_per_day": ("implement", "implement/repair unit pairs writing the same path in the last 24h", 0, 1, False),
+    "dispatch.conflict_repairs_per_day": ("implement", "merge conflicts that a repair run followed, in 24 h (measured, no bound yet)", 0, -1, True),
     "review.wall_p50":         ("review", "first review minutes p50", 10, 20, False),
     "review.first_pass_pct":   ("review", "units approved on their first review %", 50, 30, True),
     "repair.wall_p50":         ("repair", "repair run minutes p50", 15, 30, False),
@@ -76,7 +79,7 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "ci.cancel_tests_red_per_day": ("ci+merge", "M1 audited cancelled runs/day: tests already red", 62, 124, False),
     "ci.cancel_review_changes_per_day": ("ci+merge", "M1 audited cancelled runs/day: review requested changes", 0, 60, False),
     "ci.cancel_review_blocked_per_day": ("ci+merge", "M1 audited cancelled runs/day: review blocked", 2, 5, False),
-    "ci.cancel_parked_per_day": ("ci+merge", "M1 audited cancelled runs/day: parked", 1, 2, False),
+    "ci.cancel_parked_per_day": ("ci+merge", "M1 audited cancelled runs/day: parked", 3, 6, False),
     "ci.cancel_superseded_per_day": ("ci+merge", "M1 audited cancelled runs/day: superseded main run", 30, 60, False),
     "ci.cancel_other_per_day": ("ci+merge", "M1 audited cancelled runs/day: other or unclassified", 0, 1, False),
     "ci.gated_pr_pct":          ("ci+merge", "active agent PRs with the agent/ci-gated label %", 80, 50, True),
@@ -92,13 +95,11 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     "delivery.issue_to_accept_p50_30d_hours": ("delivery", "issue created -> release accepted p50, 30 d hours", 24, 72, False),
     "delivery.issue_to_accept_p95_30d_hours": ("delivery", "issue created -> release accepted p95, 30 d hours", 72, 168, False),
     "delivery.revert_rate_30d_pct": ("delivery", "accepted units reverted within 30 d %", 5, 10, False),
-    "delivery.incident_rate_30d_pct": ("delivery", "incident records per accepted unit within 30 d %", 5, 10, False),
+    "delivery.incident_rate_30d_pct": ("delivery", "accepted units named by a production incident within 30 d %", 5, 10, False),
     "delivery.cycles_to_pass_30d": ("delivery", "review rounds to pass per merged unit, 30 d", 1.32, 2.28, False),
     "delivery.approvals_per_merge_30d": ("delivery", "review approvals per merged unit, 30 d", 1, 2.28, False),
-    "delivery.human_actions_per_merge_30d": ("delivery", "human PR review actions per merged unit, 30 d", 1, 2, False),
     "delivery.unlinked_units_30d": ("delivery", "release-accepted units missing a recorded join, 30 d", 0, 1, False),
-    "delivery.unlinked_incidents_30d": ("delivery", "incident records without an accepted-unit link, 30 d", 0, 1, False),
-    "delivery.human_actions_unattributed_30d": ("delivery", "maintainer-login PR review actions without reliable attribution, 30 d", 0, 1, False),
+    "delivery.unlinked_incidents_30d": ("delivery", "production incidents and alert episodes without an accepted-unit link, 30 d", 0, 1, False),
     "host.prereqs_missing":    ("host", "host services from host-prereqs.json that do not answer", 0, 1, False),
     "host.github_net_failures_per_hour": ("host", "GitHub fetch/API network failures per hour (user journal)", 2, 10, False),
     "host.stale_worktrees":    ("host", "worktrees under ~/wt older than 2 h", 10, 40, False),
@@ -107,8 +108,12 @@ CRITERIA = {**arbiter_health.CRITERIA, **live_delivery.CRITERIA,
     # Factory flow metrics (#4366): throughput vs the 6.5/h SLO, staged WIP age, dispatch
     # stalls, main-red duration and in/out conservation. Crossing the unhealthy bound sends
     # one supervisor-inbox event per episode (--inbox); regular samples reach the dashboard.
-    "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target (starved queue has no value)", 6.5, 3.5, True),
+    "flow.merge_rate_per_hour": ("flow", "merges per hour vs the 6.5 target over 24 h (starved queue has no value)", 6.5, 3.5, True),
     "flow.wip_age_stage_p90_hours": ("flow", "worst per-stage p90 age of open units, hours", 4, 12, False),
+    # Units parked on purpose (blocked-external, parked) stay out of the worst-stage pick; their own row
+    # shows how long they have waited. Bounds: 699 completed holds (2026-11-07), p90 80 h and 2x it.
+    "flow.wait_stage_p90_hours": ("flow", "p90 age of units waiting on a predecessor or a park, hours", 80, 160, False),
+    "flow.wait_stage_units":   ("flow", "units waiting on a predecessor or a park (measured, no bound)", 0, -1, True),
     "flow.slot_idle_hours":    ("flow", "hours units queued for a repair/rereview worker while none of that phase ran", 0.25, 1, False),
     "flow.main_red_hours":     ("flow", "hours main was red (bisect sessions) in the window", 1, 3, False),
     "flow.in_out_imbalance":   ("flow", "|units entered - units merged/landed| in the window", 5, 15, False),
@@ -125,6 +130,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "implement.wall_p50": "一次开发从派出到交付的中位时长。偏长多半是任务太大，或卡在环境上。",
     "implement.no_output_pct": "开发员跑完却没交报告的比例：这些 token 全白花，多是进程被杀或崩溃。",
     "dispatch.collisions_per_day": "过去 24 小时不同开发单元同时写入同一文件的次数；正常等待不算碰撞，任何一次都是故障。",
+    "dispatch.conflict_repairs_per_day": "过去 24 小时内发生了合并冲突（merge-conflict）、随后由修复运行接手的单元数；只测量不设界，提议的界见 NODE-HEALTH.md。",
     "review.wall_p50": "首次质检的中位时长。",
     "review.first_pass_pct": "第一次质检就通过的工作单比例：越高说明开发一次做对，返工越少。",
     "repair.wall_p50": "一次返工修改的中位时长。",
@@ -142,7 +148,7 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "ci.cancel_tests_red_per_day": "M1：共享取消审计中，原因是 tests already red 的不同 PR run 数按天折算；健康上限为冻结基线日均数，bug 线为其两倍。",
     "ci.cancel_review_changes_per_day": "M1：共享取消审计中，原因是 review requested changes 的不同 PR run 数按天折算；健康为零，bug 线取冻结基线日均数。",
     "ci.cancel_review_blocked_per_day": "M1：共享取消审计中，原因是 review blocked 的不同 PR run 数按天折算；健康上限为冻结基线日均数，bug 线为其两倍。",
-    "ci.cancel_parked_per_day": "M1：共享取消审计中，原因是 parked 的不同 PR run 数按天折算；健康上限为冻结基线日均数，bug 线为其两倍。",
+    "ci.cancel_parked_per_day": "M1：共享取消审计中，原因是 parked 的不同 PR run 数按天折算；健康上限为最近 7 天滚动 24 小时读数的 p90，bug 线为其两倍；样本薄：7 天内只有 6 个 parked run，来自 4 个单元。",
     "ci.cancel_superseded_per_day": "M1：共享取消审计中，原因是 superseded by newer main head（main 防抖：更新的 main 头取代尚在排队的旧 run）的不同 run 数按天折算；数量随 main 合入节奏，边界为运维设定值。",
     "ci.cancel_other_per_day": "M1：共享取消审计中，原因不在已知类别里的不同 PR run 数按天折算。",
     "ci.gated_pr_pct": "M12：当前活跃 agent/issue-* PR 中带服务端 agent/ci-gated 标签的比例；不读本机台账镜像。",
@@ -166,34 +172,35 @@ MEANING = {**arbiter_health.MEANING, **live_delivery.MEANING,
     "engine.follow_lag_hours": "live 引擎没跟上 example HEAD:scripts 的小时数。converge 导出、构建或自检失败时开始计时，跟上后清零。高 = 落地了但没上线。",
     "host.stale_worktrees": "~/wt 下建立超过 2 小时还没删的工作目录数。分诊、顾问、hand 每轮结束就该删掉；堆积 = 收尾清理坏了（10-21/22 收尾先 fetch，代理一卡就全部保留，26 小时堆到 287 个）。",
     "intake.closed_units_open_issues": "issue 开着且 ready-for-agent、但单元都已结束的张数。intake 的 terminal 跳过不派 worker，也不逐行报，所以这类票会静默停住；非 0 时看体检输出列出的号（11-06 查出 8 张）。",
-    "flow.merge_rate_per_hour": "窗口内 merged/landed 单数 ÷ 小时数，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
+    "flow.merge_rate_per_hour": "过去 24 小时内 merged/landed 的工厂单元数（不含人工 PR 与账本外的 PR）÷ 24，对照 6.5/h 的吞吐目标（#4355）。窗口里没有在制品也没进单（无积压）时不计值；跌破 3.5/h 是升级前串行合并道的上限，工厂没在产出。",
     "flow.wip_age_stage_p90_hours": "每张在途单在当前阶段已停留的小时（按阶段分组取 p90，取最差阶段；分组明细在 scorecard 的 flow.wip_age）。高 = 流动卡在某个阶段，去单元表找是哪几张。",
+    "flow.wait_stage_p90_hours": "units.json 中 blocked-external（等前序单）与 parked（止损挂起）的在途单，自进入该阶段的最后事件起算的 p90 小时；不计入上一行的最差阶段。高 = 有一串单长期等同一个前序，去单元表找前序。",
+    "flow.wait_stage_units": "同上两个阶段的在途单数，只计数，不设阈值。",
     "flow.slot_idle_hours": "有单排队等返工/复检 worker、而该阶段一个 worker 都没在跑的小时数：这是派发停摆（槽位空转），不是产能不足（那会表现为 worker 全忙）。",
     "flow.main_red_hours": "main 处在红的小时数（#4356 二分会话覆盖）：红一次并自动回滚是设计内；持续红 = 二分卡住或回滚 PR 未合并。",
     "flow.in_out_imbalance": "|窗口内进入的单数 − 完成合入的单数|：进出守恒。持续不等 = 单在系统里堆积或凭空消失（WIP 泄漏 / 孤儿单）。",
     "mechanism.silent": "登记表（engine/state/mechanism-registry.json）里沉默超过上限的机制数：代码落地了但没在跑（#4483 里 f3 落地后停转 18 小时就是这类）。允许长期无事件的机制（expected_idle）只展示最近事件时间，不计入。分组明细在 scorecard 的 mechanisms。",
     "workers.local_test_db": "AI 员工 push 前能否在本机跑集成测试。0 = 集成测试第一次运行要等到批准后的 CI，红了再返工一轮（10-17 重装丢了测试库，24h 内 146 次返工由批准后 CI 红触发）。",
-    "delivery.issue_to_accept_p50_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只用完整 ID 链。",
-    "delivery.issue_to_accept_p95_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只用完整 ID 链。",
-    "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只用完整 ID 链。",
-    "delivery.issue_to_accept_p95_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只用完整 ID 链。",
+    "delivery.issue_to_accept_p50_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
+    "delivery.issue_to_accept_p95_7d_hours": "过去 7 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）；窗口内没有发布验收时显示 NO-DATA（发布停摆时如此，不是读数丢失）。",
+    "delivery.issue_to_accept_p50_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的中位小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
+    "delivery.issue_to_accept_p95_30d_hours": "过去 30 天发布关闭单元的 issue 创建到 release-closer 接受的 p95 小时数；只计有一条验收记录且 issue 创建时间可读的单元（不要求单元/PR 关联）。",
     "delivery.revert_rate_30d_pct": "过去 30 天接受单元中，release-closer 接受后 main 出现对应 Git revert marker 的比例。",
-    "delivery.incident_rate_30d_pct": "过去 30 天根因事故记录数 ÷ 同期接受单元数；没有明确关联到接受单元的记录同时计为 unlinked。",
+    "delivery.incident_rate_30d_pct": "过去 30 天被线上事故明确点名的接受单元数 ÷ 同期接受单元数（上限 100%）。只统计能关联到接受单元的事故；没有点名 issue 的线上告警不在这里，由 delivery.unlinked_incidents_30d 计分，所以 0 不代表线上没有问题。",
     "delivery.cycles_to_pass_30d": "过去 30 天合并单元从首次评审到第一次 review-approve 的评审轮数均值，含通过轮。",
     "delivery.approvals_per_merge_30d": "过去 30 天合并单元的 review-approve 台账事件均值。",
-    "delivery.human_actions_per_merge_30d": "过去 30 天合并 PR 的真人 review action 均值；扣除有 bot marker、commit trailer 或同刻 scheduler review 事件的 maintainer-account 操作。",
     "delivery.unlinked_units_30d": "过去 30 天 release-closer 明确关闭的 issue 中，issue→unit→PR→merge→release 链缺字段或多义的数量。",
-    "delivery.unlinked_incidents_30d": "过去 30 天事故记录中没有明确 issue ID、或 issue ID 未对应到同期接受单元的数量；不会猜测归属。",
-    "delivery.human_actions_unattributed_30d": "过去 30 天 maintainer-login PR review 中，有 agent marker 或 commit trailer、但没有相应 scheduler review 事件的动作数；不算成人工动作。",
+    "delivery.unlinked_incidents_30d": "过去 30 天线上事故账本（与负责人邮件同源）里未关联接受单元的事故，加上 head-watch 的线上告警次数（PROD-DB-TIMEOUT，间隔 30 分钟内算一次，与负责人邮件线上告警同口径）；告警不带 issue，一律未关联。告警日志只从 2026-11-04 开始，所以这是下限而非完整 30 天；不会猜测归属。",
 }
 # Where each number comes from (dashboard "来源" column). node_health.test.sh requires one per metric.
 SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
-    "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮",
+    "implement.wall_p50": "worker 日志 *.worker.log：文件名里的开始时间 → 最后写入时间；只算交了报告的开发轮；24 h 窗口",
     "implement.no_output_pct": "同上；已结束（10 分钟没写日志）却没有报告 .md 的开发轮",
     "dispatch.collisions_per_day": "units.json write-start/write-end 的区间与文件范围（预测 + 实际 diff），按单元对去重；固定滚动 24h。",
+    "dispatch.conflict_repairs_per_day": "units.json（含 units-archive.json）单元历史：merge-conflict 事件之后出现 write-start（修复运行）的次数，固定滚动 24h。",
     "review.wall_p50": "review-*.worker.log 的开始 → 最后写入",
     "review.first_pass_pct": "units.json 每单第一次评审结论（review-approve / review-request-changes / review-block）",
-    "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入",
+    "repair.wall_p50": "impl-*-fix-*.worker.log 的开始 → 最后写入；24 h 窗口",
     "loop.rounds_p90": "units.json：每次 review-approve 之前的 review-request-changes 次数",
     "loop.rework_token_pct": "worker 页脚或 usage_reader 原生 turn 用量减派发基线：repair（含 self-fix）+ rereview ÷ 已计量的 run；未计量的 run 不计入，显示已计量 run 数；全部未计量则 N/A",
     "loop.incremental_rereview_pct": "每次 repair 之后同一单的下一次评审是否为增量复检（rereview）",
@@ -207,8 +214,8 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "release.hotpatch_blockers": "release-blockers.json（release_train.sh 对照生产热修与 main）",
     "pipeline.orphan_prs": "orphan-prs.count（调度器比对 open PR 与台账）",
     "workorders.over_standard": "units.json + worker 日志：每单 token、员工分钟、返工轮、年龄对照下方工作单标准",
-    "workorders.ticket_tokens_p90": "worker_cost.ticket_spend.fresh（未缓存输入 + 输出）按 units.json issue 归票；只纳入有缓存拆分的票，窗口 7 天，阈值取窗口前 30 天有缓存拆分的已关票 p50/p90；无可用历史时用静态 800k / 4.8M",
-    "workorders.ticket_wall_p90": "worker 日志文件名起始 → 最后写入，按 units.json issue 归票；窗口 7 天，阈值取窗口前 30 天已关票 p50/p90",
+    "workorders.ticket_tokens_p90": "worker_cost.ticket_spend.fresh（未缓存输入 + 输出）按 units.json issue 归票；只纳入有缓存拆分的票（票的任一 run 没有用量记录就不算：GLM 与 claude 的 review 不写用量，7 天窗口内没有任何票全程有记录时为 NO-DATA），窗口 7 天，阈值取窗口前 30 天有缓存拆分的已关票 p50/p90；无可用历史时用静态 800k / 4.8M",
+    "workorders.ticket_wall_p90": "worker 日志文件名起始 → 最后写入，按 units.json issue 归票（review/repair 日志文件名里的 PR 号经 unit.pr 归到 issue）；窗口 7 天，阈值取窗口前 30 天已关票 p50/p90",
     "ci.waste_runner_pct": "ci-spend.json（ci_spend.py 每 30 分钟用 GitHub Actions jobs API 统计）",
     "ci.held_ready_pct": "units.json：ready-to-merge 且带 ci_held_sha 的单数 ÷ 就绪单数",
     "ci.cancel_deferred_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=ci deferred ÷ 窗口小时 × 24；边界取冻结基线 M1。",
@@ -217,7 +224,7 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "ci.cancel_tests_red_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=tests already red ÷ 窗口小时 × 24；边界取冻结基线 M1。",
     "ci.cancel_review_changes_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=review requested changes ÷ 窗口小时 × 24；边界取冻结基线 M1。",
     "ci.cancel_review_blocked_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=review blocked ÷ 窗口小时 × 24；边界取冻结基线 M1。",
-    "ci.cancel_parked_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 parked reason ÷ 窗口小时 × 24；边界取冻结基线 M1。",
+    "ci.cancel_parked_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 parked reason ÷ 窗口小时 × 24；边界取最近 7 天滚动 24 小时读数的 p90（3）及其两倍（6），样本见 NODE-HEALTH.md。",
     "ci.cancel_superseded_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的最后一个非空 reason=superseded by newer main head ÷ 窗口小时 × 24。",
     "ci.cancel_other_per_day": "共享 actions-run-cancellations.jsonl：窗口内不同 run_id 的其他或缺失 reason ÷ 窗口小时 × 24。",
     "ci.gated_pr_pct": "GitHub pull request API：带 agent/ci-gated 标签的 open agent/issue-* PR ÷ 所有 open agent/issue-* PR。",
@@ -232,35 +239,36 @@ SOURCE = {**arbiter_health.SOURCE, **live_delivery.SOURCE,
     "engine.follow_lag_hours": "engine-sync converge 失败时写入的 $AGENT_HOME/engine-versions/.lag-since（epoch 秒），成功跟上即删除；没有该文件记 0",
     "host.stale_worktrees": "ZF_WORKTREE_ROOT（默认 ~/wt）下每个工作目录的 .git 链接文件建立时间早于 2 小时的个数；没有该目录（Mac）为空",
     "intake.closed_units_open_issues": "intake-candidates.json 的候选行里，单元全部处于终态且交接 episode 已消费的 issue 数；没有候选快照时为空",
-    "flow.merge_rate_per_hour": "units.json merged/landed 事件 ÷ 窗口小时；无积压判定：窗口内没有任何在途或新进入的单",
+    "flow.merge_rate_per_hour": "units.json 与 units-archive.json 的 merged/landed 事件 ÷ 24 h；无积压判定：窗口内没有任何在途或新进入的单",
     "flow.wip_age_stage_p90_hours": "units.json 在途单（stage 非终态）当前 stage 的最后事件时间 → now，按 stage 分组取 p90",
+    "flow.wait_stage_p90_hours": "units.json 在途单 stage 为 blocked-external 或 parked：最后事件时间 → now，取 p90",
+    "flow.wait_stage_units": "units.json 在途单 stage 为 blocked-external 或 parked 的个数",
     "flow.slot_idle_hours": "units.json 触发事件 + scheduler.log dispatch 行给出排队区间（同 time_sinks），worker_cost 运行区间给出同阶段在跑区间，取无人在跑的净空转",
     "flow.main_red_hours": "$AGENT_HOME/main-red/*.json 二分会话（created_at → updated_at，未终态会话算到 now），按窗口裁剪",
     "flow.in_out_imbalance": "units.json 首个事件落在窗口内 = 进入，merged/landed 落在窗口内 = 完成",
     "mechanism.silent": "engine/state/mechanism-registry.json 的事件模式匹配 scheduler.log / alerts/events.md / $AGENT_HOME/logs 的行（含轮转 .1 代），取每个机制最近一次事件时间",
     "workers.local_test_db": "每次体检对 PGTEST_URL（runtime-env.sh，zenoforge-pgtest.service）做 TCP 连接",
-    "delivery.issue_to_accept_p50_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
-    "delivery.issue_to_accept_p95_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
-    "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
-    "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt；units.json issue→PR→merge_sha，GitHub mergeCommit.oid",
+    "delivery.issue_to_accept_p50_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p95_7d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p50_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
+    "delivery.issue_to_accept_p95_30d_hours": "alerts/events.md release-closer accepted-at → GitHub issue createdAt（每个有一条验收记录的 issue；unit 关联只用于 unlinked_units）",
     "delivery.revert_rate_30d_pct": "units.json 接受单元的 merge SHA，与 origin/main Git revert commit 的 This reverts commit marker",
-    "delivery.incident_rate_30d_pct": ".zenoforge/state/incident-guards.json dated incidents ÷ unique issue IDs in release-closer acceptance events; downstream joins are not required",
+    "delivery.incident_rate_30d_pct": "night/founder-health-mail.json production incidents (same ledger as the owner mail) naming an issue ID in release-closer acceptance events ÷ unique accepted issue IDs",
     "delivery.cycles_to_pass_30d": "units.json review-approve / review-request-changes / review-block events before merged / landed",
     "delivery.approvals_per_merge_30d": "units.json review-approve events on merged / landed units",
-    "delivery.human_actions_per_merge_30d": "GitHub merged PR review records, matched against units.json history, PR body bot marker and commit trailers",
     "delivery.unlinked_units_30d": "release-closer output in alerts/events.md joined by exact issue, unit, PR and merge IDs",
-    "delivery.unlinked_incidents_30d": ".zenoforge/state/incident-guards.json explicit issue fields joined to accepted issue IDs",
-    "delivery.human_actions_unattributed_30d": "GitHub PR reviews joined to scheduler history and PR/commit bot markers; no reliable actor attribution means unknown",
+    "delivery.unlinked_incidents_30d": "night/founder-health-mail.json incidents (issue joined to accepted issue IDs) plus logs/head-watch.alerts PROD-DB-TIMEOUT episodes, which name no issue",
 }
 # Line-hold rows (holds.*) live in line_holds.py: node_health.py is at its size-ratchet baseline.
-CRITERIA.update(line_holds.CRITERIA)
-MEANING.update(line_holds.MEANING)
-SOURCE.update(line_holds.SOURCE)
+CRITERIA.update({**line_holds.CRITERIA, **station_standards.CRITERIA})
+MEANING.update({**line_holds.MEANING, **station_standards.MEANING})
+SOURCE.update({**line_holds.SOURCE, **station_standards.SOURCE})
 # release.hours_since_release lives in release_age.py for the same size-ratchet reason.
 CRITERIA.update(release_age.CRITERIA); MEANING.update(release_age.MEANING); SOURCE.update(release_age.SOURCE)
 # Where the time of a work order goes: wait vs work per phase, over the last TIME_SINK_HOURS (enough samples).
 # (description, statistic, healthy minutes, unhealthy minutes, meaning)
 TIME_SINK_HOURS = 24
+WALL_WINDOW_HOURS = 24  # implement/repair run-minute p50 window
 TIME_SINKS = {
     "repair_queue": ("返工触发 → 派出返工员", "p90", 30, 120, "等 AI 员工名额。长 = 员工数不够，或派活顺序有问题。"),
     "repair_work": ("返工员干活", "p50", 15, 30, "一轮返工本身的时长。"),
@@ -371,8 +379,15 @@ def merge_flow(units, since, now):
     return (merges / hours if backlog and hours > 0 else None), entered, merges
 
 
+# Stages that wait by design (a predecessor, a stop-loss): their rows stay listed but never pick the worst stage.
+WIP_WAITING = ("blocked-external", "parked")
+
+
 def wip_stage_ages(units, now):
-    """Each open unit's age in its current stage (last ledger event -> now), grouped by stage."""
+    """Each open unit's age in its current stage (last ledger event -> now), grouped by stage.
+
+    The worst p90 skips WIP_WAITING stages: 54 units waiting on one parked predecessor read 228 h
+    on 2026-11-07 and hid the one stage a worker could move (supervisor-review, 8 h)."""
     ages = {}
     for u in units:
         if u.get("stage") in UNIT_DONE:
@@ -387,9 +402,22 @@ def wip_stage_ages(units, now):
         hours = sorted(h for h, _ in ages[stage])
         oldest = sorted(ages[stage], key=lambda h: h[0], reverse=True)[:5]
         rows.append({"stage": stage, "count": len(hours), "p90_hours": round(pct(hours, .9), 1),
+                     "waiting": stage in WIP_WAITING,
                      "oldest": [{"id": uid, "age_hours": round(h, 1)} for h, uid in oldest]})
-    worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None), default=None)
+    worst = max((r["p90_hours"] for r in rows if r["p90_hours"] is not None and not r["waiting"]), default=None)
     return rows, worst
+
+
+def wait_stage(units, now):
+    """p90 hours (last ledger event -> now) and count of open units in WIP_WAITING: the waits the worst pick skips."""
+    ages = []
+    for u in units:
+        if u.get("stage") not in WIP_WAITING:
+            continue
+        times = [t for t in (ts(h.get("at")) for h in u.get("history") or []) if t]
+        if times:
+            ages.append((now - max(times)).total_seconds() / 3600)
+    return (round(pct(ages, .9), 1) if ages else None), len(ages)
 
 
 def slot_idle_hours(waits, cost_rows, since):
@@ -718,18 +746,15 @@ def host_prereqs_missing(path=None):
 
 
 def dispatch_collisions(units, now, shared=frozenset()):
-    """Count unit pairs with overlapping writing intervals and path scopes.
+    """Count unit pairs with overlapping writing intervals and the same file path.
 
     End records include the actual diff, so an underpredicted footprint remains
     measurable. Old ledgers without dispatch intervals have no observation.
+    A directory-vs-file overlap is not a collision (footprint_owner_conflict skips it by default).
     A pair whose ONLY overlapping paths are shared-append registry files is the
     parallelism the 2026-10-29 zf-ab ruling legalized, not a collision; those
     conflicts are observed at landing rebase time instead.
     """
-
-    def collides(a, b):
-        return a == b or a.startswith(b + "/") or b.startswith(a + "/")
-
     intervals = []
     observed = False
     for unit in units:
@@ -755,8 +780,7 @@ def dispatch_collisions(units, now, shared=frozenset()):
         for vid, vstart, vend, vpaths in intervals[i + 1:]:
             if uid == vid or max(start, vstart, now - timedelta(hours=24)) >= min(end, vend):
                 continue
-            overlap = ({a for a in paths for b in vpaths if collides(a, b)}
-                       | {b for b in vpaths for a in paths if collides(a, b)})
+            overlap = set(paths) & set(vpaths)
             if not overlap:
                 continue
             if shared and overlap <= shared:
@@ -885,12 +909,15 @@ def read_json(path):
         return {}
 
 
-def load_incident_guards():
+def load_prod_incidents(agent_home):
+    """Owner-mail ledger incidents plus head-watch alert episodes, as delivery_metrics records; None if either is unreadable."""
     try:
-        incidents = (zf_incident_guards() or {}).get("incidents")
-    except (OSError, ValueError):
+        rows = json.load(open(os.path.join(agent_home, "night", "founder-health-mail.json"))).get("incidents")
+        days = watch_alerts.episode_dates(os.path.join(agent_home, "logs", "head-watch.alerts"))
+        return [{"issue": r.get("issue"), "date": datetime.fromtimestamp(int(r["opened_at"]), timezone.utc).strftime("%Y-%m-%d")}
+                for r in rows] + [{"date": day} for day in days]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
-    return incidents if isinstance(incidents, list) else None
 
 
 def read_cancel_audit(path, repo):
@@ -1001,15 +1028,6 @@ def gated_agent_pr_share(repo):
 
 
 RELEASE_CLOSER_RE = re.compile(r"release-closer: deployed=([0-9a-f]{7,40}) closed=\[([0-9,\s]*)\]")
-BOT_COMMENT_MARKER = "<!-- vecta-agent-comment -->"
-BOT_DISCLAIMER = "This comment is posted by the automated the product agent pipeline under the maintainer's GitHub account"
-REVIEW_STAGES = {
-    "APPROVED": {"review-approve"},
-    "CHANGES_REQUESTED": {"review-request-changes"},
-    "COMMENTED": {"review-block"},
-}
-
-
 def release_acceptances(runtime):
     """Read the batch close event, which names the accepted deployed SHA and issue IDs."""
     paths = [os.path.join(runtime, "alerts", "events.md"), os.path.join(runtime, "scheduler.log")]
@@ -1059,7 +1077,7 @@ def gh_delivery_rows(repo, now, units=None, release_events=None):
         for number in sorted(required_prs - available_prs):
             fallback_commands.append(("prs", number,
                                       ["pr", "view", str(number), "--repo", repo, "--json",
-                                       "number,mergedAt,mergeCommit,body,reviews,commits"]))
+                                       "number,mergedAt,mergeCommit"]))
         results = _parallel_gh_json([command for _, _, command in fallback_commands], GH_DELIVERY_CALL_TIMEOUT)
         for (key, number, _), row in zip(fallback_commands, results):
             if not isinstance(row, dict) or _number(row.get("number")) != number:
@@ -1132,29 +1150,6 @@ def git_revert_times(root, tip="HEAD"):
     return reverted
 
 
-def _has_agent_commit_trailer(pr):
-    trailer = re.compile(r"(?im)^Co-Authored-By:\s*(?:Codex|ZCode)\b")
-    for commit in pr.get("commits") or []:
-        data = commit.get("commit") or {}
-        if any(trailer.search(str(data.get(field) or "")) for field in ("messageBody", "messageHeadline")):
-            return True
-    return False
-
-
-def _has_bot_marker(text):
-    text = str(text or "")
-    return BOT_COMMENT_MARKER in text or BOT_DISCLAIMER in text
-
-
-def _scheduled_review(review, history):
-    submitted = ts(review.get("submittedAt") or review.get("submitted_at"))
-    if not submitted:
-        return False
-    stages = REVIEW_STAGES.get(str(review.get("state") or "").upper(), set())
-    return any(event.get("stage") in stages and (at := ts(event.get("at"))) and
-               abs((submitted - at).total_seconds()) <= 120 for event in history)
-
-
 def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo="",
                      reverted_merge_times=None):
     """Join recorded issue/unit/PR/merge/release IDs and summarize the last 7/30 days."""
@@ -1163,12 +1158,10 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
     details = {
         "accepted_units_7d": None, "accepted_units_30d": None, "merged_units_30d": None,
         "unlinked_units_30d": None, "incident_records_30d": None, "unlinked_incidents_30d": None,
-        "human_actions_merged_units_30d": None, "human_actions_unattributed_30d": None,
     }
 
     accepted = []
     release_events_by_issue = None
-    accepted_release_issues_7d = None
     accepted_release_issues_30d = None
     if release_events is not None:
         release_events_by_issue = {}
@@ -1180,9 +1173,8 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
             release_events_by_issue.setdefault(issue_number, []).append(event)
             if at >= since_7d:
                 release_events_7d_by_issue.setdefault(issue_number, []).append(event)
-        accepted_release_issues_7d = set(release_events_7d_by_issue)
         accepted_release_issues_30d = set(release_events_by_issue)
-        details["accepted_units_7d"] = len(accepted_release_issues_7d)
+        details["accepted_units_7d"] = len(release_events_7d_by_issue)
         details["accepted_units_30d"] = len(accepted_release_issues_30d)
 
     if issue_rows is not None and pr_rows is not None and release_events_by_issue is not None:
@@ -1193,12 +1185,16 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
             issue_number = _number(unit.get("issue"))
             if issue_number is not None:
                 units_by_issue.setdefault(issue_number, []).append(unit)
-        unlinked = 0
+        unlinked, lead_hours = 0, []
         for issue_number, events in release_events_by_issue.items():
             issue = issues.get(issue_number)
             created_at = ts((issue or {}).get("createdAt") or (issue or {}).get("created_at"))
             acceptance_event = events[0] if len(events) == 1 else None
             accepted_at = ts((acceptance_event or {}).get("at"))
+            # Lead time needs only the issue's creation and its one acceptance; the unit join below is an
+            # integrity check and must not choose the sample (50 of 64 accepted issues predate the ledger).
+            if created_at and accepted_at and created_at <= accepted_at:
+                lead_hours.append((accepted_at, (accepted_at - created_at).total_seconds() / 3600))
             candidates = units_by_issue.get(issue_number, [])
             unit = candidates[0] if len(candidates) == 1 else None
             merge_at = _merge_time(unit) if unit else None
@@ -1219,13 +1215,11 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                              "created_at": created_at, "release_sha": release_sha})
 
         accepted = [row for row in accepted if row["accepted_at"] <= now]
-        accepted_7d = [row for row in accepted if row["accepted_at"] >= since_7d]
         details["unlinked_units_30d"] = unlinked
-        for window, target in ((accepted_7d, "7d"), (accepted, "30d")):
-            durations = [(row["accepted_at"] - row["created_at"]).total_seconds() / 3600
-                         for row in window if row["created_at"] <= row["accepted_at"]]
-            values[f"delivery.issue_to_accept_p50_{target}_hours"] = pct(durations, .5)
-            values[f"delivery.issue_to_accept_p95_{target}_hours"] = pct(durations, .95)
+        for since, target in ((since_7d, "7d"), (since_30d, "30d")):
+            window = [hours for at, hours in lead_hours if at >= since]
+            values[f"delivery.issue_to_accept_p50_{target}_hours"] = pct(window, .5)
+            values[f"delivery.issue_to_accept_p95_{target}_hours"] = pct(window, .95)
         if accepted and reverted_merge_times is not None:
             reverted = 0
             for row in accepted:
@@ -1250,9 +1244,6 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
                 incident_rows.append(incident)
         details["incident_records_30d"] = len(incident_rows)
         if accepted_release_issues_30d is not None:
-            # Root-cause records (incident-guards.json) have no `issue` field (0/868); the existing
-            # convention is an explicit "Issue #N" in what_happened. Records naming no issue are not
-            # linkable and counted apart; only a named issue that was never accepted is unlinked.
             def _incident_issue(incident):
                 direct = _number(incident.get("issue") or incident.get("issue_number"))
                 if direct is not None:
@@ -1265,11 +1256,10 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
             # acceptance baseline, whether a named incident is unlinked is unknown (NO-DATA),
             # not "every incident is unlinked".
             if accepted_release_issues_30d:
-                unlinked_incidents = sum(
-                    issue is not None and issue not in accepted_release_issues_30d for issue in named)
+                unlinked_incidents = sum(issue not in accepted_release_issues_30d for issue in named)
                 details["unlinked_incidents_30d"] = unlinked_incidents
                 values["delivery.unlinked_incidents_30d"] = unlinked_incidents
-                values["delivery.incident_rate_30d_pct"] = 100 * len(incident_rows) / len(accepted_release_issues_30d)
+                values["delivery.incident_rate_30d_pct"] = 100 * len(accepted_release_issues_30d.intersection(named)) / len(accepted_release_issues_30d)
     if details["unlinked_units_30d"] is not None:
         values["delivery.unlinked_units_30d"] = details["unlinked_units_30d"]
 
@@ -1292,34 +1282,6 @@ def delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now,
     values["delivery.cycles_to_pass_30d"] = sum(review_rounds) / len(review_rounds) if review_rounds else None
     values["delivery.approvals_per_merge_30d"] = sum(approval_counts) / len(approval_counts) if approval_counts else None
 
-    if pr_rows is not None:
-        prs = {_number(pr.get("number")): pr for pr in pr_rows if _number(pr.get("number")) is not None}
-        owner = repo.split("/", 1)[0].casefold()
-        actions, samples, unattributed = 0, 0, 0
-        for unit, _ in merged_units:
-            pr_number = _number(unit.get("pr"))
-            pr = prs.get(pr_number)
-            if pr_number is None or pr is None or not isinstance(pr.get("reviews"), list):
-                continue
-            samples += 1
-            history = unit.get("history") or []
-            agent_context = _has_bot_marker(pr.get("body")) or _has_agent_commit_trailer(pr)
-            for review in pr["reviews"]:
-                author = (review.get("author") or {}).get("login") or review.get("login") or ""
-                login = str(author).casefold()
-                if not login or login.endswith("[bot]") or _has_bot_marker(review.get("body")):
-                    continue
-                if login == owner and _scheduled_review(review, history):
-                    continue
-                if login == owner and agent_context:
-                    unattributed += 1
-                    continue
-                actions += 1
-        details["human_actions_merged_units_30d"] = samples
-        details["human_actions_unattributed_30d"] = unattributed
-        values["delivery.human_actions_unattributed_30d"] = unattributed
-        if samples:
-            values["delivery.human_actions_per_merge_30d"] = actions / samples
     return {"values": values, "details": details}
 
 
@@ -1471,8 +1433,12 @@ def main():
     attach_claude_usage((r for r in cost_rows if since <= r["start"] <= now))
     runs = worker_runs(cost_rows, since, now)
     metrics = {}
+    # Implement and repair run minutes are per-run samples (no time weighting): a 5 h window held 20 to 45 runs
+    # and swung on the model mix, so they read the 24 h window.
+    day_runs = worker_runs(cost_rows, now - timedelta(hours=WALL_WINDOW_HOURS), now)
     for node in ("implement", "review", "repair"):
-        done = [r["minutes"] for r in runs if r["node"] == node and r["output"]]
+        pool = runs if node == "review" else day_runs
+        done = [r["minutes"] for r in pool if r["node"] == node and r["output"]]
         metrics[f"{node}.wall_p50"] = pct(done, .5)
     impl = [r for r in runs if r["node"] == "implement"]
     impl = [r for r in impl if not r["running"]]
@@ -1488,13 +1454,13 @@ def main():
     followed = [n for n in followed if n]
     metrics["loop.incremental_rereview_pct"] = 100 * followed.count("rereview") / len(followed) if followed else None
     units = ledger_history.load_units(a)
-    metrics.update(ledger_metrics(units, since, now))
+    metrics.update({**ledger_metrics(units, since, now), **station_standards.collect(now, units, runs, a, agent_home, cost_rows)})
     # Advisor asks are rare: the 5 h window is usually empty, so this one reads 24 h.
     metrics["loop.advisor_fail_pct"] = ledger_metrics(units, now - timedelta(hours=24), now)["loop.advisor_fail_pct"]
     repo = os.environ.get("ZF_REPO", "")
     release_events = release_acceptances(a)
     issue_rows, pr_rows = gh_delivery_rows(repo, now, units, release_events)
-    incidents = load_incident_guards()
+    incidents = load_prod_incidents(agent_home)
     repo_root = os.environ.get("MAC_AUTOPILOT_ROOT") or os.path.abspath(os.path.join(here, "..", "..", ".."))
     reverted_merge_times = git_revert_times(repo_root, "refs/remotes/origin/main")
     delivery = delivery_metrics(units, issue_rows, pr_rows, release_events, incidents, now, repo, reverted_merge_times)
@@ -1505,6 +1471,7 @@ def main():
     except (OSError, ValueError):
         shared_append = frozenset()
     metrics["dispatch.collisions_per_day"] = dispatch_collisions(units, now, shared_append)
+    metrics["dispatch.conflict_repairs_per_day"] = ledger_history.conflict_repairs(units, now - timedelta(hours=24), now, ts)
     sa_attempts, sa_conflict = shared_append_rebase_metrics(
         os.path.join(agent_home, "logs", "shared-append-rebases.jsonl"), repo,
         now - timedelta(hours=24), now)
@@ -1554,10 +1521,11 @@ def main():
         units, sizes, nontest_added, now - timedelta(days=LARGE_PR_WINDOW_DAYS), now)
     sinks, queue_waits = time_sinks(units, os.path.join(a, "scheduler.log"),
                                     now - timedelta(hours=TIME_SINK_HOURS), now)
-    merge_rate, entered, merged = merge_flow(units, since, now)
-    metrics["flow.merge_rate_per_hour"] = merge_rate
+    metrics["flow.merge_rate_per_hour"] = merge_flow(units, now - timedelta(hours=24), now)[0]
+    _, entered, merged = merge_flow(units, since, now)
     metrics["flow.in_out_imbalance"] = abs(entered - merged)
     wip_rows, metrics["flow.wip_age_stage_p90_hours"] = wip_stage_ages(units, now)
+    metrics["flow.wait_stage_p90_hours"], metrics["flow.wait_stage_units"] = wait_stage(units, now)
     metrics["flow.slot_idle_hours"] = slot_idle_hours(queue_waits, cost_rows, since)
     metrics["flow.main_red_hours"] = main_red_hours(args.main_red_dir, since, now)
     flow_details = {"entered": entered, "merged": merged, "wip_age": wip_rows}
