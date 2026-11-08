@@ -306,3 +306,18 @@ retry_blocked_units() { # BLOCK 只在 head 变了，或 main 已推进且该单
     fi
   done < <(jqf -r '.units[] | select(.stage=="blocked-external" and .blocked_on == null and .size_recut_pending != true and ((.note // "") | contains("CONFLICTED") | not)) | [.id, (.pr // "" | tostring), (.reviewed_sha // ""), (.blocked_main_sha // ""), (.block_retries // 0 | tostring)] | @tsv' "$UNITS")
 }
+
+# 2026-11-08 PR#5707: run-release.test.sh tests were red on main and fixed at 11491f2f88; PRs whose base lacks the fix stayed red
+# and nothing rebased them (head ran update-branch by hand on 4). A ready-to-merge PR with a completed failed check that is behind
+# main and mergeable gets one server-side update-branch before any repair, rerun or wait: a stale base is refreshed before we spend a
+# repair on it. One hop per unit and failed-check set (.behind_main_hops): update-branch itself makes a new head, so a head-SHA key
+# cannot stop a loop. The refreshed head failing the same checks again takes the existing paths unchanged.
+ci_red_behind_main_hop() { # id pr head fails-csv -> 0 = branch updated
+  [[ -n "$4" ]] || return 1
+  jq -e --arg id "$1" --arg k "$4" '[.units[] | select(.id == $id) | (.behind_main_hops // [])[]] | index($k) | not' "$UNITS" >/dev/null 2>&1 || return 1
+  pr_behind_main "$2" "$3" || return 1
+  [[ "$(tick_pr_mergeable "$2")" == MERGEABLE ]] || return 1
+  ci_update_branch "$2" "$3" || return 1
+  set_unit "$1" "$(hist ci-red-behind-main-update "$4 failed on a head behind main $MAIN_HEAD") | .behind_main_hops = ((.behind_main_hops // []) + [$(js "$4")] | unique)"
+  say "merge skipped PR#$2 (check failed: $4; head behind main, stale base) -> update-branch at $3, CI reruns once"
+}
