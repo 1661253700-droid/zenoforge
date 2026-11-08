@@ -231,11 +231,21 @@ reset_fake_codex() {
   : > "$FAKE_CODEX_PID_FILE"
 }
 
+# The owner session probes Codex (ten-second timeout) and reserves budget before it publishes its PID,
+# so under host load the production default of 5 seconds is too short; the poll still ends at the PID.
+PID_WAIT_ATTEMPTS=600
+
+assert_launch_ok() {
+  assert_eq "$1" "0" "$RUN_STATUS"
+  [ "$RUN_STATUS" = 0 ] || echo "# RUN_OUTPUT: $RUN_OUTPUT"
+}
+
 run_dispatch() {
   set +e
   RUN_OUTPUT="$(PATH="$FAKE_BIN:$PATH" \
     AGENT_HOME="$AGENT_HOME" \
     AGENT_DISPATCH_LOG_DIR="$LOG_DIR" \
+    AGENT_DISPATCH_PID_WAIT_ATTEMPTS="$PID_WAIT_ATTEMPTS" \
     FAKE_CODEX_ARGS_FILE="$FAKE_CODEX_ARGS_FILE" \
     FAKE_CODEX_STDIN_FILE="$FAKE_CODEX_STDIN_FILE" \
     FAKE_CODEX_PID_FILE="$FAKE_CODEX_PID_FILE" \
@@ -260,9 +270,8 @@ wait_for_text() {
   return 1
 }
 
-# Dispatch publishes its PID before config preflight invokes Codex. That probe
-# has a ten-second command timeout; allow twenty seconds for it and process
-# startup under load before treating an async launch as broken.
+# The fake Codex writes its args after dispatch returns; allow twenty seconds
+# under load before treating an async launch as broken.
 ASYNC_CODEX_START_ATTEMPTS=1000
 
 wait_for_owner_exit() {
@@ -412,7 +421,7 @@ assert_contains "node auto-owner records env fault in supervisor inbox" \
 
 reset_fake_codex
 run_dispatch --kind work --prompt-file "$PROMPT_FILE"
-assert_eq "work launch succeeds" "0" "$RUN_STATUS"
+assert_launch_ok "work launch succeeds"
 wait_for_text "$FAKE_CODEX_ARGS_FILE" "<->" "$ASYNC_CODEX_START_ATTEMPTS" || {
   echo "not ok - work fake Codex args finish writing"
   FAILED=1
@@ -870,7 +879,7 @@ fi
 
 reset_fake_codex
 run_dispatch --kind hard --prompt-file "$PROMPT_FILE"
-assert_eq "hard launch succeeds" "0" "$RUN_STATUS"
+assert_launch_ok "hard launch succeeds"
 wait_for_text "$FAKE_CODEX_ARGS_FILE" "<->" "$ASYNC_CODEX_START_ATTEMPTS" || {
   echo "not ok - hard fake Codex args finish writing"
   FAILED=1
@@ -888,7 +897,7 @@ stop_fake_codex
 
 reset_fake_codex
 run_dispatch --kind production --access delivery --prompt-file "$PROMPT_FILE"
-assert_eq "production launch succeeds" "0" "$RUN_STATUS"
+assert_launch_ok "production launch succeeds"
 wait_for_text "$FAKE_CODEX_ARGS_FILE" "<->" "$ASYNC_CODEX_START_ATTEMPTS" || {
   echo "not ok - production fake Codex args finish writing"
   FAILED=1
@@ -1005,7 +1014,13 @@ stop_fake_codex
 
 reset_fake_codex
 set +e
-RUN_OUTPUT="$(PATH="$PID_FAILURE_SETSID_BIN:$FAKE_BIN:$PATH" \
+SLEEP_COUNT_BIN="$TEST_ROOT/sleep-count-bin"
+SLEEP_COUNT_LOG="$TEST_ROOT/sleep-count.log"
+mkdir -p "$SLEEP_COUNT_BIN"
+: > "$SLEEP_COUNT_LOG"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$SLEEP_COUNT_LOG" > "$SLEEP_COUNT_BIN/sleep"
+chmod +x "$SLEEP_COUNT_BIN/sleep"
+RUN_OUTPUT="$(PATH="$SLEEP_COUNT_BIN:$PID_FAILURE_SETSID_BIN:$FAKE_BIN:$PATH" \
   AGENT_HOME="$AGENT_HOME" \
   AGENT_DISPATCH_LOG_DIR="$LOG_DIR" \
   FAKE_CODEX_ARGS_FILE="$FAKE_CODEX_ARGS_FILE" \
@@ -1016,6 +1031,8 @@ RUN_STATUS=$?
 set -e
 assert_eq "PID-publication failure is refused" "1" "$RUN_STATUS"
 assert_contains "PID-publication failure names verification" "$RUN_OUTPUT" "agent never published a PID"
+# Env var unset: the production wait is 300 attempts (30 s). The stub sleep returns at once and counts the 0.1 s polls.
+assert_eq "production PID wait defaults to 300 attempts" "300" "$(grep -cx '0.1' "$SLEEP_COUNT_LOG")"
 assert_eq "PID-publication failure never starts codex" "" "$(tr -d '[:space:]' < "$FAKE_CODEX_PID_FILE")"
 stop_fake_codex
 

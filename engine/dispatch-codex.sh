@@ -16,6 +16,11 @@ INDEX_ROOT="${ZF_CODE_INTELLIGENCE_ROOT:-$REPO_DIR}"
 MIN_AVAILABLE_KIB=$((2 * 1024 * 1024))
 VERIFY_ATTEMPTS=50
 VERIFY_DELAY_SECONDS=0.1
+# Production waits up to 30 s (300 x 0.1 s) for the owner session to publish its PID: it sources lib.sh,
+# probes Codex and reserves budget first, and a launch at load 30-50 already used about 4.5 of the old 5 s.
+# Tests raise it further; VERIFY_ATTEMPTS (50) still bounds the detach check.
+PID_WAIT_ATTEMPTS="${AGENT_DISPATCH_PID_WAIT_ATTEMPTS:-300}"
+[[ "$PID_WAIT_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || PID_WAIT_ATTEMPTS=300
 AGENT_HOME="${AGENT_HOME:-${HOME:-.}/.zenoforge}"
 DISPATCH_DIR="${AGENT_DISPATCH_DIR:-$AGENT_HOME/hand-dispatch}"
 LOG_ROOT="${AGENT_DISPATCH_LOG_DIR:-$AGENT_HOME/logs/hand-dispatch}"
@@ -652,7 +657,7 @@ if [ -n "$OWNER_UNIT" ]; then
     exit 1
   fi
 
-  for ((attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++)); do
+  for ((attempt = 0; attempt < PID_WAIT_ATTEMPTS; attempt++)); do
     [ -s "$PID_FILE" ] && break
     if [ "$(jq -r '.status // empty' "$MANIFEST_FILE" 2>/dev/null || true)" = dispatch-failed ]; then break; fi
     sleep "$VERIFY_DELAY_SECONDS"
@@ -698,7 +703,7 @@ ZF_REPO_DIR="$WORKTREE" REPO_DIR="$WORKTREE" setsid --fork \
   "$DISPATCH_BUDGET_ID" hand-dispatch </dev/null >> "$PENDING_LOG" 2>&1 &
 LAUNCHER_PID=$!
 
-for ((attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++)); do
+for ((attempt = 0; attempt < PID_WAIT_ATTEMPTS; attempt++)); do
   [ -s "$PID_FILE" ] && break
   sleep "$VERIFY_DELAY_SECONDS"
 done
