@@ -626,6 +626,8 @@ if [ -n "$OWNER_UNIT" ]; then
     --user --unit "$OWNER_UNIT" --collect --no-block --quiet
     -p "WorkingDirectory=$WORKTREE"
     -p "RuntimeMaxSec=$OWNER_RUNTIME_MAX_SECONDS"
+    -p "CPUQuota=${AGENT_WORKER_CPU_QUOTA:-200%}" -p "CPUWeight=${AGENT_WORKER_CPU_WEIGHT:-10}"
+    -p "MemoryHigh=${AGENT_WORKER_MEM_HIGH:-2G}" -p "TasksMax=${AGENT_WORKER_TASKS_MAX:-500}"
     -p "ExecStop=$SCRIPT_DIR/owner-stop-request.sh $MANIFEST_FILE $PENDING_LOG $OWNER_UNIT"
     -p "EnvironmentFile=-$AGENT_HOME/env"
     -E HOME -E PATH
