@@ -15,6 +15,7 @@ FOOTPRINT_LIVE_WRITER_STAGES='["implement","repair"]'
 FOOTPRINT_QUEUED_WRITER_STAGES='["implement-pending","repair-pending","landing"]'
 FOOTPRINT_RELEASED_STAGES='["supervisor-review","parked","needs-human","blocked-external","review","rereview","review-pending","rereview-pending","ready-to-merge","merged","landed","closed","awaiting-live-event","done","wontfix","duplicate"]'
 
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/footprint-memo.sh"
 footprint_owner_stage_active() { # stage -> unit reserves write scope in the shared holder model
   jqf -e --arg stage "$1" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" \
     --argjson queued "$FOOTPRINT_QUEUED_WRITER_STAGES" '($live + $queued | index($stage)) != null' \
@@ -117,14 +118,20 @@ live_writes_union() { # workdir scope_json -> scope ∪ 实际已写路径；wor
 }
 resolve_active_footprints() { # active-unit JSON array → fresh live scopes; scan worktrees concurrently, persist ledger changes once
   local active="$1" scan_dir other file scope workdir rows updates resolved rc=0 index=0 pid
-  local -a pids=()
+  local -a pids=() memo_keys=()
   scan_dir="$(mktemp -d)" || return 1
   while IFS= read -r other; do
     [[ -n "$other" ]] || continue
     file="$scan_dir/$index.json"
+    memo_keys+=("$TICK_FOOTPRINT_MAIN|$other")
     {
       local other_scope other_workdir
-      other_scope="$(scheduler_footprint "$other")" || exit 1
+      if [[ -n "$TICK_FOOTPRINT_MAIN" && -n "${TICK_FOOTPRINT_SCOPE_MEMO[$TICK_FOOTPRINT_MAIN|$other]+set}" ]]; then
+        other_scope="${TICK_FOOTPRINT_SCOPE_MEMO[$TICK_FOOTPRINT_MAIN|$other]}"
+      else
+        other_scope="$(scheduler_footprint "$other")" || exit 1
+        printf '%s' "$other_scope" > "$file.scope" # the background job cannot fill the memo itself
+      fi
       other_workdir="$(jq -r '.live_workdir // empty' <<<"$other")"
       other_scope="$(live_writes_union "$other_workdir" "$other_scope")" || exit 1
       jq -c --slurpfile resolved <(printf '%s' "$other_scope") \
@@ -135,6 +142,11 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
   done < <(jq -c '.[]' <<<"$active")
   for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
   if (( rc != 0 )); then rm -rf -- "$scan_dir"; return 1; fi
+  if [[ -n "$TICK_FOOTPRINT_MAIN" ]]; then
+    for index in "${!memo_keys[@]}"; do
+      [[ ! -f "$scan_dir/$index.json.scope" ]] || TICK_FOOTPRINT_SCOPE_MEMO["${memo_keys[$index]}"]="$(<"$scan_dir/$index.json.scope")"
+    done
+  fi
   rows="$(cat "$scan_dir"/*.json | jqf -cs '.')" || { rm -rf -- "$scan_dir"; return 1; }
   updates="$(jqf -c '[.[] | select((.footprint // []) != .resolved_footprint) | {id, footprint:.resolved_footprint}]' <<<"$rows")" \
     || { rm -rf -- "$scan_dir"; return 1; }
@@ -150,19 +162,9 @@ resolve_active_footprints() { # active-unit JSON array → fresh live scopes; sc
   rm -rf -- "$scan_dir"
   printf '%s\n' "$resolved"
 }
-footprint_drop_check_scope_cache() {
-  TICK_CHECK_SCOPE_SOURCE=()
-  TICK_CHECK_SCOPE=()
-  TICK_OLD_SCOPE=()
-  TICK_HOTSPOT_COUNTS=()
-}
 active_footprint_snapshot() { # refresh live writes for all active implementation workers
   local active
-  active="$(jqf -c --slurpfile w "$WORKERS" --argjson live "$FOOTPRINT_LIVE_WRITER_STAGES" '
-    [.units[] | . as $u
-      | select(.stage as $s | $live | index($s) != null)
-      | select(any($w[0].workers[]; .unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))))
-      | . + {live_workdir: ([$w[0].workers[] | select(.unit==$u.id and .harvested!=true and .lease_expired!=true and (.type | IN("implement","repair"))) | .workdir] | first)}]' "$UNITS")"
+  active="$(footprint_active_rows)"
   [[ "$active" == '[]' ]] || active="$(resolve_active_footprints "$active")" || return 1
   printf '%s\n' "$active"
 }
@@ -300,6 +302,7 @@ footprint_shadow_directory_rule() {
 footprint_refresh_conflicts() {
   local refresh="${1:-true}" started=$SECONDS active candidates conflicts id owner elapsed
   if [[ "$refresh" == true ]]; then
+    footprint_prime_owner_scopes
     active="$(active_footprint_snapshot)" || { footprint_drop_check_scope_cache; return 1; }
     TICK_ACTIVE_FOOTPRINTS="$active"
     TICK_ACTIVE_FOOTPRINTS_VALID=true
@@ -353,19 +356,6 @@ footprint_merge_changed_owners() {
 # not in it: conflict checks always re-read the active worktrees. Files: $A/footprint-cache/<main sha>-<key>.json, like triage-cache.
 FOOTPRINT_CACHE_KEEP=256 FOOTPRINT_CACHE_STATE=miss FOOTPRINT_CACHE_PREFLIGHT=miss FOOTPRINT_CACHE_PRUNED= # hit: no miss in the last batch, not fresh
 footprint_unit_head() { jqf -r '.reviewed_pr_head // .reviewed_sha // .pr_head // .head_sha // ""' <<<"$1"; } # unit-json -> PR head sha or empty
-footprint_cache_prune() { # main sha: keep only entries of the current main, then the newest FOOTPRINT_CACHE_KEEP
-  local dir="$A/footprint-cache" f n=0
-  [[ "$FOOTPRINT_CACHE_PRUNED" != "$1" ]] || return 0
-  FOOTPRINT_CACHE_PRUNED="$1"
-  rm -f -- "$dir"/.*.tmp 2>/dev/null || :
-  for f in "$dir"/*; do
-    [[ -e "$f" ]] || continue
-    [[ "${f##*/}" == "$1-"*.json ]] || rm -f -- "$f"
-  done
-  for f in $(ls -t "$dir" 2>/dev/null); do
-    n=$((n + 1)); (( n <= FOOTPRINT_CACHE_KEEP )) || rm -f -- "$dir/$f"
-  done
-}
 footprint_expand_rows() { # rows [{id,scope,head}], fresh -> TICK_CHECK_SCOPE/OLD_SCOPE/HOTSPOT_COUNTS per id; fresh=true skips the lookup but still stores
   local rows="$1" fresh="${2:-false}" dir="$A/footprint-cache" main='' rhead='' min day id head scope key file row miss_ids='' total=0 hits=0
   local -A keys=(); local -a miss=() parts=()
@@ -430,7 +420,7 @@ footprint_preflight_snapshot() {
   while IFS= read -r u; do
     id="$(jqf -r '.id' <<<"$u")"
     heads["$id"]="$(footprint_unit_head "$u")"
-    scope="$(scheduler_footprint "$u")" || return 1
+    footprint_scope_for "$u" scope || return 1
     TICK_FOOTPRINT_CACHE["$id"]="$scope"
     TICK_FOOTPRINT_PREFLIGHT_IDS+=("$id")
     TICK_CHECK_SCOPE_SOURCE["$id"]="$scope"
@@ -578,7 +568,7 @@ footprint_wait_mark() { # unit owner unit_json：记等待方与起始时间，i
 }
 footprint_admit_unordered() { # unit-id unit-json: keep the predicted scope for write-start; log what the old gate would have held
   local id="$1" u="$2" scope owner="${TICK_FOOTPRINT_DEFERRED[$1]:-}"
-  scope="$(scheduler_footprint "$u")" || return 1
+  footprint_scope_for "$u" scope || return 1
   if [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]]; then
     [[ "${TICK_FOOTPRINT_CACHE[$id]}" == "$scope" ]] || set_unit "$id" ".footprint=$scope"
   else
@@ -618,7 +608,7 @@ _footprint_room() {
       return 0
     fi
   fi
-  scope="$(scheduler_footprint "$u")" || return 1
+  footprint_scope_for "$u" scope || return 1
   if [[ -n "${TICK_FOOTPRINT_CACHE[$id]+cached}" ]]; then
     [[ "${TICK_FOOTPRINT_CACHE[$id]}" == "$scope" ]] || set_unit "$id" ".footprint=$scope"
   else
@@ -636,6 +626,7 @@ _footprint_room() {
   if [[ "$TICK_ACTIVE_FOOTPRINTS_VALID" == true ]]; then
     active="$TICK_ACTIVE_FOOTPRINTS"
   else
+    footprint_prime_owner_scopes
     active="$(active_footprint_snapshot)" || return 1
     TICK_ACTIVE_FOOTPRINTS="$active"
     TICK_ACTIVE_FOOTPRINTS_VALID=true
@@ -653,6 +644,7 @@ _footprint_room() {
   # A cached conflict can conservatively reject a candidate. A candidate that
   # appears clear must refresh every active worktree before it can be admitted.
   if [[ "$refreshed" != true ]]; then
+    footprint_prime_owner_scopes
     active="$(active_footprint_snapshot)" || return 1
     TICK_ACTIVE_FOOTPRINTS="$active"
     conflict="$(active_footprint_conflict "$check_scope" "$active" "$id" "$scope")" || return 1
