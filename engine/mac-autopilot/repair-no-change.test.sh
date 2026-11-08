@@ -46,12 +46,12 @@ git -C "$fixture/wt" reset -q --hard "$H1"
 printf 'repair report\n' > "$sup/repair-9.md"
 
 # Run one finished repair worker for unit "issue-9": base = the head the run started from, history = the unit's prior events.
-run_repair() { # base-head-or-empty history-json [extra unit fields json]
+run_repair() { # base-head-or-empty history-json [extra unit fields json] [workdir, default the clone]
   local ws='{"stage":"write-start","work_type":"repair","at":"2026-11-07T10:00:00Z"'
   [[ -z "$1" ]] || ws+=",\"pr_head\":\"$1\""
   jq -n --argjson h "$2" --argjson ws "$ws}" --argjson extra "${3:-{\}}" \
     '{units:[({id:"issue-9",issue:9,pr:9,lane:"pr",branch:"agent/issue-9",stage:"repair",history:($h + [$ws])} + $extra)]}' > "$UNITS"
-  jq -n --arg dir "$fixture/wt" '{workers:[{pid:4242,unit:"issue-9",type:"repair",log:"none.log",report:"repair-9.md",workdir:$dir}]}' > "$WORKERS"
+  jq -n --arg dir "${4-$fixture/wt}" '{workers:[{pid:4242,unit:"issue-9",type:"repair",log:"none.log",report:"repair-9.md",workdir:$dir}]}' > "$WORKERS"
   harvest_workers || true
 }
 nopush_hist() { jq -cn --arg h "$1" --argjson n "$2" '[range($n) | {stage:"repair-no-push",result:("head "+$h+" unchanged after repair")}]'; }
@@ -109,5 +109,28 @@ dispatch_if_room issue-9 implement implement r.log r.md GPT-5 high "prompt" "" "
 [[ "$(field issue-9 '[.history[] | select(.stage=="write-start" and .work_type=="implement")][0].pr_head // "none"')" == none ]] || fail 'an implement run recorded a repair start head'
 dispatch_if_room issue-8 repair repair r.log r.md GPT-5 high "prompt" "" "$fixture/wt" "" "" "" false codex false configured codex || fail 'PR-less repair dispatch failed'
 [[ "$(field issue-8 '.history[0].pr_head // "none"')" == none ]] || fail 'a PR-less repair recorded a start head'
+
+# 9. A repair that pushed an over-limit head is recut, not escalated to the supervisor (the harvest passes the repaired head to the recheck).
+source "$script_dir/scheduler.d/size-admission.sh"   # restore the real recheck over this file's no-op stub
+size_admission_exempt_unit() { return 1; }; changed_lines_of() { echo 900; }; changed_files_of() { echo '[]'; }
+size_admission_limit_for() { echo 800; }; gh() { return 1; }
+scheduler_size_recut() { echo "recut issue=$1 lines=$2 unit=$4" >> "$fixture/recut-calls"; return 0; }
+to_supervisor() { echo "supervisor $1" >> "$fixture/recut-calls"; }
+rm -f "$fixture/recut-calls"
+run_repair "$H1" '[{"stage":"review-request-changes","result":"'"$H1"'"}]'
+[[ "$(field issue-9 '[.history[] | select(.stage=="size-recut")] | length')" == 1 && "$(field issue-9 .stage)" == blocked-external ]] \
+  || fail "an over-limit repaired head must route to recut ($(field issue-9 '.history | tojson'))"
+grep -q '^recut issue=9 lines=900 unit=issue-9$' "$fixture/recut-calls" && ! grep -q '^supervisor' "$fixture/recut-calls" \
+  || fail "an over-limit repaired head escalated instead of recutting ($(cat "$fixture/recut-calls" 2>/dev/null))"
+# 10. A recheck with no head says so in the scheduler log instead of skipping the recut silently.
+rm -f "$fixture/recut-calls"; : > "$LOG"
+size_admission_recheck issue-9 "$fixture/wt" agent/issue-9 "ctx-nohead" || true
+grep -qx '\[.*\] size recheck without head: issue-9 ctx-nohead' "$LOG" || fail "a headless recheck left no scheduler.log line ($(cat "$LOG"))"
+# 11. An empty workdir gives no head, so no recut is routed; the log line records the skipped recheck.
+rm -f "$fixture/recut-calls"; : > "$LOG"
+run_repair "$H1" '[{"stage":"review-request-changes","result":"'"$H1"'"}]' '{}' ""
+[[ "$(field issue-9 '[.history[] | select(.stage=="size-recut")] | length')" == 0 && ! -e "$fixture/recut-calls" ]] \
+  || fail "an empty workdir must not route a recut ($(cat "$fixture/recut-calls" 2>/dev/null))"
+grep -q 'size recheck without head: issue-9 on agent/issue-9 after repair' "$LOG" || fail "an empty workdir left no scheduler.log line ($(cat "$LOG"))"
 
 echo 'repair-no-change.test.sh: ok'

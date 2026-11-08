@@ -100,6 +100,7 @@ size_admission_recheck_impl() { # unit dir branch context [initial-head] [refs-c
   local lines base_branch head="${5:-}" files pr unit_json limit
   unit_json="$(jqf -c --arg id "$1" '[.units[] | select(.id==$id)][0] // {}' "$UNITS")"
   size_admission_exempt_unit "$unit_json" && return 0
+  [[ -n "${head}" ]] || say "size recheck without head: $1 $4"
   [[ -n "$2" && -n "$3" ]] || return 0
   base_branch="$(unit_field "$1" '.stacked_on_branch // "main"')"
   lines="$(changed_lines_of "$2" "$3" "$base_branch" "${6:-false}")"
