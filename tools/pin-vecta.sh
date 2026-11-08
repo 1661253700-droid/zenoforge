@@ -40,26 +40,6 @@ command -v systemd-run >/dev/null || { echo 'pin-vecta: systemd-run is required 
 command -v timeout >/dev/null || { echo 'pin-vecta: timeout is required for bounded engine commands' >&2; exit 2; }
 command -v mktemp >/dev/null || { echo 'pin-vecta: mktemp is required for a fresh output directory' >&2; exit 2; }
 
-pin_override_names=()
-if [[ -n "${ZF_PIN_OVERRIDE:-}" ]]; then
-  case "$ZF_PIN_OVERRIDE" in
-    ,*|*,|*,,*)
-      echo 'pin-vecta: ZF_PIN_OVERRIDE must contain comma-separated workflow names' >&2
-      exit 2
-      ;;
-  esac
-  IFS=, read -r -a pin_override_names <<<"$ZF_PIN_OVERRIDE"
-  for workflow_name in "${pin_override_names[@]}"; do
-    case "$workflow_name" in
-      engine-tests|cli-tests) ;;
-      *)
-        echo "pin-vecta: unsupported ZF_PIN_OVERRIDE workflow: $workflow_name (allowed: engine-tests, cli-tests)" >&2
-        exit 2
-        ;;
-    esac
-  done
-fi
-
 main_ci_runs=$("$gh_bin" api --paginate --slurp \
   "repos/ZenoWangzy/zenoforge/actions/runs?head_sha=$engine_sha&branch=main&per_page=100") \
   || { echo "pin-vecta: refusing pin: could not read zenoforge main CI runs for $engine_sha" >&2; exit 1; }
@@ -74,39 +54,18 @@ if ! jq -e 'type == "array" and length > 0 and all(.[];
   exit 1
 fi
 
-failed_workflows=()
-failed_workflow_output=$(jq -r --arg sha "$engine_sha" '[.[] | .workflow_runs[]
+# Founder ruling zenoforge-pin-does-not-wait-ci-2026-11-05: a completed red engine-tests or cli-tests
+# run never blocks the pin. The incident is filed by bell's zf_main_ci_scan (engine/mac-autopilot/zf-main-ci.sh),
+# not here; this only logs one PIN-ON-RED line per red workflow.
+red_runs=$(jq -r --arg sha "$engine_sha" '[.[] | .workflow_runs[]
   | select(.head_sha == $sha and .head_branch == "main" and .status == "completed" and .conclusion == "failure"
-      and (.name == "engine-tests" or .name == "cli-tests"))
-  | .name] | unique[]' <<<"$main_ci_runs") \
+      and (.name == "engine-tests" or .name == "cli-tests"))]
+  | group_by(.name)[] | max_by(.run_number // 0) | [.name, (.html_url // "unknown")] | @tsv' <<<"$main_ci_runs") \
   || { echo "pin-vecta: refusing pin: could not inspect zenoforge main CI runs for $engine_sha" >&2; exit 1; }
-while IFS= read -r workflow_name; do
-  [[ -n "$workflow_name" ]] && failed_workflows+=("$workflow_name")
-done <<<"$failed_workflow_output"
-
-if ((${#failed_workflows[@]})); then
-  blocked_workflows=()
-  overridden_workflows=()
-  for failed_workflow in "${failed_workflows[@]}"; do
-    matched=0
-    for override_name in "${pin_override_names[@]}"; do
-      if [[ "$failed_workflow" == "$override_name" ]]; then
-        matched=1
-        break
-      fi
-    done
-    if ((matched)); then overridden_workflows+=("$failed_workflow"); else blocked_workflows+=("$failed_workflow"); fi
-  done
-  if ((${#blocked_workflows[@]})); then
-    blocked_csv=$(IFS=,; printf '%s' "${blocked_workflows[*]}")
-    echo "pin-vecta: refusing pin: failed zenoforge main workflows for $engine_sha: $blocked_csv; add only explicitly approved workflows to ZF_PIN_OVERRIDE=<workflow-name>[,<workflow-name>]" >&2
-    exit 1
-  fi
-  if ((${#overridden_workflows[@]})); then
-    overridden_csv=$(IFS=,; printf '%s' "${overridden_workflows[*]}")
-    echo "pin-vecta: explicit ZF_PIN_OVERRIDE allows failed workflows: $overridden_csv" >&2
-  fi
-fi
+while IFS=$'\t' read -r red_workflow red_url; do
+  [[ -n "$red_workflow" ]] || continue
+  printf 'PIN-ON-RED sha=%s workflow=%s run=%s incident=zf_main_ci_scan\n' "$engine_sha" "$red_workflow" "$red_url"
+done <<<"$red_runs"
 
 git -C "$target" rev-parse --show-toplevel >/dev/null 2>&1 \
   || { echo "pin-vecta: not a git checkout: $target" >&2; exit 2; }
