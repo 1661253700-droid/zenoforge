@@ -42,6 +42,9 @@ STATIONS = [
 PATH_HINTS = {"intake": r"intake", "triage": r"triage", "advisor": r"advisor", "implement": r"dispatch|worker-command|implement",
               "review": r"review", "repair": r"repair|self-check", "merge": r"merge", "ci": r"ci[-_]admission|/ci", "release": r"release"}
 # The one table that ties a report line to rows of anomaly-owners.json (the head's plain-Chinese note per scorecard metric).
+# A row is {"cause": plain-Chinese note, "owner": who, "since": ISO 8601 UTC}; its cause prints only while since is at most 24 h before
+# the report time (and at most 5 min after it, for clock skew). An older row, a since more than 5 min ahead, a row with no parseable
+# since and a bare string (undated) all print 原因超过一天没有更新 instead.
 # Line key -> row ids, first match first; a line prints the notes of the rows that exist, verbatim, at most two.
 # Lines with no row (finished, rollbacks, money, intake, triage, advisor, review) read 未查明; scorecard rows with no line:
 # scheduler.tick_gap_p50, scheduler.merge_pass_gap_min, delivery.unlinked_units_30d, delivery.issue_to_accept_p50_30d_hours, delivery.issue_to_accept_p95_30d_hours.
@@ -50,7 +53,7 @@ OWNER_ROWS = {
     "stock": ["flow.wait_stage_p90_hours", "delivery.merged_not_live"],
     "incidents": ["delivery.unlinked_incidents_30d"],
     "tokens": ["workorders.ticket_tokens_p90", "workorders.over_standard"],
-    "station:implement": ["dispatch.collisions_per_day"],
+    "station:implement": ["merge.conflict_repairs_per_day"],
     "station:repair": ["loop.rework_token_pct", "repair.unchanged_head_token_pct"],
     "station:merge": ["flow.merge_rate_per_hour"],
     "station:ci": ["ci.red_after_approve_pct", "ci.shared_append_rebase_conflict_pct"],
@@ -244,12 +247,29 @@ def worker_causes(day):
     return out
 
 
-def owner_cause(owners, key):
-    """(rows found, text): the notes of the rows mapped to this line, verbatim; None when no mapped row exists."""
+STALE_CAUSE = "原因超过一天没有更新"
+
+
+def fresh_note(row, now):
+    """The note text of an owners row: the cause of a dict row dated within a day of now, else STALE_CAUSE (bare strings are undated)."""
+    if not isinstance(row, dict):
+        return STALE_CAUSE
+    try:
+        since = datetime.fromisoformat(str(row.get("since")).replace("Z", "+00:00"))
+        since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        age = now - since.timestamp()
+    except ValueError:
+        return STALE_CAUSE
+    return row.get("cause") if -300 <= age <= DAY else STALE_CAUSE  # a since over 5 min ahead of now is undated; less is clock skew
+
+
+def owner_cause(owners, key, now):
+    """(rows found, text): the notes of the rows mapped to this line; None when no mapped row exists. now is epoch seconds."""
     notes = []
     for row in OWNER_ROWS.get(key, []):
-        if row in owners and owners[row] not in notes:
-            notes.append(owners[row])
+        note = fresh_note(owners[row], now) if row in owners else None
+        if row in owners and note not in notes:
+            notes.append(note)
     if not notes:
         return None
     safe = [n.strip() for n in notes if printable(n)][:2]
@@ -317,7 +337,7 @@ def compare(facts, directory, now, repo, owners_path):
                         "change": moved(kind, unit, current[key], yesterday), "scorecard_rows": OWNER_ROWS.get(key, [])})
         station = stations.get(key[8:]) if key.startswith("station:") else None
         subjects = [s for s in (plain(x) for x in (facts.get("quality") or {}).get("open_subjects") or []) if s]
-        found = owner_cause(owners, key)
+        found = owner_cause(owners, key, now)
         if found is not None:
             causes.append(head + found + ("" if found.endswith("。") else "。"))
         elif key in worker:
