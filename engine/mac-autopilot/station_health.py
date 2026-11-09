@@ -52,7 +52,22 @@ def read_states(agent_home):
             yield int(os.path.basename(path)[:-5]), state
 
 
-def waiting(units, states):
+def intake_open(runtime, now, bound):
+    """Issue numbers intake's last candidate walk kept (open, ready-for-agent, no skip label). None when the cache is
+    absent or older than the intake stall bound (intake itself stopped writing it), so the count falls back to every
+    ready-for-agent state file: a dead intake must still raise its stall."""
+    try:
+        doc = json.load(open(os.path.join(runtime, "intake-candidates.json")))
+        written = datetime.fromtimestamp(float(doc["created_at"]), timezone.utc)
+        rows = doc.get("rows") or ""
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if minutes(now, written) > bound:
+        return None
+    return {int(line.split("\t", 1)[0]) for line in rows.splitlines() if line.split("\t", 1)[0].isdigit()}
+
+
+def waiting(units, states, candidates=None):
     """station -> list of times each waiting item entered its buffer (None when unknown)."""
     out = {s: [] for s in STATIONS}
     has_unit = set()
@@ -72,7 +87,7 @@ def waiting(units, states):
             out[STATE_BUFFER[kind]].append(ts(st.get("state_changed_at")))
         elif kind == "awaiting-release" and st.get("deploy_state") != "deployed":
             out["release"].append(ts(st.get("state_changed_at")))
-        elif kind == "ready-for-agent" and n not in has_unit:
+        elif kind == "ready-for-agent" and n not in has_unit and (candidates is None or n in candidates):
             out["intake"].append(ts(st.get("state_changed_at")))
     return out
 
@@ -228,7 +243,8 @@ def main():
         held_since = None
     paused = os.path.exists(args.pause_file)
     doc = {"at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "paused": paused,
-           "stations": station_rows(waiting(units, list(read_states(args.agent_home))), outs(units, args.runtime, args.agent_home),
+           "stations": station_rows(waiting(units, list(read_states(args.agent_home)), intake_open(args.runtime, now, bounds["intake"])),
+                                    outs(units, args.runtime, args.agent_home),
                                     now, bounds, paused, held_since),
            "admission_gaps": admission_gaps(units, args.runtime, now - timedelta(hours=24))}
     for name, body in (("station-health.json", json.dumps(doc, ensure_ascii=False)), ("station-health.txt", render(doc))):
