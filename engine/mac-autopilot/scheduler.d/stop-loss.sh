@@ -82,6 +82,86 @@ ticket_budget_reason() { # unit-json
       end' <<<"$1" 2>/dev/null
 }
 
+# 同一失败重复（行 90：24h 内 37 次 stop-loss 转 arbiter，前面是同一个 self-check-red/ci-test-red 的，requeue 交付 0 of 4）：
+# 自最近一次裁决（与 ticket_budget_reason 同一组 ruling 阶段）起，单元最前面的事件是红（ci-test-red/ci-red/self-check-red），
+# 且它的 (阶段, 规整后的 result) 与更早一轮的红相同。规整同 ~/.zenoforge/state/work/90/v2.py：长十六进制串和数字都换成 N。
+stop_loss_same_failure() { # unit-json → prints the failure's check label (the red event's result) when it repeats an earlier round's; rc 1 otherwise
+  jqf -er '
+    def norm: tostring | gsub("\\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\\b"; "N") | gsub("[0-9]+"; "N") | gsub("\\s+"; " ");
+    def red: .stage | IN("ci-test-red", "ci-red", "self-check-red");
+    (.history // []) as $h
+    | ([$h | to_entries[] | select(.value.stage | IN("supervisor-requeue", "supervisor-approve", "supervisor-cap-budget-refill", "advisor-ruling")) | .key] | max // -1) as $ruling
+    | $h[($ruling + 1):] as $w
+    | ([$w[] | select(.stage | IN("ci-test-red", "ci-red", "self-check-red", "merge-conflict", "review-request-changes", "review-block", "review-approve", "ci-ready",
+        "repair-no-push", "worker-no-output", "implement-no-push", "implement-no-changes", "size-recut"))] | last // null) as $front
+    | ([$w[] | select(red) | [.stage, (.result | norm), (.result // "" | tostring | gsub("\\s+"; " "))]]) as $reds
+    | select($front != null and ($front | red) and (($reds[-1]) as $c | $reds[:-1] | any(.[0] == $c[0] and .[1] == $c[1])))
+    | $reds[-1][2]' <<<"$1" 2>/dev/null
+}
+
+# A repeated failure whose check is red on main belongs to main, not to the unit (main-red units come from health-release; their SHAs'
+# failed checks are fetched once per SHA per tick by main_red_failed_checks). label → the active main-red SHA, rc 1 when none.
+stop_loss_main_red_sha() { # check-label (ci-* result: names joined by ", ")
+  local sha checks
+  while read -r sha; do
+    [[ "$sha" =~ $SHA_RE ]] || continue
+    checks="$(main_red_failed_checks "$sha")" || continue
+    jqf -en --arg label "$1" --argjson main "$checks" '($label | split(", ")) as $names | any($names[]; . as $n | $main | index($n) != null)' >/dev/null 2>&1 \
+      && { printf '%s\n' "$sha"; return 0; }
+  done < <(jqf -r '.units[] | select(.main_red == true and ((.ci_sha // "") | test("^[0-9a-f]{40}$")) and ((.stage // "") | IN("closed","landed","merged","done") | not)) | .ci_sha' "$UNITS" | sort -u)
+  return 1
+}
+
+# Both exits of a same-failure stop-loss land here. The wait (check red on main) reuses the main-red park fields; the park (unit's own failure)
+# reads exactly "stop-loss same failure: <check>". Each records the PR head so stop_loss_unpark_sweep can requeue when it changes.
+stop_loss_same_failure_hold() { # id from-stage label [main-red-sha]
+  local id="$1" from="$2" label="$3" red_sha="${4:-}" pr head="" set
+  pr="$(unit_field "$id" '.pr // empty')"
+  [[ ! "$pr" =~ ^[0-9]+$ ]] || head="$(tick_pr_head "$pr" 2>/dev/null || true)"
+  if [[ -n "$red_sha" ]]; then
+    set="$(hist ci-main-red-park "stop-loss same failure: ${label:0:80} also failed on main $red_sha") | .stage=\"parked\" | .parked_reason=\"main-red\" | .unpark_condition=\"the same checks pass on main\" | .parked_main_red_sha=$(js "$red_sha") | .stop_loss_wait=true"
+  else
+    [[ "$(unit_field "$id" '.stage // empty')" == parked ]] || return 0
+    set=".parked_reason=$(js "stop-loss same failure: ${label:0:80}") | .unpark_condition=$(js "$([[ -n "$pr" ]] && echo 'the PR head changes' || echo 'a supervisor decision')")"
+  fi
+  # One timed retry per unit: a unit already requeued by it parks again with the PR-head exit only.
+  if [[ -z "$red_sha" && -n "$head" && "$(unit_field "$id" '.stop_loss_timed_requeue // empty')" != true && "$MAIN_HEAD" =~ $SHA_RE ]]; then
+    set="$set | .stop_loss_park_epoch=${NOW_EPOCH:-$(date +%s)} | .stop_loss_park_main=$(js "$MAIN_HEAD")"
+  fi
+  set_unit "$id" "$set | .parked_from_stage=$(js "$from") | .stop_loss_park_head=$(js "$head")" && say "stop-loss same failure unit=$id: $([[ -n "$red_sha" ]] && echo "waits for main green ($red_sha)" || echo parked)"
+}
+
+stop_loss_unpark_sweep() { # requeue (refilled budget) when the PR head changed or the main red the unit waited on turned green
+  local id from head red_sha pr park_epoch park_main cur resolved why timed
+  while IFS=$'\t' read -r id from head red_sha pr park_epoch park_main; do
+    [[ -n "$id" ]] || continue
+    why=""
+    if [[ "$pr" =~ ^[0-9]+$ && "$head" =~ $SHA_RE ]]; then
+      cur="$(tick_pr_head "$pr" 2>/dev/null || true)"
+      [[ ! "$cur" =~ $SHA_RE || "$cur" == "$head" ]] || why="PR head changed to ${cur:0:9}"
+    fi
+    if [[ -z "$why" && "$red_sha" =~ $SHA_RE ]]; then
+      resolved="$(jqf -r --arg red "$red_sha" 'first(.units[] | select(.main_red==true and .ci_sha==$red and .stage=="closed" and ((.resolved_main_sha // "") | test("^[0-9a-f]{40}$"))) | .resolved_main_sha) // empty' <(units_history_doc))"
+      [[ ! "$resolved" =~ $SHA_RE ]] || why="main green at ${resolved:0:9}"
+    fi
+    # Backoff retry, once: parked past STOP_LOSS_PARK_RETRY_SECONDS (24 h) and main has advanced since the park. The branch is brought up to the new main
+    # through ci_update_branch (the one server-side rebase path); a refused update still requeues, and the redispatched worker starts from the latest main.
+    timed=""
+    if [[ -z "$why" && "$park_epoch" =~ ^[0-9]+$ && "$park_main" =~ $SHA_RE && "$MAIN_HEAD" =~ $SHA_RE && "$MAIN_HEAD" != "$park_main" ]] \
+      && (( ${NOW_EPOCH:-$(date +%s)} - park_epoch >= ${STOP_LOSS_PARK_RETRY_SECONDS:-86400} )); then
+      cur="$(tick_pr_head "$pr" 2>/dev/null || true)"
+      if [[ "$cur" =~ $SHA_RE ]] && ci_update_branch "$pr" "$cur"; then why="parked over 24 h and main advanced to ${MAIN_HEAD:0:9}: branch updated onto it"
+      else why="parked over 24 h and main advanced to ${MAIN_HEAD:0:9}: branch update not applied, the worker starts from the latest main"; fi
+      timed=" | .stop_loss_timed_requeue=true"
+    fi
+    [[ -n "$why" ]] || continue
+    [[ "$from" != - ]] || from=repair-pending
+    set_unit "$id" "$(hist supervisor-requeue "stop-loss same failure: unparked, $why; budget refilled") | .stage=$(js "$from") | .note=null$timed | del(.stop_loss_park_epoch,.stop_loss_park_main,.parked_reason,.unpark_condition,.parked_main_red_sha,.parked_from_stage,.stop_loss_park_head,.stop_loss_wait)" \
+      && say "stop-loss same failure unit=$id requeued at $from: $why"
+  done < <(jqf -r '.units[] | select(.stage == "parked" and .stop_loss_park_head != null)
+    | [.id, (.parked_from_stage // "-"), (.stop_loss_park_head | if . == "" then "-" else . end), (.parked_main_red_sha // "-"), (.pr // "-"), (.stop_loss_park_epoch // "-"), (.stop_loss_park_main // "-")] | @tsv' "$UNITS")
+}
+
 # Token spend gate. Every finished worker log is one `spend_runs` record on its unit (spend_ledger.py; fresh tokens come from the
 # dashboard's own unit_spend, so this gate and `workorders` agree). Lifetime fresh tokens past the soft line park the unit once and
 # send it to one arbiter decision whose prompt carries the per-run table and a class; the first return to dispatch after that is the
